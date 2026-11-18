@@ -181,6 +181,7 @@ window.DPEnv = (() => {
         const fresh = await read(new URL("env", API), { headers: { "X-DesignPatch-Account": tag } }, 8000, true);
         const data = fresh.data, caps = data && data.caps;
         if (changed || env.account.tag !== tag || fresh.response.status !== 200 || !object(data) || data.server_mode !== true
+            || data.session !== true || !object(data.account) || data.account.tag !== tag
             || !object(caps) || !Object.keys(LOCAL_CAPS).every((key) => typeof caps[key] === "boolean")
             || !Array.isArray(caps.models) || (caps.models_error != null && typeof caps.models_error !== "string")) return false;
         const error = caps.models_error ?? null;

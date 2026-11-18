@@ -1096,7 +1096,6 @@ window.DPPipeline = (() => {
     // 다른 창의 저장 알아보기(state pipeline_rev 로 다시 읽으면 PS.P·rev 가 새 판이 되어 저장이 409 없이 통과): edits = 손댄 키를 처음 고칠 때 화면의 값
     // {절: {키: 값}}, drawn = 설정 패널을 마지막으로 그린(또는 저장한) 절 값 {절: 값}(입력 중이면 다시 그리기가 미뤄져 화면이 옛 값)
     let edits = {};
-    let prepareDirect = {}; // 모델 전환의 자동 보정과 분리한 직접 편집값 — 전환 때마다 저장값 위에 다시 얹는다.
     let drawn = {};
     let composing = false;
     let pendingPanel = false; // 다시 그리기를 미룸(입력 중이면 패널만, 포인터가 눌린 동안이면 전부) — focusout·pointerup 뒤에 그림
@@ -2479,7 +2478,6 @@ window.DPPipeline = (() => {
       const base = PS.P.settings ? PS.P.settings[sec] : PS.P.derived.settings[sec];
       const P0 = PS.P;
       const sent = Object.assign({}, form[sec]); // 보낸 편집값 — 응답을 기다리는 사이 같은 절에 친 값은 남긴다
-      const direct = sec === "prepare" && modelCatalog() ? { ...prepareDirect } : null;
       const raw0 = Object.assign({}, base, sent);
       const raw = sec === "prepare" ? modelSettings(raw0) : raw0;
       const values = {};
@@ -2503,10 +2501,11 @@ window.DPPipeline = (() => {
         // 이 창이 저장한 값 = 서버가 쓴 절(import 경로는 정규화 — 따옴표·공백 없이 '/'). 입력 중이라 다시 그리기가 미뤄져도 다음 저장·칸 옆 표시가
         // 제 값을 '다른 창 값'으로 보지 않게: 화면 기준값(drawn)과, 응답을 기다리는 사이 같은 칸에 더 친 키의 첫 편집 기준값(edits)을 이 값으로
         const saved = r.settings[sec];
-        if (direct) for (const k of Object.keys(direct)) {
-          if (same(prepareDirect[k], direct[k])) delete prepareDirect[k];
-        }
         const f = form[sec] || {};
+        // 요청 뒤 저장값으로 되돌려 지운 키도 직접 편집이다. 실제로 보낸 키만 새 저장값과 비교해 남긴다.
+        if (sec === "prepare" && modelCatalog()) for (const k of Object.keys(sent)) {
+          if (!(k in f) && !same(base[k], saved[k])) f[k] = base[k];
+        }
         for (const k of Object.keys(f)) {
           if (!(k in sent)) continue;
           if (f[k] === sent[k]) {
@@ -2514,17 +2513,10 @@ window.DPPipeline = (() => {
             delete e0[k];
           } else e0[k] = saved[k];
         }
-        if (direct) {
-          for (const [k, v] of Object.entries(modelSettings({ ...saved, ...prepareDirect }))) {
-            if (same(v, saved[k])) { delete f[k]; delete e0[k]; }
-            else { f[k] = v; e0[k] = saved[k]; }
-          }
-          if (Object.keys(f).length) { form[sec] = f; edits[sec] = e0; }
-        }
         if (!Object.keys(f).length) {
           delete form[sec];
           delete edits[sec];
-        }
+        } else { form[sec] = f; edits[sec] = Object.assign(edits[sec] || {}, e0); }
         drawn[sec] = saved;
         opts.toast(`${SECTIONS[sec]} 설정 저장 — rev ${r.rev}`);
         planNow();
@@ -2577,7 +2569,6 @@ window.DPPipeline = (() => {
       // 확인 창을 닫은 때의 편집값 — 리셋이 덮는 것은 이 값뿐. 저장을 기다리는 사이 칸은 켜져 있어 그 뒤에 친 값(바꾼 키·새 키)은 보내지 않은
       // 새 편집이라 남긴다(saveSection 과 같은 뜻 — 지우면 칸이 blur 뒤 저장값으로 돌아가고, 바로 누른 [저장]은 친 값 대신 저장값을 '저장 성공'으로)
       const f0 = Object.fromEntries(secs.map((sec) => [sec, Object.assign({}, form[sec])]));
-      const direct0 = modelCatalog() ? { ...prepareDirect } : null;
       // 판 = 확인 창의 판, 다음 절부터는 이 창의 앞 저장 응답 rev — 저장마다 다시 읽은 GET /pipeline 의 rev 를 쓰면 그 사이 다른 창의 저장이
       // 409 없이 확인 창 값(D)에 덮인다. 409 면 멈춘다(앞 절은 저장됨)
       let rev = P0.rev;
@@ -2588,28 +2579,22 @@ window.DPPipeline = (() => {
           rev = r.rev;
           saved.push(SECTIONS[sec]);
           const sv = r.settings[sec];
-          if (sec === "prepare" && direct0) for (const k of Object.keys(direct0)) {
-            if (same(prepareDirect[k], direct0[k])) delete prepareDirect[k];
-          }
           const f = form[sec] || {};
           const e0 = edits[sec] || (edits[sec] = {});
+          if (sec === "prepare" && modelCatalog()) for (const k of Object.keys(f0[sec])) {
+            const before = (P0.settings || P0.derived.settings)[sec][k];
+            if (!(k in f) && !same(before, sv[k])) f[k] = before;
+          }
           for (const k of Object.keys(f)) {
             if (k in f0[sec] && f[k] === f0[sec][k]) {
               delete f[k];
               delete e0[k];
             } else e0[k] = sv[k]; // 남긴 편집의 기준값 = 이 창이 방금 저장한 값(다른 창 값으로 묻지 않게)
           }
-          if (sec === "prepare" && direct0) {
-            for (const [k, v] of Object.entries(modelSettings({ ...sv, ...prepareDirect }))) {
-              if (same(v, sv[k])) { delete f[k]; delete e0[k]; }
-              else { f[k] = v; e0[k] = sv[k]; }
-            }
-            if (Object.keys(f).length) { form[sec] = f; edits[sec] = e0; }
-          }
           if (!Object.keys(f).length) {
             delete form[sec];
             delete edits[sec];
-          }
+          } else form[sec] = f;
           drawn[sec] = sv; // 서버가 쓴 값(saveSection 과 같은 뜻 — 제 저장을 다른 창 값으로 묻지 않게)
         } catch (e) {
           opts.toast(`${SECTIONS[sec]}: ${e.message}`
@@ -3532,20 +3517,13 @@ window.DPPipeline = (() => {
         // 첫 편집 기준값 = 지금 화면 기준값(drawn — 이 창이 저장한 뒤 다시 그리기가 미뤄졌으면 그 저장값, 그리던 때의 value 가 아님)
         const e = (edits[sec] = edits[sec] || {});
         if (!(k in e)) e[k] = drawn[sec][k];
-        if (model && k === "n" && Number(v) > model.max_n) { v = model.max_n; inp.value = String(v); }
         if (models) {
           const base = (PS.P.settings || PS.P.derived.settings).prepare;
-          prepareDirect[k] = typed(spec, v);
-          if (same(prepareDirect[k], base[k]) && !PS.busy) delete prepareDirect[k];
-          const next = modelSettings({ ...base, ...prepareDirect });
           const f = form.prepare = form.prepare || {};
-          for (const key of Object.keys(next)) {
-            if (same(next[key], base[key])) { delete f[key]; delete e[key]; }
-            else {
-              if (!(key in e)) e[key] = drawn[sec][key];
-              f[key] = next[key];
-            }
-          }
+          const direct = typed(spec, v);
+          if (same(direct, base[k])) { delete f[k]; delete e[k]; }
+          else f[k] = direct;
+          if (k === "n") inp.value = String(modelSettings({ ...base, ...f }).n);
           if (!Object.keys(f).length) { delete form.prepare; delete edits.prepare; }
         } else (form[sec] = form[sec] || {})[k] = v;
         if (sec === "prepare" && k === "model") {

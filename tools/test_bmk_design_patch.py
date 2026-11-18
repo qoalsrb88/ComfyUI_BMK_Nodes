@@ -62810,6 +62810,16 @@ for(const failure of ["network","http","session","shape","timeout"])await scenar
   const pending=env.refreshModels();await settle();if(failure==="timeout")await e.fire(8000);
   return await pending===false&&JSON.stringify(env.caps)===before&&!e.doc.body.textContent&&!e.logs.length;
 });
+for(const account of ["noSession","missingSession","otherTag","missingAccount","sameTag"])await scenario("V1 재조회 응답 세션·계정 확인 "+account,async()=>{
+  const initial=clone(A.env_server_forge.response);initial.caps.models=clone(IN.models);initial.caps.models_error="첫 안내";
+  const fresh=clone(initial);fresh.caps.models[0].available=false;fresh.caps.models[0].why="목록에서 빠짐";fresh.caps.models_error=null;
+  if(account==="noSession")fresh.session=false;if(account==="missingSession")delete fresh.session;
+  if(account==="otherTag")fresh.account.tag="another-account";if(account==="missingAccount")delete fresh.account;
+  let reads=0;const e=await boot({handler:(u,o)=>String(u).endsWith("/env")?response(++reads<=2?initial:fresh):serverHandler(u,o)});
+  const env=e.ctx.DPEnv,before=JSON.stringify(env.caps),result=await env.refreshModels(),accepted=account==="sameTag";
+  return {result:result===accepted,caps:JSON.stringify(env.caps)===(accepted?JSON.stringify(fresh.caps):before),
+    account:env.account.tag===initial.account.tag&&reads===3};
+});
 for(const server of [false,true])await scenario("U2 목록 없는 환경은 재조회 요청 0 "+server,async()=>{
   let reads=0;const data=clone(server?A.env_server.response:A.env_local.response);
   const e=await boot({handler:(u,o)=>String(u).endsWith("/env")?(reads++,response(data)):serverHandler(u,o)});
@@ -62897,9 +62907,12 @@ await scenario("FMJ 품질·기본값·상한·복잡도 즉시 전환",async()=
 });
 for(const quality of [gpt.default_quality,ideo.default_quality])await scenario("U1 자동 보정 되돌림 "+quality,async()=>{
   const model=catalog.find(m=>m.name.includes("2.6")),e=await studio({prepare:{model:model.name,quality,n:gpt.max_n}});
-  await e.h.openSettings();await e.change("model",ideo.name);await e.change("model",model.name);
-  const state=e.h.editState(),r={quality:e.input("quality").value===quality,n:Number(e.input("n").value)===gpt.max_n,
-    clean:!Object.keys(state.form.prepare||{}).length&&!Object.keys(state.edits.prepare||{}).length};e.stop();return r;
+  await e.h.openSettings();await e.change("model",ideo.name);
+  let state=e.h.editState();const r={directOnly:eq(state.form.prepare,{model:ideo.name})&&eq(Object.keys(state.edits.prepare),["model"]),
+    adjusted:e.input("quality").value===ideo.default_quality&&Number(e.input("n").value)===ideo.max_n};
+  await e.change("model",model.name);state=e.h.editState();
+  r.quality=e.input("quality").value===quality;r.n=Number(e.input("n").value)===gpt.max_n;
+  r.clean=!Object.keys(state.form.prepare||{}).length&&!Object.keys(state.edits.prepare||{}).length;e.stop();return r;
 });
 await scenario("U1 되돌리면 2.6 전환 단추 복원",async()=>{
   const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();await e.change("model",ideo.name);await e.change("model",gpt.name);
@@ -62914,8 +62927,44 @@ for(const key of ["quality","n"])await scenario("U1 직접 고친 값 보존 "+k
 });
 await scenario("U1 직접 입력한 n도 모델 전환 전 값으로 복원",async()=>{
   const e=await studio({prepare:{n:2}});await e.h.openSettings();await e.change("n",gpt.max_n);
-  await e.change("model",ideo.name);await e.change("model",gpt.name);
-  const r=Number(e.input("n").value)===gpt.max_n;e.stop();return r;
+  await e.change("model",ideo.name);
+  const r={raw:e.h.editState().form.prepare.n===gpt.max_n,shown:Number(e.input("n").value)===ideo.max_n};
+  await e.change("model",gpt.name);r.restored=Number(e.input("n").value)===gpt.max_n;e.stop();return r;
+});
+await scenario("U1 다른 절 저장 중 되돌림은 숨은 편집을 남기지 않음",async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();e.srv.delay["pipeline/settings"]=[80];
+  const saved=clone(e.h.PS.P);e.srv.route.settings=(q,body)=>{saved.settings[body.section]=clone(body.values);saved.rev++;return [200,saved];};
+  e.srv.route.pipeline=()=>[200,saved];const pending=e.h.PS.save("run",saved.settings.run,saved.rev);
+  await e.change("model",ideo.name);await e.change("model",gpt.name);const state=e.h.editState();
+  const r={during:e.h.PS.busy&&!Object.keys(state.form.prepare||{}).length&&!Object.keys(state.edits.prepare||{}).length};
+  await pending;await e.h.openSettings();r.enabled=!e.B("2.6 으로 전환").disabled;
+  const switched=e.h.switchModel();await until(()=>!!e.box());e.B("확인",e.box()).onclick({isTrusted:true});await switched;
+  await e.h.openSettings();const model=saved.settings.prepare.model;await e.change("quality",ideo.qualities[0]);
+  r.noHiddenModel=model.includes("2.6")&&e.input("model").value===model&&!Object.hasOwn(e.h.editState().form.prepare,"model");
+  e.stop();return r;
+});
+for(const cause of ["reload","409"])await scenario("U1 새 저장값으로 자동 보정·자동값 덮어쓰기 없음 "+cause,async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();await e.change("model",ideo.name);e.doc.activeElement.blur();
+  const saved=clone(e.h.PS.P),update=()=>{saved.rev++;saved.settings.prepare.quality="medium";saved.settings.prepare.n=6;};
+  e.srv.route.pipeline=()=>[200,saved];
+  if(cause==="409"){
+    e.srv.route.settings=()=>{update();return [409,{error:"다른 창에서 저장했습니다"}];};
+    const pending=e.h.saveSection("prepare");await until(()=>!!e.box());e.B("확인",e.box()).onclick({isTrusted:true});await pending;
+  }else{update();await e.h.PS.load();}
+  await e.h.openSettings();const state=e.h.editState(),r={model:e.input("model").value===ideo.name,
+    quality:e.input("quality").value==="medium",n:Number(e.input("n").value)===6,
+    directOnly:eq(state.form.prepare,{model:ideo.name})&&eq(Object.keys(state.edits.prepare),["model"])};
+  const pending=e.h.saveSection("prepare");await until(()=>!!e.box());const box=e.box();
+  r.noOverwrite=!box.textContent.includes("prepare.quality:")&&!box.textContent.includes("prepare.n:");
+  r.preview=box.textContent.includes("다음 [반영] 뒤 생성 승인 필요");e.B("취소",box).onclick({isTrusted:true});await pending;
+  e.stop();return r;
+});
+for(const quality of [gpt.default_quality,ideo.default_quality])await scenario("U1 장 수 자동 보정은 전환 미리 보기 동반 "+quality,async()=>{
+  const e=await studio({prepare:{quality,n:gpt.max_n}});await e.h.openSettings();await e.change("model",ideo.name);e.doc.activeElement.blur();
+  const pending=e.h.saveSection("prepare");await until(()=>!!e.box());const box=e.box();
+  const sent=JSON.parse(e.srv.log.findLast(x=>x.path==="pipeline"&&x.q.prepare).q.prepare);
+  const r={preview:box.textContent.includes("다음 [반영] 뒤 생성 승인 필요")&&sent.n===ideo.max_n&&sent.model===ideo.name,
+    noWrite:e.srv.count("pipeline/settings","POST")===0};e.B("취소",box).onclick({isTrusted:true});await pending;e.stop();return r;
 });
 await scenario("U1 저장 뒤 편집 상태 초기화·새 저장값 기준",async()=>{
   const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();await e.change("model",ideo.name);await e.change("quality",ideo.qualities[0]);
@@ -62938,14 +62987,17 @@ for(const server of [false,true])await scenario("FMJ 목록 없는 화면 보존
   e.stop();return r;
 });
 for(const key of ["model","quality"])await scenario("U1 저장 응답 전 되돌린 직접 편집 보존 "+key,async()=>{
-  const e=await studio();await e.h.openSettings();await e.change(key,key==="model"?ideo.name:ideo.qualities[0]);
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();await e.change(key,key==="model"?ideo.name:ideo.qualities[0]);
   e.srv.delay["pipeline/settings"]=[80];
   const saved=clone(e.h.PS.P);e.srv.route.settings=(q,body)=>{saved.settings.prepare=clone(body.values);saved.rev++;return [200,saved];};
   e.srv.route.pipeline=()=>[200,saved];e.doc.activeElement.blur();const pending=e.h.saveSection("prepare");await until(()=>!!e.box());
   e.B("확인",e.box()).onclick({isTrusted:true});await until(()=>e.srv.count("pipeline/settings","POST")===1);
-  const value=key==="model"?gpt.name:gpt.default_quality;await e.change(key,value);e.doc.activeElement.blur();await pending;
-  await e.h.openSettings();const state=e.h.editState(),r={shown:e.input(key).value===value,
-    unsaved:state.form.prepare?.[key]===value,baseline:state.edits.prepare?.[key]===saved.settings.prepare[key]};e.stop();return r;
+  const value=key==="model"?gpt.name:gpt.default_quality;await e.change(key,value);e.doc.activeElement.blur();
+  const r={reverted:!Object.keys(e.h.editState().form.prepare||{}).length&&!Object.keys(e.h.editState().edits.prepare||{}).length};await pending;
+  await e.h.openSettings();const state=e.h.editState();r.shown=e.input(key).value===value;
+  r.unsaved=eq(state.form.prepare,{[key]:value});r.baseline=eq(state.edits.prepare,{[key]:saved.settings.prepare[key]});
+  r.newBaseline=key!=="model"||(e.input("quality").value===saved.settings.prepare.quality&&Number(e.input("n").value)===saved.settings.prepare.n);
+  e.stop();return r;
 });
 for(const change of ["model","quality","cancel"])
 await scenario("FMJ 저장은 미리 보기·페이지 확인 뒤 "+change,async()=>{
