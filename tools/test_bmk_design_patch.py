@@ -61374,12 +61374,12 @@ def forge_f2_dev_unit():
             await job(key, instance=history_fake)
         foreign_id = (await submit("history-other", instance=history_fake, account="bob"))[1]["job_id"]
         await job(foreign_id, account="bob", instance=history_fake)
-        status, history = await call("GET", "/api/image/history?organization_id=org1&limit=2", instance=history_fake)
+        status, history = await call("GET", "/api/image/history?organization_id=org1&limit=2&user_id=u_alice&search=History", instance=history_fake)
         check(status == 200 and set(history) == set(fixture["history"]["response"]) and history["has_more"]
               and isinstance(history["next_cursor"], str) and isinstance(history["trace_id"], str), "FD5 history 페이지 fixture")
         check([item["statement_id"] for item in history["items"]] == list(reversed(history_ids[1:])), "FD5 자기 완료 잡 최신순·단일 장")
         check(all(same_shape(item, fixture["history"]["response"]["items"][0]) for item in history["items"]), "FD5 단일 장 키·형식 fixture")
-        cursor_path = "/api/image/history?" + urllib.parse.urlencode({"organization_id": "org1", "limit": 2, "cursor": history["next_cursor"]})
+        cursor_path = "/api/image/history?" + urllib.parse.urlencode({"organization_id": "org1", "limit": 2, "cursor": history["next_cursor"], "user_id": "u_alice", "search": "History"})
         second = (await call("GET", cursor_path, instance=history_fake))[1]
         check(second["next_cursor"] is None and not second["has_more"] and len(second["items"]) == 1
               and same_shape(second["items"][0], fixture["history"]["response"]["items"][1]), "FD5 묶음 키·형식 fixture·마지막 페이지")
@@ -61387,7 +61387,7 @@ def forge_f2_dev_unit():
         check(len(filtered["items"]) == 3, "FD5 프롬프트 검색 대소문자 무관")
         check((await call("GET", "/api/image/history?organization_id=org1&search=absent", instance=history_fake))[1]["items"] == [], "FD5 검색 결과 없음")
         tie_id = (await submit("history-tie", instance=history_fake, num_outputs=1))[1]["job_id"]
-        latest = (await call("GET", "/api/image/history?organization_id=org1&limit=1", instance=history_fake))[1]
+        latest = (await call("GET", "/api/image/history?organization_id=org1&limit=1&user_id=u_alice", instance=history_fake))[1]
         check(latest["items"][0]["statement_id"] == tie_id, "FD5 같은 시각이면 나중에 제출한 잡이 먼저")
         for suffix in ("?organization_id=other", "?organization_id=org1"):
             status, value = await call("GET", "/api/image/history" + suffix, account="outsider")
@@ -61396,8 +61396,8 @@ def forge_f2_dev_unit():
             check((await call("GET", "/api/image/history" + suffix))[0] == 422, "FD5 history 쿼리 검사")
 
         status, assets = await call("GET", "/api/library/assets?organization_id=org1")
-        check(status == 200 and len(assets) == 3 and all(same_shape(item, fixture["assets"]["response"][0]) for item in assets), "FD6 자료 3개·배열·fixture")
-        check(len({item["name"] for item in assets}) == 3 and len({item["folder_path"] for item in assets}) == 3, "FD6 서로 다른 이름·폴더")
+        check(status == 200 and len(assets) == 6 and all(same_shape(item, fixture["assets"]["response"][0]) for item in assets), "FD6 자료 6개·배열·fixture")
+        check(len({item["name"] for item in assets}) == 6 and len({item["folder_path"] for item in assets}) == 5, "FD6 서로 다른 이름·폴더")
         bob_assets = (await call("GET", "/api/library/assets?organization_id=org1", account="bob"))[1]
         check({item["id"] for item in assets}.isdisjoint(item["id"] for item in bob_assets)
               and all(item["owner_id"] == "u_bob" for item in bob_assets), "FD6 계정별 자료 격리")
@@ -61427,7 +61427,7 @@ def forge_f2_dev_unit():
         check(status == 200 and same_shape(asset, fixture["asset_upload"]["create"]["response"]), "FD6 create fixture")
         check(await call("POST", "/api/library/assets", create_request) == (200, asset), "FD6 동일 client_request_id 멱등")
         listed = (await call("GET", "/api/library/assets?organization_id=org1"))[1]
-        check(len(listed) == 4 and listed[0]["id"] == asset["id"] and same_shape(listed[0], fixture["assets"]["response"][0]), "FD6 업로드 전체 절차 후 목록 1개 추가")
+        check(len(listed) == 7 and listed[0]["id"] == asset["id"] and same_shape(listed[0], fixture["assets"]["response"][0]), "FD6 업로드 전체 절차 후 목록 1개 추가")
         check((await call("GET", asset["url"], account=None))[1] == png, "FD6 업로드 원본 바이트 보존")
         conflicting = dict(create_request, s3_key="other-key")
         check(await call("POST", "/api/library/assets", conflicting) == (409, fixture["asset_upload"]["create"]["conflict"]["response"]), "FD6 다른 s3_key 충돌 409 fixture")
@@ -61665,7 +61665,7 @@ console.log("refresh behavior passed");
 
     asyncio.run(run())
     source = (PKG / "bmk_design_patch_forge_dev.py").read_text(encoding="utf-8")
-    check(set(re.findall(r"https?://([a-zA-Z0-9.-]+)", source)) <= {"localhost", "example.com"}, "FD9 모듈 리터럴 주소는 개발용만")
+    check(set(re.findall(r"https?://([a-zA-Z0-9.-]+)", source)) <= {"localhost", "example.com", "outside.example"}, "FD9 모듈 리터럴 주소는 개발용만")
     check("bmk_design_patch_forge" not in {node.module for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ImportFrom)}
           and not any(isinstance(node, ast.Import) and any(alias.name == "bmk_design_patch_forge" for alias in node.names)
                       for node in ast.walk(ast.parse(source))), "FD9 갈래 S 모듈 import 없음")
@@ -62681,7 +62681,7 @@ def forge_f2_import_unit():
         result = await client.history("dev:alice", "org1", search="한 장 & 둘", limit=2)
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(calls[-1][1]).query)
         check(len(result["items"]) == 3 and result["items"][2]["prompt"] == "두 장짜리 결과", "F2C 묶음 펼침·부모 표시값·URL 없는 장 제외")
-        check(query == {"organization_id": ["org1"], "limit": ["2"], "view": ["summary"], "search": ["한 장 & 둘"]}, "F2C history 쿼리·빈 cursor 생략")
+        check(query == {"organization_id": ["org1"], "limit": ["2"], "view": ["summary"], "search": [re.escape("한 장 & 둘")]}, "F2C history 쿼리·빈 cursor 생략")
         await client.history("dev:alice", "org1", cursor=result["next"])
         check(urllib.parse.parse_qs(urllib.parse.urlsplit(calls[-1][1]).query)["cursor"] == [history["next_cursor"]], "F2C history cursor")
         for flag, cursor in ((False, "cursor"), (True, 5), (True, None)):
@@ -62855,9 +62855,9 @@ def forge_f2_import_unit():
             offsets = []
             async def asset_page(token, org, **kwargs):
                 offsets.append(kwargs["offset"])
-                return {"items": [tagged], "next": 200 if kwargs["offset"] == 0 else None}
+                return {"items": [tagged] * (200 if kwargs["offset"] == 0 else 1), "next": 200 if kwargs["offset"] == 0 else None}
             with patch.object(client, "assets", side_effect=asset_page):
-                result = value(await request("assets", query={"search": "COST"}))
+                result = value(await request("assets", query={"search": "COST", "refresh": "1"}))
                 check(result["items"][0]["name"] == "sheet.png" and isinstance(result["next"], str), "F2C 태그 대소문자 무시·파일명 보존·offset 불투명")
                 await request("assets", query={"search": "COST", "offset": result["next"]})
                 check(offsets == [0, 200], "F2C offset 복원")
@@ -62882,7 +62882,7 @@ def forge_f2_import_unit():
                 with Image.open(io.BytesIO(response.body)) as image:
                     check(image.size == (256, 256) and image.format == "PNG", "F2C 큰 썸네일 원본 256px PNG")
             with patch.object(client, "fetch_media", return_value=b"not an image"):
-                check((await request("thumb", query=q)).status == 422, "F2C 그림 아닌 썸네일 거절")
+                check((await request("thumb", query=dict(q, size="large"))).status == 422, "F2C 그림 아닌 큰 보기 거절")
             response = await request("import", dict(q, into="target", name="imported"))
             check(response.status == 200 and set(value(response)) == {"key", "name", "notes"}, "F2C 타깃 가져오기 기존 새 프로젝트 응답")
             root_key = value(response)["key"]
@@ -62948,7 +62948,7 @@ def forge_f2_import_unit():
             token_values["alice"] = "dev:alice"
             for reason, status in (("unauthorized", 401), ("forbidden", 403), ("unreachable", 503)):
                 with patch.object(client, "assets", side_effect=fg.ForgeError(reason, status)):
-                    response = await request("assets")
+                    response = await request("assets", query={"refresh": "1"})
                 check(response.status == status, "F2C Forge 오류 매핑 " + reason)
             check(rejected == ["dev:alice"], "F2C 401 토큰 거절 표시")
             previous = ["dev:old"]
@@ -63086,8 +63086,8 @@ def forge_f2_import_unit():
                 rig.media_status["/media/thumb"] = 403
                 item = await rig.item()
                 response = await rig.request("thumb", query=item)
-                check(response.status == 200 and response.body == png and rig.started.count(("alice", "/media/original")) == 1,
-                      "R1 막힌 썸네일은 원본으로 한 번 대체")
+                check(response.status == 404 and value(response)["reason"] == "forge_stale"
+                      and rig.started.count(("alice", "/media/original")) == 0, "R1 막힌 썸네일은 재요청 없이 거절")
                 rig.media_status["/media/original"] = 404
                 response = await rig.request("thumb", query=item)
                 check(response.status == 404 and value(response)["reason"] == "forge_stale" and not rig.rejected,
@@ -63275,15 +63275,15 @@ def forge_f2_import_unit():
             rig.asset_pages = pages
             response = await rig.request("assets", query={"search": "needle"})
             listed = value(response)
-            check(response.status == 200 and len(listed["items"]) == 1 and rig.asset_gets() == [0, 200, 400],
-                  "R5 내 자료 검색은 일치 항목이 나오는 쪽까지 계속")
+            check(response.status == 200 and len(listed["items"]) == 1 and rig.asset_gets() == [0, 200, 400, 600, 800],
+                  "R5 내 자료 검색 전 최대 5쪽을 한 번 읽음")
             await rig.request("assets", query={"search": "needle", "offset": listed["next"]})
-            check(rig.asset_gets() == [0, 200, 400, 600, 800, 1000, 1200, 1400], "R5 next는 확인한 마지막 쪽 다음 offset")
+            check(rig.asset_gets() == [0, 200, 400, 600, 800] and listed["next"] is None and listed["more"], "R5 검색 결과의 로컬 next·상한 more")
             rig.seen.clear()
             response = await rig.request("assets", query={"search": "missing"})
             listed = value(response)
-            check(listed["items"] == [] and listed["next"] is not None and rig.asset_gets() == [0, 200, 400, 600, 800],
-                  "R5 검색은 응답당 5쪽 상한·이후 범위 next 유지")
+            check(listed["items"] == [] and listed["next"] is None and listed["more"] and rig.asset_gets() == [],
+                  "R5 재검색은 캐시만 사용·상한 more 유지")
 
             rig = Rig()
             rig.list_gate = asyncio.Event()
@@ -63676,6 +63676,376 @@ def batch13_unit():
 def forge_import1_server_unit():
     """실서버 연동 1단계 「Forge에서 가져오기」 강화 — 서버 쪽(요청 수 단정·필터·자료 기억·썸네일 기억·여러 장·출처 사이드카)."""
     section("Forge 가져오기 1단계 — 서버 (forge_import1_server_unit)")
+    import tempfile
+    from unittest.mock import patch
+    import bmk_design_patch_board as bd
+    import bmk_design_patch_forge as fg
+    import bmk_design_patch_forge_dev as dev
+
+    out = OUT_ROOT / "forge_import1_server"
+    out.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="run-", dir=out))
+    origin = "http://localhost:8790"
+
+    class Rig:
+        def __init__(self):
+            self.now = 1800000000.0
+            self.fake = dev.FakeForge(clock=lambda: self.now)
+            self.config = fg.ForgeConfig(origin, (origin,), allow_http=True, timeout=.2)
+            self.client = fg.ForgeClient(self.config, self.fake.handle)
+            self.checked, self.rejected = [], []
+            self.tokens = types.SimpleNamespace(token_for=lambda org, account: "dev:" + account.removeprefix("u_"),
+                access_at=lambda *args: self.now, reject_token=lambda *args: self.rejected.append(args))
+            self.accounts = fg.ForgeAccounts(self.client, self.config, self.tokens, clock=lambda: self.now)
+            self.handlers = {p.rsplit("/", 1)[-1]: f for _, p, f in fg.routes(self.accounts)}
+            self.scopes = {}
+            for name in ("alice", "bob"):
+                home = Path(tempfile.mkdtemp(prefix=name + "-", dir=work))
+                for folder in ("input", "output"):
+                    (home / folder).mkdir()
+                self.scopes[name] = dict(org="org1", account="u_" + name, home=str(home),
+                                        input=str(home / "input"), output=str(home / "output"))
+
+        async def request(self, action, data=None, account="alice", **query):
+            raw = json.dumps(data or {}).encode()
+            async def read():
+                return raw
+            req = types.SimpleNamespace(query=query, path=bd.API + "/forge/" + action,
+                content_type="application/json", content_length=len(raw), read=read)
+            mark = bd.set_scope(self.scopes[account])
+            try:
+                response = await self.handlers[action](req)
+                if response.content_type == "application/json":
+                    clean(response.text, "응답")
+                return response
+            finally:
+                bd.reset_scope(mark)
+
+        def count(self, path):
+            return sum(method == "GET" and (p.startswith(path) if path == "/fake-media/" else p == path)
+                       for method, p in self.fake.calls)
+
+    def value(response):
+        return json.loads(response.body)
+
+    def clean(text, where):
+        check(all(s not in text for s in ("dev:alice", "dev:bob", origin, "localhost", "u_alice", "u_bob", "u_teammate")),
+              "I1 토큰·주소·만든 사람 id 0건: " + where)
+
+    async def run():
+        # 1-E: 실제 전송 대역이 받은 요청 수를 먼저 고정한다.
+        rig = Rig()
+        await rig.request("history")
+        check(rig.count("/api/image/history") == 1, "I1 history 한 번 = 원격 1건")
+        await rig.request("history", scope="team")
+        check(rig.count("/api/image/history") == 2, "I1 필터 변경 = 원격 1건")
+        assets = value(await rig.request("assets"))
+        await rig.request("assets", search="시트")
+        check(rig.count("/api/library/assets") == 1, "I1 자료 두 번 = 최초 1건")
+        item = assets["items"][0]
+        q = dict(source="asset", id=item["id"])
+        first = await rig.request("thumb", **q)
+        second = await rig.request("thumb", **q)
+        check(first.status == second.status == 200 and first.body == second.body and rig.count("/fake-media/") == 1,
+              "I1 같은 썸네일 두 번 = 원격 1건")
+        rig.now += 300
+        await rig.request("assets")
+        check(rig.count("/api/library/assets") == 2, "I1 자료 5분 경계 만료")
+        await rig.request("assets", refresh="1")
+        check(rig.count("/api/library/assets") == 3, "I1 새로고침 = 재조회")
+        rig.now += 1500
+        await rig.request("assets")  # 항목 표 수명만 갱신, 썸네일 수명은 늘리지 않는다.
+        await rig.request("thumb", **q)
+        check(rig.count("/fake-media/") == 2, "I1 썸네일 30분 경계 만료")
+        for fault in ({"status": 429}, {"status": 503}, {"delay": .5}):
+            fresh = Rig()
+            fresh.fake.fault = dict(fault, path="/api/image/history", times=1)
+            response = await fresh.request("history")
+            check(response.status == 503 and fresh.count("/api/image/history") == 1,
+                  "I1 목록 실패 뒤 자동 재요청 0 " + str(fault))
+        fresh = Rig()
+        fresh.fake.fault = dict(path="/api/library/assets", delay=.03, times=1)
+        pair = await asyncio.gather(fresh.request("assets"), fresh.request("assets"))
+        check(all(r.status == 200 for r in pair) and fresh.count("/api/library/assets") == 1,
+              "I1 동시 자료 요청은 한 번만 읽음")
+
+        rig = Rig()
+        await rig.client.history("dev:alice", "org1")
+        check(set(rig.fake.query_calls[-1][2]) == {"organization_id", "limit", "view"}, "I1 빈 필터 키 자체 생략")
+        await rig.client.history("dev:alice", "org1", search="[의상]", is_favorite=False)
+        query = rig.fake.query_calls[-1][2]
+        check(query["search"] == [re.escape("[의상]")] and query["is_favorite"] == ["false"], "I1 리터럴 검색·bool 쿼리")
+        mine = value(await rig.request("history"))
+        check(rig.fake.query_calls[-1][2]["user_id"] == ["u_alice"] and all(r["mine"] for r in mine["items"]),
+              "I1 기본 mine = 로그인 계정 id")
+        team = value(await rig.request("history", scope="team"))
+        check("user_id" not in rig.fake.query_calls[-1][2] and any(not r["mine"] for r in team["items"]), "I1 조직 범위는 user_id 없음")
+        studio = value(await rig.request("history", studio="1"))
+        check(len(studio["items"]) == len(mine["items"]) + 1 and len(team["items"]) == len(mine["items"]) + 1,
+              "I1 스튜디오 기본 숨김·토글 포함·팀 결과 포함")
+        check(len(studio["items"]) == 5 and all(r.get("batch") == {"n": 3, "pos": i + 1}
+              for i, r in enumerate(mine["items"][:3])) and "batch" not in mine["items"][-1], "I1 업스케일·배경 제거 제외·묶음 1부터")
+        fav = value(await rig.request("history", fav="1"))
+        check(len(fav["items"]) == 3 and all(r["fav"] for r in fav["items"]), "I1 좋아요 필터")
+        model = value(await rig.request("history", model="dev_model"))
+        check(len(model["items"]) == 1 and model["items"][0]["model"] == "dev_model", "I1 모델 필터")
+        since = dev._stamp(rig.now - 86400)
+        recent = value(await rig.request("history", since=since))
+        check(len(recent["items"]) == 3 and rig.fake.query_calls[-1][2]["date_start"] == [since], "I1 ISO 기간 필터")
+        literal = value(await rig.request("history", search="[의상]"))
+        check(len(literal["items"]) == 4, "I1 괄호 검색은 정규식 아닌 글자 그대로")
+        for bad in ({"scope": "all"}, {"since": "yesterday"}, {"since": "2026-11-18"}, {"model": "m" * 129}):
+            before = rig.count("/api/image/history")
+            check((await rig.request("history", **bad)).status == 400 and rig.count("/api/image/history") == before,
+                  "I1 잘못된 필터는 조회 전 400")
+        check((await rig.request("thumb", source="history", id=mine["items"][0]["id"], size="small")).status == 400,
+              "I1 잘못된 썸네일 크기 400")
+        seed = rig.fake._seed_history("alice")
+        seed[:] = [dict(seed[-1], id="page-" + str(i)) for i in range(45)]
+        page = value(await rig.request("history"))
+        for changes in ({"search": "changed"}, {"scope": "team"}, {"model": "dev_model"}, {"since": since},
+                        {"fav": "1"}, {"studio": "1"}):
+            before = rig.count("/api/image/history")
+            response = await rig.request("history", cursor=page["next"], **changes)
+            check(response.status == 404 and value(response)["reason"] == "forge_stale" and rig.count("/api/image/history") == before,
+                  "I1 이음표는 모든 필터에 묶임")
+        check(len(value(await rig.request("history", cursor=page["next"]))["items"]) == 5, "I1 같은 필터 쪽 넘김")
+        for row in seed:
+            row["prompt"] = P.PROMPT_HEAD + " hidden"
+        before = rig.count("/api/image/history")
+        empty = value(await rig.request("history"))
+        check(not empty["items"] and empty["next"] and rig.count("/api/image/history") == before + 1,
+              "I1 걸러 빈 쪽도 추가 조회 없음")
+
+        rig = Rig()
+        assets = value(await rig.request("assets"))
+        check(len(assets["items"]) == 6 and assets["folders"] == sorted(set(assets["folders"])) and "" not in assets["folders"]
+              and all(len(r["tags"]) == 3 for r in assets["items"]) and not assets["more"], "I1 폴더 고유·정렬·빈 값 제외·태그 최대 3")
+        blocked = [r for r in assets["items"] if r.get("blocked")]
+        check(len(blocked) == 1 and (await rig.request("thumb", source="asset", id=blocked[0]["id"])).status == 404,
+              "I1 허용 밖 주소는 표시하고 전송 전 거절")
+        folder = value(await rig.request("assets", folder="레퍼런스/의상"))
+        check(len(folder["items"]) == 2 and folder["folders"] == assets["folders"]
+              and not value(await rig.request("assets", folder="레퍼런스"))["items"], "I1 폴더는 정확히 일치·전체 폴더 목록 유지")
+        check(len(value(await rig.request("assets", search="costume"))["items"]) == 6 and rig.count("/api/library/assets") == 1,
+              "I1 이름·폴더·태그 검색은 캐시만 사용")
+        await rig.request("assets", account="bob")
+        check(rig.count("/api/library/assets") == 2 and
+              (await rig.request("thumb", account="bob", source="asset", id=assets["items"][0]["id"])).status == 404,
+              "I1 계정별 자료 캐시·ID 격리")
+
+        def many(rig, count):
+            template = rig.fake._account_assets("alice")[0]
+            rig.fake._assets["alice"] = [dict(template, id="asset-" + str(i), name="시트 " + str(i)) for i in range(count)]
+
+        rig = Rig()
+        many(rig, 201)
+        page = value(await rig.request("assets"))
+        check(len(page["items"]) == 60 and page["next"] and rig.count("/api/library/assets") == 2, "I1 201개는 원격 2쪽·화면 60개")
+        total = list(page["items"])
+        tail = page
+        while tail["next"]:
+            tail = value(await rig.request("assets", offset=tail["next"]))
+            total.extend(tail["items"])
+        check(len(total) == 201 and len({r["id"] for r in total}) == 201 and rig.count("/api/library/assets") == 2,
+              "I1 로컬 쪽 넘김은 중복·추가 조회 없음")
+        for changes in ({"search": "시트"}, {"folder": "레퍼런스/의상"}, {"refresh": "1"}):
+            check((await rig.request("assets", offset=page["next"], **changes)).status == 404, "I1 자료 이음표 필터·새로고침에 묶임")
+        page = value(await rig.request("assets"))
+        rig.now += 300
+        check((await rig.request("assets", offset=page["next"])).status == 404, "I1 자료 이음표 TTL 만료")
+        rig.now -= 600
+        before = rig.count("/api/library/assets")
+        await rig.request("assets")
+        check(rig.count("/api/library/assets") == before + 2, "I1 뒤로 간 시계는 자료 캐시 만료")
+        rig = Rig()
+        many(rig, 1001)
+        page = value(await rig.request("assets"))
+        total = len(page["items"])
+        while page["next"]:
+            page = value(await rig.request("assets", offset=page["next"]))
+            total += len(page["items"])
+        check(total == 1000 and page["more"] and rig.count("/api/library/assets") == 5, "I1 1000개·5쪽 상한과 more")
+        for cancel in (False, True):
+            rig = Rig()
+            many(rig, 201)
+            rig.fake.fault = dict(path="/api/library/assets", query={"offset": 200}, times=1,
+                                  **({"delay": .5} if cancel else {"status": 503}))
+            task = asyncio.create_task(rig.request("assets"))
+            if cancel:
+                for _ in range(100):
+                    if rig.count("/api/library/assets") == 2:
+                        break
+                    await asyncio.sleep(.001)
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            else:
+                check((await task).status == 503, "I1 중간 쪽 실패 전파")
+            check(rig.count("/api/library/assets") == 2, "I1 실패·취소 뒤 자동 재요청 없음")
+            rig.fake.fault = None
+            page = value(await rig.request("assets"))
+            check(len(page["items"]) == 60 and rig.count("/api/library/assets") == 4, "I1 반쪽 캐시 없음·취소 잠금 해제")
+
+        rig = Rig()
+        rows = value(await rig.request("history"))["items"]
+        remote = rig.fake._seed_history("alice")[0]["items"]
+        for fault in ({"status": 429}, {"status": 503}, {"delay": .5}):
+            path = urllib.parse.urlsplit(remote[0]["thumbnail_url"]).path
+            rig.fake.fault = dict(fault, path=path, times=1)
+            before = rig.count("/fake-media/")
+            response = await rig.request("thumb", source="history", id=rows[0]["id"])
+            check(response.status == 503 and rig.count("/fake-media/") == before + 1, "I1 썸네일 장애도 추가 요청 없음")
+        path = urllib.parse.urlsplit(remote[0]["result_url"]).path
+        rig.fake._media[path] = ("image/png", png_bytes(np.zeros((1200, 1600, 3), np.uint8)))
+        before = rig.count("/fake-media/")
+        for size, expected in (("large", (1024, 768)), (None, (256, 192))):
+            response = await rig.request("thumb", source="history", id=rows[0]["id"], **({"size": size} if size else {}))
+            with Image.open(io.BytesIO(response.body)) as image:
+                check(image.size == expected and image.format == "PNG", "I1 원본에서 큰 보기·기본 썸네일 크기")
+        check(rig.count("/fake-media/") == before + 2, "I1 큰 보기는 기본 캐시와 분리·각 1건")
+
+        # LRU 개수와 바이트 상한은 실제 그림 응답으로 검증한다.
+        for count, noise in ((501, False), (130, True)):
+            rig = Rig()
+            many(rig, count)
+            if noise:
+                path = urllib.parse.urlsplit(rig.fake._assets["alice"][0]["url"]).path
+                rig.fake._media[path] = ("image/png", png_bytes(np.random.default_rng(42).integers(0, 256, (256, 256, 4), dtype=np.uint8)))
+            rows, page = [], value(await rig.request("assets"))
+            while True:
+                rows.extend(page["items"])
+                if not page["next"]:
+                    break
+                page = value(await rig.request("assets", offset=page["next"]))
+            for index, item in enumerate(rows):
+                if not noise and index == 500:
+                    await rig.request("thumb", source="asset", id=rows[0]["id"])
+                await rig.request("thumb", source="asset", id=item["id"])
+            before = rig.count("/fake-media/")
+            await rig.request("thumb", source="asset", id=rows[-1]["id"])
+            if not noise:
+                await rig.request("thumb", source="asset", id=rows[0]["id"])
+            await rig.request("thumb", source="asset", id=rows[0 if noise else 1]["id"])
+            check(rig.count("/fake-media/") == before + 1, "I1 썸네일 최근 항목 유지·오래된 항목 제거 " + ("32MiB" if noise else "500개"))
+
+        rig = Rig()
+        rows = value(await rig.request("history"))["items"]
+        ids = [r["id"] for r in rows[:3]]
+        created = await rig.request("import", dict(into="target", source="history", id=ids[0], name="출처_시험"))
+        check(created.status == 200 and set(value(created)) == {"key", "name", "notes"}, "I1 타깃 한 장 기존 요청·응답 " + repr(value(created)))
+        key = value(created)["key"]
+        root = Path(store.project_root(rig.scopes["alice"]["input"], "출처_시험"))
+        body = dict(into="refs", source="history", root=key, ids=ids)
+        before_records = {p.name: p.read_bytes() for p in (root / store.MANIFEST_NAME, root / "pipeline.json")}
+        with patch.object(rig.accounts, "ensure_access", wraps=rig.accounts.ensure_access) as access:
+            result = value(await rig.request("import", body))
+            check(len(result["done"]) == 3 and not result["failed"] and access.call_count == 3, "I1 여러 장 순서대로 성공·장마다 권한 확인")
+        check(all(root.joinpath(p).read_bytes() == raw for p, raw in before_records.items()), "I1 출처는 매니페스트·pipeline 바이트에 영향 없음")
+        for sidecar in root.rglob("*.forge.json"):
+            text = sidecar.read_text(encoding="utf-8")
+            clean(text, "사이드카")
+            source = json.loads(text)
+            check(source["schema"] == "dp-forge-source/1" and source["source"] == "history" and source.get("id")
+                  and source.get("imported_at") and "created_by" not in source, "I1 사이드카 필드·원본 id")
+        check(len(list(root.glob("*.psd.forge.json"))) == 1 and len(list((root / "_source").glob("*.forge.json"))) == 1,
+              "I1 현재 타깃 PSD·보존한 원본 양쪽 출처")
+        mark = bd.set_scope(rig.scopes["alice"])
+        try:
+            sheets = bd.ref_sheets(str(root))
+            check(all("forge" in row for row in sheets if row["path"].startswith("sheets/"))
+                  and all(not row["path"].endswith(".forge.json") and "id" not in row.get("forge", {}) for row in sheets),
+                  "I1 시트 행 forge·id 없음·사이드카를 그림으로 세지 않음")
+            response = await bd.pipeline_handler(types.SimpleNamespace(query={"root": key}))
+            check(value(response)["target_forge"]["source"] == "history" and "id" not in value(response)["target_forge"],
+                  "I1 pipeline 최상위 target_forge")
+            with patch.object(bd, "server_mode", return_value=False):
+                check(all("forge" not in row for row in bd.ref_sheets(str(root))), "I1 로컬 시트 응답에 forge 없음")
+                response = await bd.pipeline_handler(types.SimpleNamespace(query={"root": key}))
+                check("target_forge" not in value(response), "I1 로컬 pipeline 응답 불변")
+                bd._write_forge_source(str(root), "local.png", dict(schema="dp-forge-source/1", source="asset", imported_at=dev._stamp(rig.now)))
+                check(not root.joinpath("local.png.forge.json").exists(), "I1 로컬 모드 출처 쓰기 없음")
+            source_path = root / (result["done"][0]["sheet"] + ".forge.json")
+            original_source = source_path.read_bytes()
+            for invalid in ([], {"schema": "unknown", "source": "asset"},
+                            {"schema": "dp-forge-source/1", "source": "asset", "imported_at": "invalid"}):
+                source_path.write_text(json.dumps(invalid), encoding="utf-8")
+                check(bd._read_forge_source(str(root), result["done"][0]["sheet"]) is None, "I1 잘못된 출처 형식 무시")
+            source_path.write_bytes(original_source)
+        finally:
+            bd.reset_scope(mark)
+        result = value(await rig.request("import", dict(body, ids=[ids[0], "missing", ids[2]])))
+        check([r["id"] for r in result["done"]] == [ids[0], ids[2]] and result["failed"][0]["id"] == "missing",
+              "I1 가운데 오래된 장만 실패·뒤 장 진행")
+        remote = rig.fake._seed_history("alice")[0]["items"]
+        rig.fake.fault = dict(path=urllib.parse.urlsplit(remote[1]["result_url"]).path, times=1, status=503)
+        before = rig.count("/fake-media/")
+        result = value(await rig.request("import", body))
+        check(len(result["done"]) == 1 and [r["id"] for r in result["failed"]] == ids[1:]
+              and result["failed"][-1]["error"].startswith("앞선 실패") and rig.count("/fake-media/") == before + 2,
+              "I1 가운데 5xx는 남은 장 중단·추가 요청 없음")
+        for bad in (dict(body, ids=[]), dict(body, ids=[str(i) for i in range(9)]), dict(body, ids=[ids[0]] * 2),
+                    dict(body, into="target"), dict(body, id=ids[0]), dict(body, ids=[None])):
+            check((await rig.request("import", bad)).status == 400, "I1 ids 0·9·중복·target·id 혼합·타입 검사")
+        with patch.object(rig.accounts, "ensure_access", side_effect=[None, fg.ForgeError("unauthorized", 401)]):
+            result = value(await rig.request("import", body))
+            check(len(result["done"]) == 1 and len(result["failed"]) == 2, "I1 일부 성공 뒤 권한 오류는 200·남은 장 실패")
+        with patch.object(rig.accounts, "ensure_access", side_effect=fg.ForgeError("forbidden", 403)):
+            check((await rig.request("import", body)).status == 403, "I1 성공 전 권한 오류는 기존 403")
+
+        asset = value(await rig.request("assets"))["items"][0]
+        original = rig.fake._assets["alice"][0]
+        new_path = "/fake-media/renewed.png"
+        png = png_bytes(np.full((256, 256, 3), 93, np.uint8))
+        rig.fake._media[new_path] = ("image/png", png)
+        original.update(url=origin + new_path, thumbnail_url=origin + new_path)
+        rig.now += 300
+        before = rig.count("/api/library/assets")
+        result = value(await rig.request("import", dict(into="refs", source="asset", id=asset["id"], root=key)))
+        check(root.joinpath(result["sheet"]).read_bytes() == png and rig.count("/api/library/assets") == before + 1,
+              "I1 오래된 자료 import는 목록 갱신 후 새 주소 사용")
+        source = json.loads(root.joinpath(result["sheet"] + ".forge.json").read_text(encoding="utf-8"))
+        check(source["source"] == "asset" and source["name"] == original["name"] and source["folder"] == original["folder_path"],
+              "I1 자료 출처 이름·폴더")
+        rig.fake._assets["alice"].remove(original)
+        rig.now += 300
+        check((await rig.request("thumb", source="asset", id=asset["id"], size="large")).status == 404,
+              "I1 재조회에서 사라진 자료는 오래된 URL로 받지 않음")
+
+        replace = bd.os.replace
+        def fail_sidecar(src, dst):
+            if str(dst).endswith(".forge.json"):
+                raise OSError("synthetic sidecar failure")
+            return replace(src, dst)
+        with patch.object(bd.os, "replace", side_effect=fail_sidecar):
+            response = await rig.request("import", dict(body, ids=[ids[0]]))
+        result = value(response)
+        check(response.status == 200 and len(result["done"]) == 1 and not result["failed"]
+              and not list(root.rglob(".forge-*.tmp")), "I1 사이드카 쓰기 실패도 성공·임시 파일 정리")
+
+        # 원격 표시 문자열 자체에 비밀이 섞여 있어도 새 필드·파일명·출처에 남지 않는다.
+        rig = Rig()
+        seed = rig.fake._seed_history("alice")[-1]
+        dirty = "dev:alice " + origin + "/private localhost u_alice u_teammate " + "글" * 400
+        seed.update(prompt=dirty, model_used=dirty)
+        history = value(await rig.request("history"))
+        check(all(len(r["prompt"]) <= 300 for r in history["items"]), "I1 표시 프롬프트 상한")
+        response = await rig.request("import", dict(into="target", source="history", id=history["items"][-1]["id"], name="가림_시험"))
+        check(response.status == 200, "I1 가린 프롬프트로 타깃 가져오기")
+        for sidecar in Path(rig.scopes["alice"]["input"]).rglob("*.forge.json"):
+            clean(sidecar.read_text(encoding="utf-8"), "오염된 출처")
+        check(all(s not in repr(rig.fake.query_calls) for s in ("dev:alice", "dev:bob", "Authorization")), "I1 개발 요청 기록 토큰 없음")
+
+    log = io.StringIO()
+    handler = logging.StreamHandler(log)
+    fg.logger.addHandler(handler)
+    bd.logger.addHandler(handler)
+    try:
+        with patch.dict(os.environ, {bd.SERVER_ENV: "1"}):
+            asyncio.run(run())
+        clean(log.getvalue(), "로그")
+    finally:
+        fg.logger.removeHandler(handler)
+        bd.logger.removeHandler(handler)
 
 
 def forge_import1_js_unit():

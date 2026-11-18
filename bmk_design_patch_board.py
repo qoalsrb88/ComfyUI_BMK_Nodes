@@ -4347,6 +4347,9 @@ def ref_sheets(root: str) -> list[dict]:
     for s in out:
         s["v"] = drefs.sheet_sig(root, s["path"])
         s["preview_url"] = "refs/sheet?" + urlencode({"root": rk, "sheet": s["path"], "kind": "preview", "v": s["v"]})
+        source = _read_forge_source(root, s["path"])
+        if source:
+            s["forge"] = source
     return out
 
 
@@ -7104,8 +7107,14 @@ async def pipeline_handler(request: web.Request) -> web.StreamResponse:
             prepare = pl.validate_section("prepare", json.loads(prepare))
         except (ValueError, TypeError) as e:
             raise _Reject(400, str(e)) from e
-    return _json(await asyncio.to_thread(pl.view, root, switch_prepare=prepare,
-                                        import_pending=_import_pending if prepare is not None else None))
+    result = await asyncio.to_thread(pl.view, root, switch_prepare=prepare,
+                                    import_pending=_import_pending if prepare is not None else None)
+    if server_mode():
+        settings = result.get("settings") or result.get("derived", {}).get("settings") or {}
+        source = await asyncio.to_thread(_read_forge_source, root, settings.get("import", {}).get("psd_path"))
+        if source:
+            result["target_forge"] = source
+    return _json(result)
 
 
 @_guard
@@ -7861,7 +7870,81 @@ async def refs_pool_post_handler(request: web.Request) -> web.StreamResponse:
     return _json(await _pool_route(ref_pool, root, None if data.get("op") == "sheet_add" else _refs_rev(data), data.get("op"), data))
 
 
-async def import_received(data: dict, raw: bytes, filename: str) -> web.StreamResponse:
+def _forge_source(value):
+    """출처 사이드카의 허용 키만 읽는다. 로컬 모드에서는 파일조차 열지 않는다."""
+    if (not server_mode() or not isinstance(value, dict) or value.get("schema") != "dp-forge-source/1"
+            or value.get("source") not in ("history", "asset")):
+        return None
+    from datetime import datetime
+    try:
+        imported = datetime.fromisoformat(value["imported_at"].replace("Z", "+00:00"))
+        if imported.tzinfo is None:
+            return None
+    except (KeyError, AttributeError, TypeError, ValueError):
+        return None
+    try:
+        from .bmk_design_patch_forge import display
+    except ImportError:
+        from bmk_design_patch_forge import display
+    scope = current_scope() or {}
+    result = {"schema": value["schema"], "source": value["source"]}
+    for key in ("prompt", "model", "created", "name", "folder", "imported_at", "id"):
+        text = value.get(key)
+        if text is not None and not isinstance(text, str):
+            return None
+        # Forge 라우트가 토큰·origin·작성자 값을 가린 재료만 넘긴다. 읽을 때도 같은 표시 규칙과 키 제한을 적용한다.
+        cleaned = display(text, size=300 if key == "prompt" else 512 if key == "folder" else 128,
+                          hidden=(scope.get("account"), scope.get("org")))
+        if key == "id" and (not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", cleaned) or cleaned != text):
+            continue
+        if cleaned:
+            result[key] = cleaned
+    return result
+
+
+def _read_forge_source(root, image):
+    if not server_mode() or not isinstance(image, str) or not image:
+        return None
+    try:
+        path = os.path.realpath(os.path.join(root, image))
+        if os.path.commonpath([os.path.realpath(root), path]) != os.path.realpath(root):
+            return None
+        path += ".forge.json"
+        if _is_link(path) or os.path.getsize(path) > 16384:
+            return None
+        with open(path, encoding="utf-8") as file:
+            result = _forge_source(json.load(file))
+        return {k: v for k, v in result.items() if k not in ("schema", "id")} if result else None
+    except (OSError, ValueError, TypeError, RecursionError):
+        return None
+
+
+def _write_forge_source(root, image, source):
+    part = None
+    try:
+        source = _forge_source(source)
+        if not source:
+            return
+        path = store.resolve_path(root, image) + ".forge.json"
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=os.path.dirname(path),
+                                         prefix=".forge-", suffix=".tmp", delete=False) as file:
+            part = file.name
+            json.dump(source, file, ensure_ascii=False, indent=2)
+            file.write("\n")
+        os.replace(part, path)
+    except Exception:
+        # 출처 기록 실패가 이미 저장한 그림의 성공을 뒤집지 않는다. 경로·예외 문구는 남기지 않는다.
+        logger.warning("Forge 출처 기록을 저장하지 못했습니다.")
+    finally:
+        if part:
+            try:
+                os.unlink(part)
+            except OSError:
+                pass
+
+
+async def import_received(data: dict, raw: bytes, filename: str, source=None) -> web.StreamResponse:
     """Forge 바이트도 기존 업로드 처리기로 보낸다. 검증·잠금·임시 파일 정리·응답은 파일 업로드와 같다."""
     from types import SimpleNamespace
 
@@ -7876,7 +7959,22 @@ async def import_received(data: dict, raw: bytes, filename: str) -> web.StreamRe
     request = SimpleNamespace(query=query, content=Content(), content_length=len(raw),
                               content_type="application/octet-stream", headers={"Content-Type": "application/octet-stream"},
                               path=API + ("/projects/new" if target else "/refs/pool"))
-    return await (projects_new_handler(request) if target else refs_pool_post_handler(request))
+    response = await (projects_new_handler(request) if target else refs_pool_post_handler(request))
+    if source is not None and server_mode() and response.status < 400:
+        def record():
+            try:
+                result = json.loads(response.body)
+                root = _root_param(result["key"] if target else data.get("root"))
+                if target:
+                    image = pl.current(root)["settings"]["import"]["psd_path"]
+                    _write_forge_source(root, os.path.relpath(image, root), source)
+                    _write_forge_source(root, "_source/" + filename, source)
+                else:
+                    _write_forge_source(root, result["sheet"], source)
+            except Exception:
+                logger.warning("Forge 출처 기록을 저장하지 못했습니다.")
+        await _project_new_thread(record)
+    return response
 
 
 _ROUTES = (
