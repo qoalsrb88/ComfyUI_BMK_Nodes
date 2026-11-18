@@ -347,7 +347,7 @@
           "created_by": "u_alice",
           "is_favorite": true,
           "batch_id": "9c0d1e2f-0000-4000-8000-000000000001",
-          "batch_position": 1
+          "batch_position": 0
         },
         {
           "id": "9c0d1e2f-0000-4000-8000-000000000002",
@@ -368,7 +368,7 @@
               "is_favorite": true,
               "generation_type": "generate",
               "batch_id": "9c0d1e2f-0000-4000-8000-000000000002",
-              "batch_position": 1
+              "batch_position": 0
             },
             {
               "id": "9c0d1e2f-0000-4000-8000-000000000002:1",
@@ -381,7 +381,7 @@
               "is_favorite": true,
               "generation_type": "generate",
               "batch_id": "9c0d1e2f-0000-4000-8000-000000000002",
-              "batch_position": 2
+              "batch_position": 1
             }
           ],
           "created_by": "u_alice",

@@ -64025,7 +64025,9 @@ def forge_import1_server_unit():
         # 원격 표시 문자열 자체에 비밀이 섞여 있어도 새 필드·파일명·출처에 남지 않는다.
         rig = Rig()
         seed = rig.fake._seed_history("alice")[-1]
-        dirty = "dev:alice " + origin + "/private localhost u_alice u_teammate " + "글" * 400
+        # 가릴 수 있는 것은 서버가 아는 값이다 — 토큰·Forge 주소·로그인 계정 id·그 항목을 만든 사람 id.
+        # (글 속의 다른 사람 id 꼴 글자는 값으로 알 수 없다 — 만든 사람 값이 필드로 나가지 않는지는 위에서 본다.)
+        dirty = "dev:alice " + origin + "/private localhost u_alice " + "글" * 400
         seed.update(prompt=dirty, model_used=dirty)
         history = value(await rig.request("history"))
         check(all(len(r["prompt"]) <= 300 for r in history["items"]), "I1 표시 프롬프트 상한")
@@ -64034,6 +64036,11 @@ def forge_import1_server_unit():
         for sidecar in Path(rig.scopes["alice"]["input"]).rglob("*.forge.json"):
             clean(sidecar.read_text(encoding="utf-8"), "오염된 출처")
         check(all(s not in repr(rig.fake.query_calls) for s in ("dev:alice", "dev:bob", "Authorization")), "I1 개발 요청 기록 토큰 없음")
+        # 프롬프트 틀의 첫 줄 상수 = render() 가 실제로 내는 첫 줄(스튜디오 조각 판별이 이 상수를 쓴다).
+        check('lines = ["' + P.PROMPT_HEAD + '", *legend, ""]' in inspect.getsource(P.render),
+              "I1 PROMPT_HEAD 가 render 의 첫 줄과 같음")
+        # 가림은 개발용 계정 꼴(u_…)을 통째로 지우지 않는다 — 아는 값만 지운다.
+        check(fg.display("u_shape 치마 u_alice", hidden=("u_alice",)) == "u_shape 치마 ", "I1 가림은 아는 값만")
 
     log = io.StringIO()
     handler = logging.StreamHandler(log)

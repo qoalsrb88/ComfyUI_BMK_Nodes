@@ -7925,7 +7925,10 @@ def _write_forge_source(root, image, source):
         source = _forge_source(source)
         if not source:
             return
-        path = store.resolve_path(root, image) + ".forge.json"
+        path = store.resolve_path(root, image)
+        if not os.path.isfile(path) or _is_link(path):
+            return
+        path += ".forge.json"
         import tempfile
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=os.path.dirname(path),
                                          prefix=".forge-", suffix=".tmp", delete=False) as file:
