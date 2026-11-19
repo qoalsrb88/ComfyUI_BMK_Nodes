@@ -2420,11 +2420,15 @@ def node_integration(psd05, crops03):
         named = [n for n, p in sig.items() if p.kind != p.VAR_KEYWORD]  # 유료 노드의 **_stale(옛 워크플로의 없는 입력)은 뺀다
         # Prepare 의 해상도·추론 입력은 서버 모드에서만 노드 입력으로 보인다(로컬판의 노드 위젯은 그대로) — 함수 인자에는 늘 있다
         server_only = ["image_size", "thinking_level"] if nid == "BMKDesignPatchPrepare" else []
+        if server_only:  # 로컬판의 입력은 서버 모드 표지를 끈 채로 읽는다(시험을 서버 모드 환경에서 돌려도 같은 판정)
+            from unittest.mock import patch as _patch
+            with _patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}):
+                local = cls.INPUT_TYPES()
+            req, optional, hidden = local["required"], list(local.get("optional") or {}), list(local.get("hidden") or {})
         check(list(req) + optional + hidden == [n for n in named[1:] if n not in server_only]
               and all(sig[o].default is not inspect.Parameter.empty for o in optional + server_only),
               f"{nid} 입력 이름(+optional 기본값 있음 +hidden) = 함수 인자")
         if server_only:
-            from unittest.mock import patch as _patch
             with _patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
                 served = cls.INPUT_TYPES()
             check(list(served["required"]) + list(served.get("optional") or {}) + list(served.get("hidden") or {}) == named[1:]
