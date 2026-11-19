@@ -60379,6 +60379,172 @@ def ux_v2a_assist_unit():
 
 
 
+def ux_v2a_body_unit():
+    """UX v2-A 프롬프트 재료(명세 D495·D498·D500–D509) — 스펙 _v2 읽기·쓰기, 입력 해시, 경로 판정, 본문 경로 조립. --quick 포함."""
+    section("UX v2-A — 프롬프트 재료 · 본문 경로 (ux_v2a_body_unit)")
+    import tempfile
+    import bmk_design_patch_prompt as dp
+    import bmk_design_patch_store as st
+
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(tempfile.mkdtemp(prefix="ux_v2a_body_", dir=OUT_ROOT.resolve()))
+    for name, data in (("ref_a.png", b"ref-a"), ("ref_b.png", b"ref-b"), ("guide.png", b"guide")):
+        (out / name).write_bytes(data)
+    ra, rb = str(out / "ref_a.png"), str(out / "ref_b.png")
+    single = {"crop_id": "001_aa", "canvas": "crops/001.png", "guide": None, "before_paste": None, "ref_style": "at", "style_note": "",
+              "preserve": ["the face"], "notes": "keep it small", "targets": [
+                  {"id": "A", "name": "gold shoulder ornament", "mode": "ref_correct", "refs": [ra], "detail": "its shape and colors"}]}
+    multi = {"crop_id": "002_bb", "canvas": "crops/002.png", "guide": "guide.png", "before_paste": None, "ref_style": "at", "style_note": "",
+             "preserve": [], "notes": "", "targets": [
+                 {"id": "A", "name": "hair clip", "mode": "sketch_guide", "refs": [ra], "detail": "its shape", "guide_color": "green"},
+                 {"id": "B", "name": "ribbon", "mode": "ref_correct", "refs": [rb, ra], "detail": "its color"}]}
+    lone = {"crop_id": "003_cc", "canvas": "crops/003.png", "guide": None, "before_paste": None, "ref_style": "at", "style_note": "",
+            "preserve": [], "notes": "", "targets": [{"id": "A", "name": "sleeve", "mode": "self_restore", "refs": []}]}
+
+    # ── 판·이름(생성 조건 키의 재료 — 바꾸면 같은 글이 다시 과금 대상이 된다)
+    check((dp.TEMPLATE_VERSION, dp.BODY_TEMPLATE, dp.BODY_VARIANT, dp.BODY_HEAD, dp.ASSIST_VERSION, dp.V2_KEY)
+          == ("dp-prompt/1", "dp-body/1", "B1_body", "Request:", "dp-assist/1", "_v2"), "V2B 판·이름 고정")
+    check(dp.PURPOSES == ("correct", "add", "remove", "vary", "detail") and dp.BODY_ONLY_PURPOSES == ("remove", "vary", "detail"),
+          "V2B 목적 5종·본문 전용 3종")
+
+    # ── 본문 경로 조립: 틀은 render 의 것, Target…Integration 만 바뀜
+    for label, spec in (("단일", single), ("다중·가이드", multi), ("레퍼런스 없음", lone)):
+        base = dp.render(spec)
+        lines = base["prompt"].split("\n")
+        start = next(i for i, line in enumerate(lines) if line in ("Target:", "Targets (change only these):"))
+        end = next(i for i, line in enumerate(lines) if line.startswith("Preserve: "))
+        body = "Correct the ornament in @image1." if spec is lone else "Correct the ornament in @image1 to match @image2.\nKeep its size."
+        got = dp.render_body(spec, "  " + body.replace("\n", "\r\n") + "\n\n")
+        want = "\n".join(lines[:start] + ["Request:", body] + lines[end:])
+        check(got["prompt"] == want and got["images"] == base["images"] and got["legend"] == base["legend"], f"V2B 본문 경로 조립({label})")
+        check(got["prompt"].startswith(dp.PROMPT_HEAD + "\n") and "Integration:" not in got["prompt"] and "\nCanvas: " in got["prompt"]
+              and got["prompt"].count("Request:") == 1, f"V2B 틀 유지·Integration 줄 없음({label})")
+        check(dp.render(spec) == base, f"V2B 조립이 템플릿 렌더를 바꾸지 않음({label})")
+    whole = dp.render_body(single, "Correct the ornament in @image1 to match @image2.")["prompt"]
+    check(whole == "\n".join([
+        "Input images, in upload order:",
+        "- @image1: the canvas: a crop of a finished illustration. This is the image to edit.",
+        "- @image2: design reference for the target.",
+        "",
+        "Canvas: Edit @image1 and output only its finished edit. Keep @image1's framing, composition, and aspect ratio exactly, so every"
+        " unchanged area stays aligned with it. Use the other images only as described here; never take their framing, backgrounds, or"
+        " unrelated content.",
+        "Request:",
+        "Correct the ornament in @image1 to match @image2.",
+        "Preserve: Leave everything outside the target as it is in @image1, especially the face. Do not re-line, sharpen, smooth, recolor,"
+        " or restyle untouched areas; keep the overall brightness, saturation, and color temperature; add no other objects. Around the"
+        " target, adjust only the edges, overlaps, and contact shadows needed to blend it in.",
+        "Notes: keep it small"]), "V2B 본문 경로 전체 글(글자 그대로)")
+    check(st.cell_key("gpt-image-2.5-sunburst", "high", [1024, 1024], "opaque", whole, ["a" * 64, "b" * 64], dp.BODY_TEMPLATE, dp.BODY_VARIANT)
+          != st.cell_key("gpt-image-2.5-sunburst", "high", [1024, 1024], "opaque", whole, ["a" * 64, "b" * 64], dp.TEMPLATE_VERSION, "V1_standard"),
+          "V2B 같은 글이어도 본문 경로의 키는 템플릿 경로와 다름(template·variant 칸)")
+    for bad, label in (("", "빈 본문"), ("   \n", "공백뿐"), ("Use @image3.", "없는 그림 번호"), ("Use @image0.", "0번"),
+                       ("Use Image 2.", "Image N 꼴"), ("x" * 4001, "너무 김"), ("see https://example.com/a", "주소"),
+                       ("a\x07b", "제어 문자"), ("open C:\\temp\\a.png", "경로")):
+        try:
+            dp.render_body(single, bad)
+            check(False, f"V2B 본문 거절: {label}")
+        except ValueError:
+            check(True, f"V2B 본문 거절: {label}")
+    check(dp.body_problem("Use @image2 and @image1.", 2) is None and dp.body_problem("Use @image2.", None) is None
+          and dp.body_problem("Use @image2.", 1) is not None and dp.body_problem(3) is not None, "V2B body_problem 그림 수 대조")
+    check(dp.text_problem("오른쪽 어깨 금장을 @참조1 처럼 1:1 비율로 보정", dp.INSTRUCTION_MAX, "지시문") is None
+          and dp.text_problem("", dp.INSTRUCTION_MAX, "지시문") is None and dp.text_problem("x" * 2001, dp.INSTRUCTION_MAX, "지시문")
+          and dp.text_problem("서버 10.20.30.40 참고", dp.INSTRUCTION_MAX, "지시문") and dp.text_problem(None, 10, "지시문"), "V2B 지시문 점검")
+
+    # ── _v2 읽기·쓰기
+    check(dp.v2_of(None) is None and dp.v2_of({}) is None and dp.v2_of({"targets": []}) is None, "V2B _v2 없음 → None")
+    check("invalid" in dp.v2_of({"_v2": 3}) and "invalid" in dp.v2_of({"_v2": {"purpose": "paint"}})
+          and "invalid" in dp.v2_of({"_v2": {"ai_auto": 1}}) and "invalid" in dp.v2_of({"_v2": {"prompt": {"source": "x", "body_en": "a", "input_hash": "h"}}})
+          and "invalid" in dp.v2_of({"_v2": {"prompt": "text"}}), "V2B 잘못된 _v2 는 invalid")
+    check(dp.v2_of({"_v2": {}}) == {"purpose": "correct", "user_instruction_ko": "", "ai_auto": True, "prompt": None}, "V2B _v2 기본값")
+    base_ov = {"_layer_targets": "A: 금장", "targets": [{"id": "A", "detail": "x"}], "_draft": {"key": "k"}}
+    before = json.dumps(base_ov, ensure_ascii=False)
+    one = dp.v2_update(base_ov, purpose="remove", user_instruction_ko="  끈을 지워줘  ")
+    check(json.dumps(base_ov, ensure_ascii=False) == before, "V2B v2_update 는 입력을 바꾸지 않음")
+    check(list(one) == ["_layer_targets", "targets", "_v2", "_draft"] and one["_v2"] == {"purpose": "remove", "user_instruction_ko": "끈을 지워줘", "ai_auto": True},
+          "V2B _v2 는 _draft 앞·있는 필드만")
+    written = {"source": "assist", "body_en": "Remove the strap in @image1.", "summary_ko": "끈을 지웁니다.", "input_hash": "h" * 24}
+    two = dp.v2_update(one, prompt=written)
+    check(two["_v2"]["prompt"] == written and two["_v2"]["prompt"] is not written and dp.v2_update(two)["_v2"] == two["_v2"], "V2B 글 저장·그대로 두기")
+    back = dp.v2_update(dp.v2_update(two, prompt=None), purpose="correct", user_instruction_ko="")
+    check(json.dumps(back, ensure_ascii=False) == before, "V2B 지시를 썼다가 모두 지우면 스펙이 처음과 같음(바이트)")
+    check(dp.v2_update(None, ai_auto=False) == {"_v2": {"purpose": "correct", "ai_auto": False}} and dp.v2_update({}, purpose="add") == {"_v2": {"purpose": "add", "ai_auto": True}},
+          "V2B 기본이 아닌 값 하나만 있어도 남김")
+    for kwargs in ({"purpose": "paint"}, {"ai_auto": "yes"}, {"user_instruction_ko": 3}, {"prompt": {"source": "assist"}}):
+        try:
+            dp.v2_update({}, **kwargs)
+            check(False, f"V2B v2_update 거절: {kwargs}")
+        except ValueError:
+            check(True, f"V2B v2_update 거절: {kwargs}")
+    check(dp.spec_from_manifest({"id": "001_aa", "name": "001_aa", "source": "crops/001.png", "targets": [{"tid": "A", "name_en": "ornament", "mode": "self_restore"}]},
+                                None, "", {}, two)["warnings"] == dp.spec_from_manifest({"id": "001_aa", "name": "001_aa", "source": "crops/001.png", "targets": [{"tid": "A", "name_en": "ornament", "mode": "self_restore"}]},
+                                None, "", {}, {k: v for k, v in two.items() if k != "_v2"})["warnings"], "V2B spec_from_manifest 는 _v2 를 조용히 무시(경고 없음)")
+
+    # ── 레퍼런스 구성·입력 해시
+    roles = dp.v2_roles(multi, str(out))
+    sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+    check(roles == [["guide", sha(b"guide")], ["ref", sha(b"ref-a")], ["ref", sha(b"ref-b")]], f"V2B 레퍼런스 구성 = 업로드 순서의 역할·지문(크롭 제외): {roles}")
+    check(dp.v2_roles(lone, str(out)) == [] and dp.v2_roles({**single, "targets": [{**single["targets"][0], "refs": [str(out / "none.png")]}]})
+          == [["ref", "missing"]], "V2B 레퍼런스 없음·없는 파일")
+    (out / "ref_a.png").write_bytes(b"ref-a2")
+    check(dp.v2_roles(single)[0][1] == sha(b"ref-a2"), "V2B 파일이 바뀌면 지문이 바뀜(기억값 무효)")
+    (out / "ref_a.png").write_bytes(b"ref-a")
+    v = dp.v2_of(one)
+    r1 = [["ref", "s1"]]
+    h = dp.v2_input_hash(v, "gpt-image-2.6-sunburst", r1)
+    check(h == "c47c44f9224187fa140eb2e1", f"V2B 입력 해시 고정값(재료·직렬화를 바꾸면 저장된 작성본이 모두 낡는다): {h}")
+    check(h == dp.v2_input_hash(dict(v, ai_auto=False, prompt=written), "gpt-image-2.6-sunburst", [("ref", "s1")]), "V2B 입력 해시는 AI 자동 여부·저장된 글과 무관")
+    differs = [dp.v2_input_hash(dict(v, purpose="vary"), "gpt-image-2.6-sunburst", r1), dp.v2_input_hash(dict(v, user_instruction_ko="끈을 지워"), "gpt-image-2.6-sunburst", r1),
+               dp.v2_input_hash(v, "seedream-5.5", r1), dp.v2_input_hash(v, "gpt-image-2.6-sunburst", [["ref", "s2"]]),
+               dp.v2_input_hash(v, "gpt-image-2.6-sunburst", [["guide", "s1"]]), dp.v2_input_hash(v, "gpt-image-2.6-sunburst", r1 + r1)]
+    check(len({h, *differs}) == 7, "V2B 목적·지시문·모델·레퍼런스(지문·역할·수)가 바뀌면 해시가 바뀜")
+    hm = dp.v2_input_hash(v, "gpt-image-2.6-sunburst", r1, manual=True)
+    check(hm != h and hm == dp.v2_input_hash(dict(v, purpose="vary", user_instruction_ko="다른 말"), "seedream-5.5", r1, manual=True)
+          and hm != dp.v2_input_hash(v, "seedream-5.5", [["ref", "s2"]], manual=True), "V2B 직접 입력 글의 해시는 레퍼런스 구성만")
+    check(hm == "233ae62442850832ddb40fd1", f"V2B 직접 입력 글의 해시 고정값: {hm}")
+
+    # ── 경로 판정
+    M = "gpt-image-2.6-sunburst"
+
+    def state(v2, roles=r1, count=2):
+        return dp.v2_state(v2, M, roles, count)
+
+    def with_prompt(v2, source, hash_value=None, body="Remove the strap in @image1."):
+        hv = hash_value or dp.v2_input_hash(v2, M, r1, manual=source == "manual")
+        return dict(v2, prompt={"source": source, "body_en": body, "summary_ko": "", "input_hash": hv})
+
+    check(dp.v2_state(None, M, r1) == {"state": "template", "why": None, "body": None, "source": None, "input_hash": None}, "V2B _v2 없음 → 템플릿")
+    plain = {"purpose": "correct", "user_instruction_ko": "", "ai_auto": True, "prompt": None}
+    check(state(plain)["state"] == "template" and state(dict(plain, purpose="add"))["state"] == "template"
+          and state(dict(plain, ai_auto=False))["state"] == "template", "V2B 지시문 없는 correct·add → 템플릿")
+    for purpose in dp.BODY_ONLY_PURPOSES:
+        got = state(dict(plain, purpose=purpose))
+        check(got["state"] == "blocked" and "프롬프트가 없습니다" in got["why"] and got["body"] is None, f"V2B {purpose} 는 글이 없으면 작업 없음")
+    told = dict(plain, user_instruction_ko="금장을 보정")
+    check(state(told)["state"] == "blocked" and state(dict(told, purpose="add"))["state"] == "blocked", "V2B 지시문이 있는데 글이 없으면 작업 없음")
+    check("직접 입력" in state(dict(told, ai_auto=False))["why"], "V2B AI 자동 꺼짐 + 글 없음 → 직접 입력 안내")
+    ok = state(with_prompt(told, "assist"))
+    check(ok == {"state": "body", "why": None, "body": "Remove the strap in @image1.", "source": "assist", "input_hash": dp.v2_input_hash(told, M, r1)},
+          "V2B AI 작성본(입력 그대로) → 본문 경로")
+    check(state(with_prompt(told, "assist", body="  a @image1\r\nb  "))["body"] == "a @image1\nb", "V2B 본문 줄바꿈·앞뒤 공백 정리")
+    stale = with_prompt(told, "assist")
+    check(state(dict(stale, user_instruction_ko="금장을 지워"))["state"] == "blocked" and "낡았습니다" in state(dict(stale, user_instruction_ko="금장을 지워"))["why"]
+          and state(dict(stale, purpose="vary"))["state"] == "blocked" and state(stale, roles=[["ref", "s2"]])["state"] == "blocked"
+          and dp.v2_state(stale, "seedream-5.5", r1, 2)["state"] == "blocked", "V2B 지시·목적·레퍼런스·모델이 바뀌면 작성본은 낡음 → 작업 없음")
+    check(state(dict(stale, ai_auto=False))["state"] == "blocked" and "직접 입력" in state(dict(stale, ai_auto=False))["why"], "V2B AI 자동을 끄면 AI 작성본은 쓰지 않음")
+    man = with_prompt(dict(told, ai_auto=False), "manual")
+    check(state(man)["state"] == "body" and state(man)["source"] == "manual" and state(dict(man, ai_auto=True))["state"] == "body"
+          and state(dict(man, user_instruction_ko="다른 지시", purpose="vary"))["state"] == "body", "V2B 직접 입력 글은 지시·목적이 바뀌어도 유효")
+    check(state(man, roles=[["ref", "s2"]])["state"] == "blocked" and "그림 번호" in state(man, roles=[["ref", "s2"]])["why"], "V2B 직접 입력 글도 레퍼런스 구성이 바뀌면 다시 확인")
+    check(state(with_prompt(told, "assist", body="Use @image3."))["state"] == "blocked" and state(with_prompt(told, "assist", body="Use @image3."), count=3)["state"] == "body"
+          and state(with_prompt(told, "assist", body="Use @image3."), count=None)["state"] == "body", "V2B 그림 번호가 그림 수를 넘으면 작업 없음(수를 줄 때만 대조)")
+    gone = with_prompt(plain, "manual")
+    check(state(gone)["state"] == "body" and state(gone, roles=[])["state"] == "blocked", "V2B 지시문 없이 직접 입력한 글도 본문 경로·낡으면 작업 없음(템플릿으로 조용히 돌아가지 않음)")
+    check(state({"invalid": "스펙의 _v2 가 객체가 아닙니다"}) == {"state": "blocked", "why": "스펙의 _v2 가 객체가 아닙니다", "body": None, "source": None, "input_hash": None},
+          "V2B 잘못된 _v2 → 작업 없음")
+
+
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -72565,6 +72731,8 @@ if __name__ == "__main__":
         forge_import1_js_unit()
     if want("ux_v2a_entry_unit"):
         ux_v2a_entry_unit()
+    if want("ux_v2a_body_unit"):
+        ux_v2a_body_unit()
     if want("ux_v2a_dev_unit"):
         ux_v2a_dev_unit()
     if want("ux_v2a_submit_unit"):

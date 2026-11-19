@@ -28,6 +28,8 @@ Design Patch(가제 Multi Layer Crop Edit)는 일러스트의 크롭마다 GPT �
 - flatten_ref(rgba, matte=(128,128,128)) -> rgb HxWx3 uint8
 - spec_from_manifest(crop, target, refs_dir, glossary, overrides) -> spec   매니페스트 crop/target 항목 → 최소 스펙.
 - auto_pick_ref(crop_name, refs_auto) -> str      refs_auto 중 Prepare 가 고르는 1장(아래 refs 규칙 — Studio S2 refs.seed_link 도 이것).
+- UX v2 본문 경로(파일 끝 절): v2_of / v2_update / v2_roles / v2_input_hash / v2_state / render_body / body_problem / text_problem,
+  BODY_TEMPLATE = "dp-body/1" · BODY_VARIANT = "B1_body". 스펙의 "_v2" 가 없으면 아무것도 바뀌지 않는다.
 
 스펙 형식 (JSON 직렬화 가능 dict — 시제품 docstring 과 같음)
 ------------------------------------------------------------
@@ -89,6 +91,8 @@ v1 (2026-10, M1) — 시제품 gpt_edit_prompt.py(2026-10-06) 문장 그대로 �
   flatten_canvas / flatten_ref / spec_from_manifest / validate_spec / select_variants 추가.
 Studio S2 (2026-10, TEMPLATE_VERSION 그대로) — _auto_pick_ref → 공개 이름 auto_pick_ref(refs.seed_link 가 같은 규칙),
   refs 선택에 crop.refs_main. 렌더러·변형·평탄화는 바꾸지 않음(고정 때 refs_main = 지금 자동 선택이라 cell_key 그대로).
+UX v2-A (2026-11, TEMPLATE_VERSION 그대로) — 스펙 "_v2"(목적·한국어 지시·AI 자동·쓸 글)와 본문 경로(render_body — 틀은 render 의 것,
+  Target…Integration 만 "Request:" + 본문, template 칸 "dp-body/1"). 렌더러·변형·평탄화는 바꾸지 않음(_v2 없는 스펙은 바이트 그대로).
 """
 
 from __future__ import annotations
@@ -589,3 +593,209 @@ def spec_from_manifest(crop: dict, target, refs_dir: str, glossary, overrides) -
         raise ValueError(f"크롭 {crop_name!r}: 타깃 id 가 중복됩니다: {ids}")
     spec["warnings"] = warnings
     return spec
+
+
+# ════════════════════════════════════════════════════════════════
+# UX v2 — 패치별 지시(스펙의 _v2)와 본문 경로 (UX v2 Phase V2-A D495–D509)
+# 스펙 오버라이드의 "_v2" 키 하나에 목적·한국어 지시·AI 자동 여부·쓸 글(AI 작성본 또는 직접 입력)을 둔다. "_" 키라
+# spec_from_manifest 가 조용히 무시한다 — _v2 가 없거나 쓸 글이 없으면 프롬프트·생성 조건 키는 지금과 바이트가 같다.
+# 쓸 글이 있으면 그 크롭은 「본문 경로」로 간다: render() 가 만든 틀(범례·Canvas·Guide·Preserve·Notes)은 그대로 두고
+# Target… 줄부터 Integration 줄까지만 "Request:" + 본문으로 바꾼다. 렌더러 함수는 고치지 않는다(결과를 줄 단위로 조립).
+# ════════════════════════════════════════════════════════════════
+V2_KEY = "_v2"
+PURPOSES = ("correct", "add", "remove", "vary", "detail")
+BODY_ONLY_PURPOSES = ("remove", "vary", "detail")   # 템플릿에 대응 문장이 없는 목적 — 본문이 있어야 생성한다
+PROMPT_SOURCES = ("assist", "manual")
+BODY_TEMPLATE = "dp-body/1"      # 본문 경로의 cell_key template 칸(조립 규칙의 판) — 템플릿 경로는 TEMPLATE_VERSION 그대로
+BODY_VARIANT = "B1_body"         # 본문 경로의 변형 이름(하나뿐 — V1–V4 는 템플릿의 detail·shape 변형이라 본문에는 없다)
+BODY_HEAD = "Request:"
+ASSIST_VERSION = "dp-assist/1"   # 입력 해시의 판(재료를 바꾸면 올린다 — 저장된 작성본이 모두 '낡음'이 된다)
+INSTRUCTION_MAX = 2000
+BODY_MAX = 4000
+_TARGET_HEADS = ("Target:", "Targets (change only these):")
+_BODY_TOKEN = re.compile(r"@image(\d+)")
+_BODY_PLAIN = re.compile(r"\bImage \d+\b")
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+_ADDRESS = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://|\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b|[A-Za-z]:[\\/]|\\\\")
+_FILE_SHA: dict = {}
+
+
+def text_problem(text, limit: int, what: str, *, empty_ok: bool = True) -> str | None:
+    """저장할 글(지시문·본문) 점검 → 문제 문구(없으면 None): 문자열·길이·제어 문자·주소나 경로 꼴."""
+    if not isinstance(text, str):
+        return f"{what}은 문자열이어야 합니다"
+    if not text.strip():
+        return None if empty_ok else f"{what}이 비었습니다"
+    if len(text) > limit:
+        return f"{what}이 너무 깁니다({len(text)}자 — {limit}자까지)"
+    if _CONTROL.search(text):
+        return f"{what}에 쓸 수 없는 제어 문자가 있습니다"
+    if _ADDRESS.search(text):
+        return f"{what}에 주소·경로 꼴이 있습니다 — 빼고 적어 주세요"
+    return None
+
+
+def body_problem(body, image_count: int | None = None) -> str | None:
+    """본문(틀 안에 들어갈 영문 글) 점검 → 문제 문구(없으면 None). image_count 를 주면 @imageN 이 1…image_count 인지도 본다."""
+    problem = text_problem(body, BODY_MAX, "프롬프트 본문", empty_ok=False)
+    if problem:
+        return problem
+    if _BODY_PLAIN.search(body):
+        return "프롬프트 본문은 그림을 @image1 꼴로 가리켜야 합니다(Image 1 꼴은 쓰지 않음)"
+    numbers = [int(n) for n in _BODY_TOKEN.findall(body)]
+    if any(n < 1 for n in numbers):
+        return "프롬프트 본문의 @image 번호는 1부터입니다"
+    if image_count is not None and any(n > image_count for n in numbers):
+        return f"프롬프트 본문이 없는 그림(@image{max(numbers)})을 가리킵니다 — 지금 그림은 {image_count}장"
+    return None
+
+
+def v2_of(overrides) -> dict | None:
+    """스펙 오버라이드의 _v2 를 읽어 정규화한 사본 → {"purpose", "user_instruction_ko", "ai_auto", "prompt": dict | None} 또는
+    {"invalid": 사유}(값이 객체가 아니거나 필드 꼴이 틀림). _v2 키가 없으면 None."""
+    if not isinstance(overrides, dict) or V2_KEY not in overrides:
+        return None
+    raw = overrides[V2_KEY]
+    if not isinstance(raw, dict):
+        return {"invalid": "스펙의 _v2 가 객체가 아닙니다"}
+    purpose = raw.get("purpose", "correct")
+    instruction = raw.get("user_instruction_ko", "")
+    ai_auto = raw.get("ai_auto", True)
+    prompt = raw.get("prompt")
+    if purpose not in PURPOSES or not isinstance(instruction, str) or type(ai_auto) is not bool:
+        return {"invalid": "스펙의 _v2 값이 잘못되었습니다(목적·지시문·AI 자동)"}
+    if prompt is not None:
+        if (not isinstance(prompt, dict) or prompt.get("source") not in PROMPT_SOURCES or not isinstance(prompt.get("body_en"), str)
+                or not isinstance(prompt.get("input_hash"), str)):
+            return {"invalid": "스펙의 _v2.prompt 값이 잘못되었습니다"}
+        prompt = copy.deepcopy(prompt)
+    return {"purpose": purpose, "user_instruction_ko": instruction, "ai_auto": ai_auto, "prompt": prompt}
+
+
+def v2_update(overrides, *, purpose=None, user_instruction_ko=None, ai_auto=None, prompt=...) -> dict:
+    """오버라이드 사본에 _v2 변경을 적용해 돌려준다(입력은 바꾸지 않음). None 인 인자는 그대로 둔다. prompt: ... = 그대로,
+    None = 글 지움, dict = 그 글로. 결과가 기본 상태(목적 correct·지시문 없음·AI 자동 켬·글 없음)면 _v2 키를 지운다 —
+    지시를 썼다가 모두 지우면 스펙이 쓰기 전과 같다. _v2 는 _draft 앞에 둔다(_draft 는 늘 맨 끝)."""
+    out = copy.deepcopy(overrides) if isinstance(overrides, dict) else {}
+    cur = v2_of(out) or {}
+    if "invalid" in cur:
+        cur = {}
+    new = {"purpose": cur.get("purpose", "correct") if purpose is None else purpose,
+           "user_instruction_ko": cur.get("user_instruction_ko", "") if user_instruction_ko is None else user_instruction_ko,
+           "ai_auto": cur.get("ai_auto", True) if ai_auto is None else ai_auto,
+           "prompt": cur.get("prompt") if prompt is ... else copy.deepcopy(prompt)}
+    if new["purpose"] not in PURPOSES or not isinstance(new["user_instruction_ko"], str) or type(new["ai_auto"]) is not bool:
+        raise ValueError("_v2 값이 잘못되었습니다(목적·지시문·AI 자동)")
+    new["user_instruction_ko"] = new["user_instruction_ko"].strip()
+    if new["prompt"] is not None and (not isinstance(new["prompt"], dict) or new["prompt"].get("source") not in PROMPT_SOURCES
+                                      or not isinstance(new["prompt"].get("body_en"), str)
+                                      or not isinstance(new["prompt"].get("input_hash"), str)):
+        raise ValueError("_v2.prompt 값이 잘못되었습니다")
+    out.pop(V2_KEY, None)
+    default = new["purpose"] == "correct" and not new["user_instruction_ko"] and new["ai_auto"] is True and new["prompt"] is None
+    if default:
+        return out
+    value = {"purpose": new["purpose"]}
+    if new["user_instruction_ko"]:
+        value["user_instruction_ko"] = new["user_instruction_ko"]
+    value["ai_auto"] = new["ai_auto"]
+    if new["prompt"] is not None:
+        value["prompt"] = new["prompt"]
+    draft = out.pop("_draft", ...)
+    out[V2_KEY] = value
+    if draft is not ...:
+        out["_draft"] = draft
+    return out
+
+
+def _file_sha(path: str) -> str:
+    """파일 내용의 sha256(없거나 못 읽으면 "missing"). (경로·크기·수정 시각)이 같으면 기억한 값."""
+    try:
+        st = os.stat(path)
+        key = (os.path.normcase(os.path.abspath(path)), st.st_size, st.st_mtime_ns)
+        if key not in _FILE_SHA:
+            import hashlib
+            digest = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if len(_FILE_SHA) > 4096:
+                _FILE_SHA.clear()
+            _FILE_SHA[key] = digest.hexdigest()
+        return _FILE_SHA[key]
+    except OSError:
+        return "missing"
+
+
+def v2_roles(spec: dict, root: str = "") -> list:
+    """레퍼런스 구성 = 크롭(@image1) 뒤에 올라갈 그림들의 [역할, 파일 지문] 목록(업로드 순서 — _plan_images). 역할 = "guide" /
+    "before" / "ref". spec = spec_from_manifest 결과 그대로(평탄화 전 — guide·before_paste 는 root 기준 상대 경로일 수 있다).
+    크롭 자신은 넣지 않는다(크롭을 조금 옮겨도 쓴 글은 유효하다)."""
+    order, roles = _plan_images(spec)
+    out = []
+    for path in order[1:]:
+        full = path if os.path.isabs(path) else os.path.join(root, path)
+        out.append([roles[path][0][0], _file_sha(full)])
+    return out
+
+
+def v2_input_hash(v2: dict, model: str, roles: list, *, manual: bool = False) -> str:
+    """쓴 글이 어떤 입력으로 쓰였는지의 지문(sha256 앞 24자). AI 작성본 = 목적·지시문·생성 모델·레퍼런스 구성·판, 직접 입력 글 =
+    레퍼런스 구성·판(지시문이 바뀌어도 사람이 쓴 글은 유효 — D505). 생성 서버의 지침 개정은 넣지 않는다."""
+    import hashlib
+    import json
+    material = {"v": ASSIST_VERSION, "roles": [[str(r), str(s)] for r, s in roles]}
+    if not manual:
+        material.update(purpose=v2["purpose"], instruction=v2["user_instruction_ko"].strip(), model=str(model))
+    return hashlib.sha256(json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:24]
+
+
+def v2_state(v2, model: str, roles: list, image_count: int | None = None) -> dict:
+    """이 크롭이 지금 어느 경로로 가는가 → {"state": "template" | "body" | "blocked", "why": str | None, "body": str | None,
+    "source": str | None, "input_hash": 지금 입력의 AI 작성 지문 | None}.
+    - template: _v2 가 없거나, 쓸 글이 없고 지시문도 없고 목적이 correct·add — 지금 템플릿 글 그대로.
+    - body: 쓸 글이 있다 — 직접 입력 글(레퍼런스 구성이 쓸 때와 같음) 또는 AI 작성본(AI 자동이 켜져 있고 입력이 쓸 때와 같음).
+    - blocked: 지시문이 있거나 목적이 remove·vary·detail 인데 쓸 글이 없다(없음·낡음·AI 자동 꺼짐·그림 번호 어긋남) — 작업을
+      만들지 않는다(과금 없음, D503)."""
+    if v2 is None:
+        return {"state": "template", "why": None, "body": None, "source": None, "input_hash": None}
+    if "invalid" in v2:
+        return {"state": "blocked", "why": v2["invalid"], "body": None, "source": None, "input_hash": None}
+    current = v2_input_hash(v2, model, roles)
+    prompt = v2["prompt"]
+    why = None
+    if prompt is not None:
+        manual = prompt["source"] == "manual"
+        if not manual and not v2["ai_auto"]:
+            why = "AI 자동이 꺼져 있습니다 — 영문 프롬프트를 직접 입력해 주세요"
+        elif prompt["input_hash"] != (v2_input_hash(v2, model, roles, manual=True) if manual else current):
+            why = ("레퍼런스 구성이 바뀌어 직접 입력한 프롬프트의 그림 번호를 다시 확인해야 합니다 — 프롬프트를 다시 저장해 주세요" if manual
+                   else "지시·모델·레퍼런스가 바뀌어 작성본이 낡았습니다 — 다시 작성해 주세요")
+        else:
+            why = body_problem(prompt["body_en"], image_count)
+        if why is None:
+            return {"state": "body", "why": None, "body": prompt["body_en"].replace("\r\n", "\n").replace("\r", "\n").strip(),
+                    "source": prompt["source"], "input_hash": current}
+    needs = bool(v2["user_instruction_ko"].strip()) or v2["purpose"] in BODY_ONLY_PURPOSES
+    if prompt is None and needs:
+        why = ("지시문에 맞는 프롬프트가 없습니다 — [AI 작성] 을 누르거나 영문 프롬프트를 직접 입력해 주세요" if v2["ai_auto"]
+               else "AI 자동이 꺼져 있습니다 — 영문 프롬프트를 직접 입력해 주세요")
+    if needs or prompt is not None:
+        return {"state": "blocked", "why": why, "body": None, "source": None, "input_hash": current}
+    return {"state": "template", "why": None, "body": None, "source": None, "input_hash": current}
+
+
+def render_body(spec: dict, body: str) -> dict:
+    """본문 경로의 프롬프트 = render(spec) 의 틀 + 본문. Target… 줄부터 Preserve 줄 앞(Integration 줄 포함)까지를 "Request:" 줄과
+    본문으로 바꾼다. 반환은 render 와 같은 키(prompt / images / legend) — images·legend 는 render 그대로."""
+    rendered = render(spec)
+    lines = rendered["prompt"].split("\n")
+    start = next((i for i, line in enumerate(lines) if line in _TARGET_HEADS), None)
+    end = next((i for i, line in enumerate(lines) if start is not None and i > start and line.startswith("Preserve: ")), None)
+    if start is None or end is None:
+        raise ValueError("프롬프트 틀에서 Target·Preserve 줄을 찾지 못했습니다")
+    text = body.replace("\r\n", "\n").replace("\r", "\n").strip()
+    problem = body_problem(text, len(rendered["images"]))
+    if problem:
+        raise ValueError(problem)
+    return {"prompt": "\n".join(lines[:start] + [BODY_HEAD, text] + lines[end:]), "images": rendered["images"], "legend": rendered["legend"]}
