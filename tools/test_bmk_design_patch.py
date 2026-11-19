@@ -61203,11 +61203,12 @@ def forge_models_unit():
     check({name: m.checkpoint for name, m in dpm.MODELS.items()} == spec["names"], "FM3 이름 → 서버 id 가 정본과 같음")
     check(dpm.LOCAL_MODELS == tuple(dpl._MODELS) and dpm.names(False) == tuple(dpl._MODELS),
           "FM3 로컬판 선택지 = 지금의 넷(순서 포함)")
-    check(dpm.names(True)[:4] == tuple(dpl._MODELS) and set(dpm.names(True)[4:]) == set(dpm.FORGE_ONLY) == {"seedream-5.5", "ideogram-4.5"},
-          "FM3 서버 모드 선택지 = 넷 + 서버 전용 둘")
+    check(dpm.names(True)[:4] == tuple(dpl._MODELS) and set(dpm.names(True)[4:]) == set(dpm.FORGE_ONLY)
+          == {"seedream-5.5", "ideogram-4.5", "nano-banana-2.1", "nano-banana-2", "nano-banana-pro"},
+          "FM3 서버 모드 선택지 = 넷 + 서버 전용 다섯")
     check({name: fixture["generate"]["checkpoints"][name] for name in fixture["generate"]["checkpoints"]}
           == {name: m.checkpoint for name, m in dpm.MODELS.items() if m.kind == "gpt"}, "FM3 GPT 매핑은 F2 정본 그대로")
-    for name in dpm.FORGE_ONLY:
+    for name in (name for name in dpm.FORGE_ONLY if dpm.get(name).area):  # 비율 목록으로 그리는 모델의 한도는 forge_models2_unit
         m, lim = dpm.get(name), spec["limits"][name]
         check((m.max_inputs, m.max_n, m.fan_out, list(m.qualities), list(m.area))
               == (lim["max_inputs"], lim["max_n"], lim["fan_out"], lim["qualities"], lim["area"]), f"FM3 한도가 정본과 같음 {name}")
@@ -61226,10 +61227,12 @@ def forge_models_unit():
     check(dpm.quality_problem("ideogram-4.5", "max") and dpm.quality_problem("ideogram-4.5", "high") is None
           and dpm.quality_problem("seedream-5.5", "max") is None and dpm.quality_problem("gpt-image-2.6-flare", "xhigh") is None
           and dpm.quality_problem("gpt-image-2.6-flare", "ultra") and dpm.quality_problem("없는모델", "max"), "FM4 모델별 품질 검사")
-    check(all(dpm.job_opts(name, {"x": 1}) is None for name in dpm.MODELS), "FM4 옵션 없는 모델의 opts 는 None(키에 더하지 않음)")
+    check(all(dpm.job_opts(name, {"x": 1}) is None for name, m in dpm.MODELS.items() if not m.opts)
+          and {name for name, m in dpm.MODELS.items() if m.opts} == {"nano-banana-2.1", "nano-banana-2", "nano-banana-pro"},
+          "FM4 옵션 없는 모델의 opts 는 None(키에 더하지 않음) — 옵션이 있는 모델은 나노바나나 계열뿐")
 
     # ── 크기 식 ──
-    for name in dpm.FORGE_ONLY:
+    for name in (name for name in dpm.FORGE_ONLY if dpm.get(name).area):
         m = dpm.get(name)
         lo, hi = m.area
         for w, h in ((512, 512), (100, 100), (640, 480), (123, 457), (1920, 1080), (3000, 2000), (4000, 250), (250, 4000),
@@ -61300,7 +61303,8 @@ def forge_models_unit():
           and dpm.availability("없는모델", catalog)[0] is False, "FM7 목록을 못 읽었거나 표에 없으면 쓸 수 없음")
     row = dpm.describe("ideogram-4.5", catalog, checked=True)
     check(row == {"name": "ideogram-4.5", "label": "Ideogram 4.5", "kind": "ideogram", "available": True, "why": None,
-                  "qualities": ["low", "medium", "high"], "default_quality": "high", "opts": {}, "max_inputs": 5, "max_n": 8,
+                  "qualities": ["low", "medium", "high"], "default_quality": "high", "opts": {}, "opt_defaults": {},
+                  "ratios": [], "ratio_tolerance": None, "family": None, "fallback": None, "max_inputs": 5, "max_n": 8,
                   "fan_out": False}, f"FM7 화면용 모델 한 줄 {row}")
     row = dpm.describe("seedream-5.5", gone, checked=True)
     check(row["available"] is False and row["why"] and row["qualities"] == [] and row["default_quality"] is None and row["fan_out"] is True
@@ -61308,6 +61312,157 @@ def forge_models_unit():
     text = (PKG / "bmk_design_patch_models.py").read_text(encoding="utf-8")
     check(not re.search(r"^\s*(?:from|import)\s+(?!__future__|math\b|dataclasses\b|fractions\b)", text, re.M),
           "FM8 모델 표 모듈은 표준 라이브러리(math·dataclasses·fractions)만 쓴다")
+
+
+def forge_models2_unit():
+    """Forge 2단계 둘째 묶음 공용 — 나노바나나 계열의 모델 표(비율 목록·해상도 단계·옵션·계열 대체)와 응답 정본의 해당 절.
+    명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
+    section("Forge 모델 표(둘째 묶음) — forge_models2_unit")
+    import bmk_design_patch_models as dpm
+
+    fixture = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
+    spec = fixture["models"]
+    gem = spec["limits"]["gemini"]
+    names = ("nano-banana-2.1", "nano-banana-2", "nano-banana-pro")
+    check(tuple(dpm.names(True)[6:]) == names and all(dpm.get(name).kind == "gemini" and dpm.get(name).family == "nano-banana"
+                                                       for name in names), "FN1 나노바나나 계열 셋 — 표의 순서 = 2.1 → 2 → 프로")
+    check(list(dpm.RATIOS) == gem["ratios"] and {k: list(v) for k, v in dpm.RATIO_SIZES.items()} == gem["ratio_sizes"]
+          and dpm.IMAGE_SIZES == gem["image_sizes"] and dpm.RATIO_TOLERANCE == gem["ratio_tolerance"],
+          "FN1 비율 목록·예상 크기·해상도 단계·허용 오차가 정본과 같음")
+    for name in names:
+        m, lim = dpm.get(name), spec["limits"][name]
+        check((m.max_inputs, m.max_n, m.fan_out, list(m.qualities), m.family, {k: list(v) for k, v in m.opts.items()}, m.opt_defaults)
+              == (lim["max_inputs"], lim["max_n"], lim["fan_out"], lim["qualities"], lim["family"], lim["opts"], lim["opt_defaults"])
+              and m.ratios == dpm.RATIOS and m.area is None and not m.prompt_used, f"FN1 한도·옵션이 정본과 같음 {name}")
+        req = spec["requests"][name]["request"]
+        check(req["checkpoint"] == m.checkpoint and req["aspect_ratio"] in m.ratios and req["image_size"] in m.opts["image_size"]
+              and (("thinking_level" in req) == ("thinking_level" in m.opts))
+              and (req.get("thinking_level") in m.opts.get("thinking_level", (None,)))
+              and not set(req) & set(spec["requests"][name]["never"]), f"FN1 요청 예시가 표와 맞음 {name}")
+        check(dpm.job_quality(name, "max") == dpm.FIXED_QUALITY and dpm.quality_problem(name, "max") is None
+              and all(dpm.job_slots(name, c, n) * n <= dpm.PROVIDER_CALL_LIMIT for c in range(1, 9) for n in range(1, m.max_n + 1)),
+              f"FN1 품질은 고정값·장마다 따로 부르는 모델의 부하 상한 {name}")
+    check(all(abs((a / b) / (int(label.split(":")[0]) / int(label.split(":")[1])) - 1) < 0.011 for label, (a, b) in dpm.RATIO_SIZES.items()),
+          "FN1 예상 크기의 비율은 이름의 비율과 1.1% 안")
+
+    # ── 비율 맞춤 ──
+    for (w, h), want_match, want_near in (((1000, 1000), "1:1", "1:1"), ((800, 1000), "4:5", "4:5"), ((807, 1000), "4:5", "4:5"),
+                                          ((809, 1000), None, "4:5"), ((793, 1000), "4:5", "4:5"), ((791, 1000), None, "4:5"),
+                                          ((1920, 1080), "16:9", "16:9"), ((2100, 900), "21:9", "21:9"), ((900, 2100), None, "9:16"),
+                                          ((300, 900), None, "9:16"), ((3000, 300), None, "21:9"), ((750, 1000), "3:4", "3:4"),
+                                          ((770, 1000), None, "3:4"), ((776, 1000), None, "4:5"), ((1, 1), "1:1", "1:1")):
+        got = (dpm.match_ratio("nano-banana-2.1", w, h), dpm.nearest_ratio("nano-banana-2.1", w, h))
+        check(got == (want_match, want_near), f"FN2 비율 맞춤 {w}x{h} → {got} (기대 {want_match}, {want_near})")
+    check(dpm.match_ratio("seedream-5.5", 800, 1000) is None and dpm.nearest_ratio("gpt-image-2.6-sunburst", 800, 1000) is None
+          and dpm.match_ratio("nano-banana-2", 0, 10) is None and dpm.match_ratio("nano-banana-2", 800.0, 1000) is None
+          and dpm.match_ratio("없는모델", 1, 1) is None, "FN2 비율 목록이 없는 모델·잘못된 크기는 None")
+
+    # ── 옵션 ──
+    check(dpm.job_opts("nano-banana-2.1") == {"image_size": "2K", "thinking_level": "medium"}
+          and dpm.job_opts("nano-banana-2") == {"image_size": "2K", "thinking_level": "minimal"}
+          and dpm.job_opts("nano-banana-pro") == {"image_size": "2K"}, "FN3 기본 옵션(해상도 2K · 추론은 모델의 기본값)")
+    check(dpm.job_opts("nano-banana-2.1", {"image_size": "4K", "thinking_level": "high", "x": "y"}, src=(800, 1000))
+          == {"image_size": "4K", "thinking_level": "high", "aspect_ratio": "4:5"}
+          and dpm.job_opts("nano-banana-2", {"image_size": "8K", "thinking_level": "medium"}) == {"image_size": "2K", "thinking_level": "minimal"}
+          and dpm.job_opts("nano-banana-pro", {"thinking_level": "high", "image_size": 2}) == {"image_size": "2K"}
+          and "aspect_ratio" not in dpm.job_opts("nano-banana-2.1", None, src=(809, 1000))
+          and dpm.job_opts("nano-banana-2.1", {"aspect_ratio": "1:1"}) == {"image_size": "2K", "thinking_level": "medium"},
+          "FN3 선택지 밖 값은 그 모델의 기본값으로, 비율은 크롭에서만 정해진다(받은 값을 믿지 않음)")
+    good = dpm.job_opts("nano-banana-2.1", None, src=(800, 1000))
+    check(dpm.opts_problem("nano-banana-2.1", good) is None and dpm.opts_problem("nano-banana-pro", {"image_size": "1K", "aspect_ratio": "21:9"}) is None,
+          "FN3 맞는 옵션은 통과")
+    no_ratio = dpm.opts_problem("nano-banana-2.1", dpm.job_opts("nano-banana-2.1"))
+    check(no_ratio == dpm.ratio_problem("nano-banana-2.1") and "[모델 비율로 넓히기]" in no_ratio and "나노바나나 2.1" in no_ratio
+          and not re.search(r"\d:\d", no_ratio), f"FN3 비율이 없는 작업은 비율 안내(비율 표기는 싣지 않음): {no_ratio}")
+    for name, bad in (("nano-banana-2.1", None), ("nano-banana-2.1", {}), ("nano-banana-2.1", dict(good, thinking_level="max")),
+                      ("nano-banana-2", dict(good, thinking_level="medium")), ("nano-banana-pro", good),
+                      ("nano-banana-2.1", dict(good, aspect_ratio="7:5")), ("nano-banana-2.1", dict(good, aspect_ratio=1)),
+                      ("nano-banana-2.1", dict(good, extra="x")), ("nano-banana-2.1", {k: v for k, v in good.items() if k != "image_size"}),
+                      ("nano-banana-2.1", "2K"), ("seedream-5.5", good), ("ideogram-4.5", {"quality": "high"}),
+                      ("gpt-image-2.6-sunburst", {"image_size": "2K"})):
+        why = dpm.opts_problem(name, bad)
+        check(isinstance(why, str) and "반영을 다시" in why, f"FN3 잘못된 옵션 기록은 막음 {name} {bad!r} → {why!r}")
+    check(dpm.opts_problem("seedream-5.5", None) is None and dpm.opts_problem("ideogram-4.5", {}) is None
+          and dpm.opts_problem("gpt-image-2.5-flare", None) is None and dpm.opts_problem("없는모델", None), "FN3 옵션 없는 모델은 opts 가 없어야 통과")
+
+    # ── 예상 크기 ──
+    for name in names:
+        for w, h in ((1000, 1000), (800, 1000), (1920, 1080), (640, 480), (2100, 900), (512, 768)):
+            for tier, mult in dpm.IMAGE_SIZES.items():
+                W, H, info = dpm.output_size(name, w, h, "user_k", {"image_size": tier})
+                ratio = dpm.match_ratio(name, w, h)
+                check(ratio is not None and (W, H) == tuple(side * mult for side in dpm.RATIO_SIZES[ratio]) and info["ratio"] == ratio
+                      and info["nearest"] == ratio and info["image_size"] == tier and info["method"] == "ratio" and info["src"] == [w, h]
+                      and info["pixels"] == W * H and info["model"] == name and "problem" not in info and abs(info["aspect_err"]) <= 0.02
+                      and dpm.size_problem(name, [W, H]) is None and not dpm.ratio_off([W, H], [W // 2, H // 2]),
+                      f"FN4 예상 크기 {name} {w}x{h} {tier} → {W}x{H}")
+    W, H, info = dpm.output_size("nano-banana-2.1", 815, 1000)
+    check((W, H) == (1856, 2304) and info["ratio"] is None and info["nearest"] == "4:5" and info["image_size"] == "2K"
+          and info["problem"] == dpm.ratio_problem("nano-banana-2.1"), "FN4 비율이 맞지 않으면 가장 가까운 비율의 크기와 problem")
+    check(dpm.output_size("nano-banana-2", 800, 1000, "int_k_2560", {"image_size": "nope"})[:2] == (1856, 2304), "FN4 해상도 기본값 2K")
+    check(dpm.size_problem("nano-banana-2.1", [1856, 2304]) is None and dpm.size_problem("nano-banana-2.1", [2048, 2048]) is None
+          and dpm.size_problem("nano-banana-2.1", [1856, 2306]) and dpm.size_problem("nano-banana-2.1", [2048, 1536])
+          and dpm.size_problem("nano-banana-2.1", "2048x2048") and dpm.size_problem("nano-banana-2.1", None),
+          "FN4 예상 크기 표에 없는 size 기록은 막음")
+    expect_raises(lambda: dpm.output_size("nano-banana-2.1", 800, 1000, "nope"), "FN4 모르는 크기 규칙 거절")
+    expect_raises(lambda: dpm.output_size("nano-banana-2.1", 0, 1000), "FN4 잘못된 크롭 크기 거절")
+
+    # ── 생성 조건 키: 옵션이 재료에 들어간다 ──
+    args = dict(prompt="dp-prompt/1 test @image1", input_shas=["aa" * 32], template_version="dp-prompt/1", variant="V1")
+    key = lambda name, opts: store.cell_key(name, dpm.FIXED_QUALITY, [1856, 2304], "auto", **args, opts=opts)
+    keys = {key("nano-banana-2.1", good), key("nano-banana-2.1", dict(good, image_size="4K")),
+            key("nano-banana-2.1", dict(good, thinking_level="high")), key("nano-banana-2.1", dict(good, aspect_ratio="3:4")),
+            key("nano-banana-2", good), key("nano-banana-2.1", None)}
+    check(len(keys) == 6 and key("nano-banana-2.1", good) == key("nano-banana-2.1", dict(reversed(list(good.items())))),
+          "FN5 해상도·추론·비율·모델이 다르면 다른 키, 이름 순서와 무관")
+
+    # ── 계열 대체·화면용 한 줄 ──
+    catalog = {row.get("checkpoint") or row.get("id"): row.get("max_input_images") for row in spec["catalog"]["response"]["models"]}
+    check(all(dpm.availability(name, catalog)[:2] == (True, None) for name in names)
+          and all(dpm.family_fallback(name, catalog) is None for name in dpm.MODELS), "FN6 모두 살아 있으면 대체 없음")
+    no21 = {k: v for k, v in catalog.items() if k != "gemini-nano-banana-2.1"}
+    only_pro = {k: v for k, v in no21.items() if k != "gemini_flash2"}
+    none = {k: v for k, v in only_pro.items() if k != "gemini3"}
+    check(dpm.family_fallback("nano-banana-2.1", no21) == "nano-banana-2" and dpm.family_fallback("nano-banana-2.1", only_pro) == "nano-banana-pro"
+          and dpm.family_fallback("nano-banana-2", only_pro) == "nano-banana-pro" and dpm.family_fallback("nano-banana-2.1", none) is None
+          and dpm.family_fallback("nano-banana-2", no21) is None and dpm.family_fallback("nano-banana-2.1", None) is None
+          and dpm.family_fallback("seedream-5.5", {}) is None and dpm.family_fallback("없는모델", catalog) is None,
+          "FN6 목록에서 빠진 모델만, 같은 계열에서 표의 순서로 첫 번째 살아 있는 것")
+    row = dpm.describe("nano-banana-2.1", no21, checked=True)
+    check(row == {"name": "nano-banana-2.1", "label": "나노바나나 2.1", "kind": "gemini", "available": False, "why": row["why"],
+                  "qualities": [], "default_quality": None,
+                  "opts": {"image_size": ["1K", "2K", "4K"], "thinking_level": ["minimal", "medium", "high"]},
+                  "opt_defaults": {"image_size": "2K", "thinking_level": "medium"}, "ratios": list(dpm.RATIOS), "ratio_tolerance": 0.01,
+                  "family": "nano-banana",
+                  "fallback": "nano-banana-2", "max_inputs": 14, "max_n": 8, "fan_out": True} and "Forge 에 없습니다" in row["why"],
+          f"FN6 화면용 한 줄(빠진 모델 — 대체 모델 이름) {row}")
+    row = dpm.describe("nano-banana-pro")
+    check(row["available"] is True and row["fallback"] is None and row["opts"] == {"image_size": ["1K", "2K", "4K"]}
+          and row["opt_defaults"] == {"image_size": "2K"}, "FN6 대조 전에는 참·대체 없음")
+
+
+def forge_models2_backend_unit():
+    """Forge 2단계 둘째 묶음 서버 갈래 — 실행기의 opts 전달(원장·작업 보기), 나노바나나 요청 조립·제출 전 차단, 「프롬프트가
+    서버에서 바뀜」 판정 정리. 명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
+    section("Forge 모델 서버(둘째 묶음) — forge_models2_backend_unit")
+
+
+def forge_models2_settings_unit():
+    """Forge 2단계 둘째 묶음 설정 갈래 — 실행 설정의 해상도·추론, Prepare 의 작업 opts·예상 크기, 전환 미리 보기, env 의 모델 한 줄,
+    후보 응답의 모델 옵션·프롬프트 표지. 명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
+    section("Forge 모델 설정(둘째 묶음) — forge_models2_settings_unit")
+
+
+def forge_models2_dev_unit():
+    """Forge 2단계 둘째 묶음 가짜 Forge 갈래 — 나노바나나 계열의 목록·요청 검사·장마다 따로 부르는 흉내.
+    명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
+    section("Forge 모델 가짜 Forge(둘째 묶음) — forge_models2_dev_unit")
+
+
+def forge_models2_js_unit():
+    """Forge 2단계 둘째 묶음 화면 갈래 — 실행 설정의 해상도·추론 칸, 대체 모델 전환, [모델 비율로 넓히기], 승인 상자·후보의 옵션 표시,
+    프롬프트 표지. 명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
+    section("Forge 모델 화면(둘째 묶음) — forge_models2_js_unit")
 
 
 def forge_models_backend_unit():
@@ -70556,6 +70711,16 @@ if __name__ == "__main__":
         forge_models_dev_unit()
     if want("forge_models_js_unit"):
         forge_models_js_unit()
+    if want("forge_models2_unit"):
+        forge_models2_unit()
+    if want("forge_models2_backend_unit"):
+        forge_models2_backend_unit()
+    if want("forge_models2_settings_unit"):
+        forge_models2_settings_unit()
+    if want("forge_models2_dev_unit"):
+        forge_models2_dev_unit()
+    if want("forge_models2_js_unit"):
+        forge_models2_js_unit()
     if want("forge_f2_dev_unit"):
         forge_f2_dev_unit()
     if want("forge_f2_js_unit"):

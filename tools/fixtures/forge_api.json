@@ -510,7 +510,10 @@
       "gpt-image-2.5-sunburst": "gpt_image_25_sunburst",
       "gpt-image-2.5-flare": "gpt_image_25_flare",
       "seedream-5.5": "seedream_5_5",
-      "ideogram-4.5": "ideogram_4_5"
+      "ideogram-4.5": "ideogram_4_5",
+      "nano-banana-2.1": "gemini-nano-banana-2.1",
+      "nano-banana-2": "gemini_flash2",
+      "nano-banana-pro": "gemini3"
     },
     "limits": {
       "_comment": "max_inputs = 입력 그림 상한(타깃 포함 — 서버 목록의 max_input_images 와 이 값 가운데 작은 쪽), max_n = 장 수 상한, fan_out = 서버가 장마다 공급자를 따로 부름, area = 요청 크기의 화소 수 창, max_ratio = 긴 변/짧은 변 상한. 장마다 따로 부르는 모델의 max_n 은 동시 호출 상한(8)을 넘지 않는다 — 서버 자체는 16장까지 받는다.",
@@ -540,6 +543,131 @@
           1,
           4194304
         ]
+      },
+      "gemini": {
+        "_comment": "정해진 가로세로비로만 그리는 계열(나노바나나). ratios = 받는 비율, ratio_tolerance = 크롭의 비율이 목록의 비율과 이 안에서 맞을 때만 생성한다(맞지 않으면 제출하지 않는다), ratio_sizes = 1K 단계의 예상 출력 크기(2K·4K 는 2배·4배 — 실제 화소는 공급자가 정한다), image_sizes = 해상도 단계 → 배수.",
+        "ratios": [
+          "1:1",
+          "4:5",
+          "3:4",
+          "2:3",
+          "9:16",
+          "5:4",
+          "4:3",
+          "3:2",
+          "16:9",
+          "21:9"
+        ],
+        "ratio_tolerance": 0.01,
+        "ratio_sizes": {
+          "1:1": [
+            1024,
+            1024
+          ],
+          "4:5": [
+            928,
+            1152
+          ],
+          "3:4": [
+            896,
+            1200
+          ],
+          "2:3": [
+            848,
+            1264
+          ],
+          "9:16": [
+            768,
+            1376
+          ],
+          "5:4": [
+            1152,
+            928
+          ],
+          "4:3": [
+            1200,
+            896
+          ],
+          "3:2": [
+            1264,
+            848
+          ],
+          "16:9": [
+            1376,
+            768
+          ],
+          "21:9": [
+            1584,
+            672
+          ]
+        },
+        "image_sizes": {
+          "1K": 1,
+          "2K": 2,
+          "4K": 4
+        }
+      },
+      "nano-banana-2.1": {
+        "max_inputs": 14,
+        "max_n": 8,
+        "fan_out": true,
+        "qualities": [],
+        "family": "nano-banana",
+        "opts": {
+          "image_size": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "thinking_level": [
+            "minimal",
+            "medium",
+            "high"
+          ]
+        },
+        "opt_defaults": {
+          "image_size": "2K",
+          "thinking_level": "medium"
+        }
+      },
+      "nano-banana-2": {
+        "max_inputs": 14,
+        "max_n": 8,
+        "fan_out": true,
+        "qualities": [],
+        "family": "nano-banana",
+        "opts": {
+          "image_size": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "thinking_level": [
+            "minimal",
+            "high"
+          ]
+        },
+        "opt_defaults": {
+          "image_size": "2K",
+          "thinking_level": "minimal"
+        }
+      },
+      "nano-banana-pro": {
+        "max_inputs": 14,
+        "max_n": 8,
+        "fan_out": true,
+        "qualities": [],
+        "family": "nano-banana",
+        "opts": {
+          "image_size": [
+            "1K",
+            "2K",
+            "4K"
+          ]
+        },
+        "opt_defaults": {
+          "image_size": "2K"
+        }
       },
       "gpt": {
         "max_inputs": 16,
@@ -659,6 +787,141 @@
             "입력 이미지를 읽을 수 없습니다"
           ]
         }
+      },
+      "nano-banana-2.1": {
+        "_comment": "크기를 고르지 않는다 — aspect_ratio(비율 목록의 값)와 image_size(1K·2K·4K)만 준다. 목록에 없는 aspect_ratio 는 서버가 말없이 버리고, 잘못된 image_size 는 말없이 1K 로 바꾼다 — 그런 값은 제출하지 않는다. 입력이 14장을 넘으면 서버가 말없이 앞의 14장만 쓴다 — 넘으면 제출하지 않는다. 서버는 num_outputs 만큼 공급자를 따로 부르고, 일부만 성공해도 completed 다. 결과는 PNG, prompt_used 는 오지 않는다. thinking_level 은 minimal · medium · high 만 받는다(다른 값이면 실패).",
+        "request": {
+          "checkpoint": "gemini-nano-banana-2.1",
+          "prompt": "프롬프트 원문 그대로",
+          "aspect_ratio": "4:5",
+          "image_size": "2K",
+          "thinking_level": "medium",
+          "num_outputs": 2,
+          "input_images": [
+            [
+              "data:image/png;base64,iVBORw0KGgo=",
+              "data:image/png;base64,iVBORw0KGgo="
+            ]
+          ],
+          "organization_id": "org1",
+          "request_id": "dp-0a1b2c3d4e5f-0123456789abcdef01234567_r1-a1",
+          "prompt_autopilot": false
+        },
+        "never": [
+          "mask_image",
+          "template_id",
+          "positive_prompt_prefix",
+          "positive_prompt_suffix",
+          "trigger_words",
+          "width",
+          "height",
+          "seed",
+          "input_image_references",
+          "quality",
+          "background",
+          "moderation",
+          "complexity",
+          "size",
+          "ideogram",
+          "watermark",
+          "guidance_scale",
+          "sequential_image_generation",
+          "max_images"
+        ],
+        "errors": {
+          "_comment": "서버가 이 계열의 실패 사유를 일반 안내 문구로 바꿔 주므로 문구로 가릴 수 있는 입력 오류가 없다 — error_category 로만 판단한다.",
+          "input": []
+        }
+      },
+      "nano-banana-2": {
+        "_comment": "크기를 고르지 않는다 — aspect_ratio(비율 목록의 값)와 image_size(1K·2K·4K)만 준다. 목록에 없는 aspect_ratio 는 서버가 말없이 버리고, 잘못된 image_size 는 말없이 1K 로 바꾼다 — 그런 값은 제출하지 않는다. 입력이 14장을 넘으면 서버가 말없이 앞의 14장만 쓴다 — 넘으면 제출하지 않는다. 서버는 num_outputs 만큼 공급자를 따로 부르고, 일부만 성공해도 completed 다. 결과는 PNG, prompt_used 는 오지 않는다. thinking_level 은 minimal · high 만 받는다(다른 값이면 실패).",
+        "request": {
+          "checkpoint": "gemini_flash2",
+          "prompt": "프롬프트 원문 그대로",
+          "aspect_ratio": "4:5",
+          "image_size": "2K",
+          "thinking_level": "minimal",
+          "num_outputs": 2,
+          "input_images": [
+            [
+              "data:image/png;base64,iVBORw0KGgo=",
+              "data:image/png;base64,iVBORw0KGgo="
+            ]
+          ],
+          "organization_id": "org1",
+          "request_id": "dp-0a1b2c3d4e5f-0123456789abcdef01234567_r1-a1",
+          "prompt_autopilot": false
+        },
+        "never": [
+          "mask_image",
+          "template_id",
+          "positive_prompt_prefix",
+          "positive_prompt_suffix",
+          "trigger_words",
+          "width",
+          "height",
+          "seed",
+          "input_image_references",
+          "quality",
+          "background",
+          "moderation",
+          "complexity",
+          "size",
+          "ideogram",
+          "watermark",
+          "guidance_scale",
+          "sequential_image_generation",
+          "max_images"
+        ],
+        "errors": {
+          "_comment": "서버가 이 계열의 실패 사유를 일반 안내 문구로 바꿔 주므로 문구로 가릴 수 있는 입력 오류가 없다 — error_category 로만 판단한다.",
+          "input": []
+        }
+      },
+      "nano-banana-pro": {
+        "_comment": "크기를 고르지 않는다 — aspect_ratio(비율 목록의 값)와 image_size(1K·2K·4K)만 준다. 목록에 없는 aspect_ratio 는 서버가 말없이 버리고, 잘못된 image_size 는 말없이 1K 로 바꾼다 — 그런 값은 제출하지 않는다. 입력이 14장을 넘으면 서버가 말없이 앞의 14장만 쓴다 — 넘으면 제출하지 않는다. 서버는 num_outputs 만큼 공급자를 따로 부르고, 일부만 성공해도 completed 다. 결과는 PNG, prompt_used 는 오지 않는다. thinking_level 을 보내지 않는다(이 모델은 받지 않는다).",
+        "request": {
+          "checkpoint": "gemini3",
+          "prompt": "프롬프트 원문 그대로",
+          "aspect_ratio": "4:5",
+          "image_size": "2K",
+          "num_outputs": 2,
+          "input_images": [
+            [
+              "data:image/png;base64,iVBORw0KGgo=",
+              "data:image/png;base64,iVBORw0KGgo="
+            ]
+          ],
+          "organization_id": "org1",
+          "request_id": "dp-0a1b2c3d4e5f-0123456789abcdef01234567_r1-a1",
+          "prompt_autopilot": false
+        },
+        "never": [
+          "mask_image",
+          "template_id",
+          "positive_prompt_prefix",
+          "positive_prompt_suffix",
+          "trigger_words",
+          "width",
+          "height",
+          "seed",
+          "input_image_references",
+          "quality",
+          "background",
+          "moderation",
+          "complexity",
+          "size",
+          "ideogram",
+          "watermark",
+          "guidance_scale",
+          "sequential_image_generation",
+          "max_images",
+          "thinking_level"
+        ],
+        "errors": {
+          "_comment": "서버가 이 계열의 실패 사유를 일반 안내 문구로 바꿔 주므로 문구로 가릴 수 있는 입력 오류가 없다 — error_category 로만 판단한다.",
+          "input": []
+        }
       }
     },
     "catalog": {
@@ -740,6 +1003,42 @@
             "backend": "ideogram_api",
             "checkpoint": "ideogram_4_5",
             "max_input_images": 5,
+            "supported_modes": [
+              "generation",
+              "editing"
+            ]
+          },
+          {
+            "id": "gemini-nano-banana-2.1",
+            "name": "Gemini Nano Banana 2.1",
+            "architecture": "gemini",
+            "backend": "gemini",
+            "checkpoint": "gemini-nano-banana-2.1",
+            "max_input_images": 14,
+            "supported_modes": [
+              "generation",
+              "editing"
+            ]
+          },
+          {
+            "id": "gemini_flash2",
+            "name": "Gemini 3.1 Flash",
+            "architecture": "gemini",
+            "backend": "gemini",
+            "checkpoint": "gemini_flash2",
+            "max_input_images": 14,
+            "supported_modes": [
+              "generation",
+              "editing"
+            ]
+          },
+          {
+            "id": "gemini3",
+            "name": "Gemini 3 Pro",
+            "architecture": "gemini",
+            "backend": "gemini",
+            "checkpoint": "gemini3",
+            "max_input_images": 14,
             "supported_modes": [
               "generation",
               "editing"
