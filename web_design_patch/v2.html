@@ -31,8 +31,13 @@
       </div>
       <div class="topbar-right">
         <span id="home-account" class="round-pill hidden"></span>
-        <button id="btn-home-v1" type="button" class="pill-btn" title="기존 스튜디오 화면(v1)으로 전환">기존 화면(v1)</button>
-        <button id="btn-home-settings" type="button" class="icon-btn" title="테마 · UI 크기 · 배치 설정">⚙</button>
+        <button id="btn-home-v1" type="button" class="pill-btn" title="기존 스튜디오 화면(v1)으로 전환">
+          <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+          <span>기존 화면(v1)</span>
+        </button>
+        <button id="btn-home-settings" type="button" class="icon-btn" title="테마 · UI 크기 · 배치 설정">
+          <svg class="v2-ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
       </div>
     </header>
     <main class="projects-main">
@@ -56,7 +61,10 @@
   <div id="studio-view" class="studio-view hidden">
     <header class="topbar">
       <div class="topbar-left">
-        <button id="btn-back-projects" type="button" class="pill-btn" title="프로젝트 목록으로 돌아가기">← 프로젝트</button>
+        <button id="btn-back-projects" type="button" class="pill-btn" title="프로젝트 목록으로 돌아가기">
+          <svg class="v2-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          <span>프로젝트</span>
+        </button>
         <div class="brand-tag">
           <span class="brand-dot" aria-hidden="true"></span>
           <span class="brand-name">Patch Studio</span>
@@ -75,23 +83,47 @@
 
       <div class="topbar-center">
         <div class="btn-group" role="group" aria-label="실행 취소 및 히스토리">
-          <button id="btn-undo" type="button" class="icon-btn" title="실행 취소 (Ctrl+Z)" disabled>↶</button>
-          <button id="btn-redo" type="button" class="icon-btn" title="다시 실행 (Ctrl+Y)" disabled>↷</button>
-          <button id="btn-history" type="button" class="pill-btn" title="작업 히스토리 패널 열기/닫기 (H)">히스토리 <kbd>H</kbd></button>
+          <button id="btn-undo" type="button" class="icon-btn" title="실행 취소 (Ctrl+Z)" disabled>
+            <svg class="v2-ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+          </button>
+          <button id="btn-redo" type="button" class="icon-btn" title="다시 실행 (Ctrl+Y)" disabled>
+            <svg class="v2-ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/></svg>
+          </button>
+          <button id="btn-history" type="button" class="pill-btn" title="작업 히스토리 패널 열기/닫기 (H)">
+            <svg class="v2-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+            <span>히스토리</span><kbd>H</kbd>
+          </button>
         </div>
         <span class="divider-v" aria-hidden="true"></span>
         <div class="view-toggles" role="group" aria-label="캔버스 보기 전환">
-          <button id="btn-hold-before" type="button" class="pill-btn" title="누르는 동안 원본 보기 (Q)">Before <kbd>Q</kbd></button>
-          <button id="btn-split-compare" type="button" class="pill-btn" title="캔버스 전/후 분할 비교 (S)">전/후 비교 <kbd>S</kbd></button>
-          <button id="btn-toggle-seams" type="button" class="pill-btn" title="경계 이음매 표시 (N)">이음매 <kbd>N</kbd></button>
+          <button id="btn-hold-before" type="button" class="pill-btn" title="누르는 동안 원본 보기 (Q)">
+            <svg class="v2-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M12 5v14"/></svg>
+            <span>원본</span><kbd>Q</kbd>
+          </button>
+          <button id="btn-split-compare" type="button" class="pill-btn" title="캔버스 전/후 분할 비교 (S)">
+            <svg class="v2-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1.5"/><line x1="12" y1="2" x2="12" y2="22"/><polyline points="8 9 5 12 8 15"/><polyline points="16 9 19 12 16 15"/></svg>
+            <span>전/후 비교</span><kbd>S</kbd>
+          </button>
+          <button id="btn-toggle-seams" type="button" class="pill-btn" title="경계 이음매 표시 (N)">
+            <svg class="v2-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3L2 20h20L12 3z"/><line x1="12" y1="9" x2="12" y2="14"/><circle cx="12" cy="17" r="0.8" fill="currentColor"/></svg>
+            <span>이음매</span><kbd>N</kbd>
+          </button>
         </div>
       </div>
 
       <div class="topbar-right">
         <button id="btn-drain" type="button" class="pill-btn danger-pill hidden" title="진행 중인 호출 이후 새 호출 멈춤">실행 중지</button>
-        <button id="btn-switch-v1" type="button" class="pill-btn" title="같은 프로젝트로 기존 화면(v1) 열기">기존 화면(v1)</button>
-        <button id="btn-settings" type="button" class="icon-btn" title="작업공간 설정 · 테마 · UI 크기">⚙</button>
-        <button id="btn-export-psd" type="button" class="btn-primary" title="후편집용 레이어 PSD 내보내기 (Ctrl+E)">PSD 내보내기</button>
+        <button id="btn-switch-v1" type="button" class="pill-btn" title="같은 프로젝트로 기존 화면(v1) 열기">
+          <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+          <span>기존 화면(v1)</span>
+        </button>
+        <button id="btn-settings" type="button" class="icon-btn" title="작업공간 설정 · 테마 · UI 크기">
+          <svg class="v2-ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+        <button id="btn-export-psd" type="button" class="btn-primary" title="후편집용 레이어 PSD 내보내기 (Ctrl+E)">
+          <svg class="v2-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>PSD 내보내기</span>
+        </button>
       </div>
     </header>
 
@@ -125,8 +157,14 @@
         <!-- 좌측 탭 B: 레퍼런스 보관함 -->
         <section id="left-panel-refs" class="dock-body hidden">
           <div class="dock-toolbar wrap">
-            <button id="btn-open-sheet-cut" type="button" class="btn-primary-sm">시트 오려내기</button>
-            <button id="btn-upload-ref" type="button" class="btn-secondary-sm">+ 파일 올리기</button>
+          <button id="btn-open-sheet-cut" type="button" class="btn-primary-sm">
+            <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+            <span>시트 오리기</span>
+          </button>
+          <button id="btn-upload-ref" type="button" class="btn-secondary-sm">
+            <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <span>올리기</span>
+          </button>
             <button id="btn-forge-ref" type="button" class="mini-btn accent-outline hidden">Forge 가져오기</button>
             <input id="input-upload-ref" type="file" accept=".psd,.psb,.png,.jpg,.jpeg,.webp" multiple hidden />
           </div>
@@ -163,6 +201,9 @@
             <span class="tool-key">␣</span>
           </button>
           <span class="rail-sep" aria-hidden="true"></span>
+          <button id="btn-tool-sheet" type="button" class="tool-btn" title="레퍼런스 시트 오려내기 · 4점 원근 보정">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+          </button>
           <button id="btn-toggle-autocrop" type="button" class="tool-btn" title="AI 자동 크롭 경계 미리보기 표시">
             <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M6 3v11h11M3 6h11v11" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
           </button>
@@ -209,16 +250,29 @@
           </div>
         </div>
 
-        <!-- 하단 중앙 도킹 컨텍스트 바 (패치 선택 시) -->
+        <!-- 하단 중앙 도킹 컨텍스트 바 (패치 선택 시 — 아이콘 + 라벨 직관 구성) -->
         <div id="floating-bar" class="floating-bar hidden" aria-label="선택 패치 빠른 작업">
-          <span id="fb-name" class="fb-name">—</span>
-          <span id="fb-dims" class="fb-dims">0×0</span>
+          <div class="fb-thumb" id="fb-thumb" aria-hidden="true"></div>
+          <div class="fb-meta">
+            <span id="fb-name" class="fb-name">—</span>
+            <span id="fb-dims" class="fb-dims">0×0</span>
+          </div>
           <span class="divider-v" aria-hidden="true"></span>
           <div id="fb-purpose-group" class="fb-pills"></div>
-          <button id="btn-fb-ratio-fit" type="button" class="mini-btn accent-outline hidden" title="선택 모델 비율에 맞춰 크롭 영역 넓히기">비율 맞추기</button>
-          <button id="btn-fb-compare" type="button" class="mini-btn hidden" title="선택 패치 후보 크게 비교">크게 비교</button>
-          <button id="btn-fb-lock" type="button" class="mini-btn" title="패치 잠금/해제 (L)">잠금</button>
-          <button id="btn-fb-delete" type="button" class="mini-btn danger-text" title="패치 삭제 (Del)">삭제</button>
+          <span class="divider-v" aria-hidden="true"></span>
+          <button id="btn-fb-ratio-fit" type="button" class="mini-btn accent-outline hidden" title="선택 모델 비율에 맞춰 크롭 영역 넓히기">
+            <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="1.5"/><polyline points="7 13 7 9 11 9"/><polyline points="17 11 17 15 13 15"/></svg>
+            <span>비율 맞춤</span>
+          </button>
+          <button id="btn-fb-compare" type="button" class="mini-btn hidden" title="선택 패치 후보 크게 비교">
+            <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+            <span>비교</span>
+          </button>
+          <button id="btn-fb-lock" type="button" class="mini-btn" title="패치 잠금/해제 (L)"></button>
+          <button id="btn-fb-delete" type="button" class="mini-btn danger-text" title="패치 삭제 (Del)">
+            <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            <span>삭제</span>
+          </button>
         </div>
 
         <!-- 캔버스 하단 푸터 -->

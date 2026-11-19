@@ -549,19 +549,28 @@ window.DPV2Canvas = (() => {
     $("fb-name").textContent = `${p.name}${tgLabel}${prevLabel}`;
     $("fb-dims").textContent = `${x1 - x0}×${y1 - y0}`;
 
+    // 선택 패치 실시간 크롭 썸네일 미리보기 (포토샵식 직관성)
+    const fbThumb = $("fb-thumb");
+    if (fbThumb && lastBaseUrl && canvasSize[0] > 0 && canvasSize[1] > 0) {
+      const rw = Math.max(1, x1 - x0), rh = Math.max(1, y1 - y0);
+      fbThumb.style.backgroundImage = `url("${lastBaseUrl}")`;
+      fbThumb.style.backgroundSize = `${(100 * canvasSize[0]) / rw}% ${(100 * canvasSize[1]) / rh}%`;
+      fbThumb.style.backgroundPosition = `${canvasSize[0] > rw ? (100 * x0) / (canvasSize[0] - rw) : 0}% ${canvasSize[1] > rh ? (100 * y0) / (canvasSize[1] - rh) : 0}%`;
+    }
+
     const grp = $("fb-purpose-group");
     grp.replaceChildren();
     for (const purp of Data.PURPOSES) {
       const btn = Data.el("button", {
         type: "button",
         className: "mini-btn" + (p.meta.purpose === purp.id ? " on" : ""),
-        text: purp.short,
         title: purp.desc,
         onClick: () => {
           p.meta.purpose = purp.id;
+          p.meta.dirtySpec = true;
           Store.emit("selection");
         },
-      });
+      }, Data.icon(purp.icon, 13), Data.el("span", { text: purp.short }));
       grp.append(btn);
     }
 
@@ -572,7 +581,8 @@ window.DPV2Canvas = (() => {
     ratioBtn.classList.toggle("hidden", !hasRatios || !!matchedRatio);
 
     $("btn-fb-compare").classList.toggle("hidden", !p.candidates.length);
-    $("btn-fb-lock").textContent = p.locked ? "잠금 해제" : "잠금";
+    const lockBtn = $("btn-fb-lock");
+    lockBtn.replaceChildren(Data.icon(p.locked ? "unlock" : "lock", 13), Data.el("span", { text: p.locked ? "해제" : "잠금" }));
   }
 
   // ── 포인터 & 휠 & 도구 이벤트 ──
@@ -775,6 +785,10 @@ window.DPV2Canvas = (() => {
   function wireToolRailAndFooter() {
     document.querySelectorAll(".tool-rail .tool-btn[data-tool]").forEach((btn) => {
       btn.addEventListener("click", () => setTool(btn.dataset.tool));
+    });
+    const sheetToolBtn = $("btn-tool-sheet");
+    if (sheetToolBtn) sheetToolBtn.addEventListener("click", () => {
+      if (window.DPV2Overlays) window.DPV2Overlays.openSheetCut();
     });
     $("btn-toggle-autocrop").addEventListener("click", () => {
       Store.savePrefs({ showAutoCrop: !Store.state.prefs.showAutoCrop });

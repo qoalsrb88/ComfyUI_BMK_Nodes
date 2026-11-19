@@ -73,6 +73,9 @@ window.DPV2Inspector = (() => {
 
     const primary = Store.primaryPatch();
     const canReorder = list.length > 1 && !(Store.state.S && Store.state.S.running);
+    const cv = Store.state.S && Store.state.S.canvas;
+    const baseUrl = cv && cv.base_url ? Api.apiUrl(cv.base_url) : "";
+    const [cw, ch] = (cv && cv.size) || [0, 0];
     let stars = 0;
     for (let idx = 0; idx < list.length; idx++) {
       const p = list[idx];
@@ -87,39 +90,48 @@ window.DPV2Inspector = (() => {
       const purp = Data.purposeInfo(p.meta.purpose);
       const tl = Data.trafficLight(p.pickedCand || p.candidates[0], p.seam);
       const [x0, y0, x1, y1] = p.rect;
+      const rw = Math.max(1, x1 - x0), rh = Math.max(1, y1 - y0);
+
+      // 포토샵식 실시간 크롭 부위 썸네일 미리보기 (추가 요청 0회)
+      const thumb = Data.el("div", { className: "pc-thumb" },
+        Data.el("span", { className: "pc-thumb-idx", text: String(p.index) }),
+      );
+      if (baseUrl && cw > 0 && ch > 0) {
+        thumb.style.backgroundImage = `url("${baseUrl}")`;
+        thumb.style.backgroundSize = `${(100 * cw) / rw}% ${(100 * ch) / rh}%`;
+        thumb.style.backgroundPosition = `${cw > rw ? (100 * x0) / (cw - rw) : 0}% ${ch > rh ? (100 * y0) / (ch - rh) : 0}%`;
+      }
 
       const zUpBtn = canReorder ? Data.el("button", {
-        type: "button", className: "pc-icon-btn", text: "▲",
+        type: "button", className: "pc-icon-btn",
         disabled: idx === 0, title: "겹침 순서 위로 (더 위 레이어)",
         onClick: (e) => { e.stopPropagation(); Store.moveCropZ(p.id, "step", "up"); },
-      }) : null;
+      }, Data.icon("up", 12)) : null;
       const zDownBtn = canReorder ? Data.el("button", {
-        type: "button", className: "pc-icon-btn", text: "▼",
+        type: "button", className: "pc-icon-btn",
         disabled: idx === list.length - 1, title: "겹침 순서 아래로",
         onClick: (e) => { e.stopPropagation(); Store.moveCropZ(p.id, "step", "down"); },
-      }) : null;
+      }, Data.icon("down", 12)) : null;
 
       const visBtn = Data.el("button", {
         type: "button",
         className: "pc-icon-btn" + (p.meta.hidden ? "" : " on"),
-        text: p.meta.hidden ? "◌" : "👁",
         title: p.meta.hidden ? "캔버스에 표시" : "캔버스에서 숨기기",
         onClick: (e) => {
           e.stopPropagation();
           p.meta.hidden = !p.meta.hidden;
           Store.emit("selection");
         },
-      });
+      }, Data.icon(p.meta.hidden ? "eyeOff" : "eye", 13));
       const lockBtn = Data.el("button", {
         type: "button",
         className: "pc-icon-btn" + (p.locked ? " on" : ""),
-        text: p.locked ? "🔒" : "🔓",
         title: p.locked ? "잠금 해제" : "잠그기",
         onClick: async (e) => {
           e.stopPropagation();
           await Store.updateCrop(p.id, { locked: !p.locked }, p.locked ? "잠금 해제" : "잠금");
         },
-      });
+      }, Data.icon(p.locked ? "lock" : "unlock", 13));
 
       const card = Data.el("div", {
         className: cls.join(" "),
@@ -133,22 +145,26 @@ window.DPV2Inspector = (() => {
           if (window.DPV2Canvas) window.DPV2Canvas.fitCrop(p.id);
         },
       },
-      Data.el("div", { className: "pc-row-top" },
-        Data.el("span", { className: "pc-idx", text: String(p.index) }),
-        Data.el("span", { className: "pc-name", text: p.name, title: p.name }),
-        Data.el("div", { className: "pc-actions" },
-          canReorder ? Data.el("span", { className: "pc-z-btns" }, zUpBtn, zDownBtn) : null,
-          visBtn, lockBtn,
+      Data.el("div", { className: "pc-card-grid" },
+        thumb,
+        Data.el("div", { className: "pc-body" },
+          Data.el("div", { className: "pc-row-top" },
+            Data.el("span", { className: "pc-name", text: p.name, title: p.name }),
+            Data.el("div", { className: "pc-actions" },
+              canReorder ? Data.el("span", { className: "pc-z-btns" }, zUpBtn, zDownBtn) : null,
+              visBtn, lockBtn,
+            ),
+          ),
+          Data.el("div", { className: "pc-row-bot" },
+            Data.el("span", { className: "tag-chip accent" }, Data.icon(purp.icon, 10), Data.el("span", { text: purp.short })),
+            Data.el("span", { className: "tag-chip", text: `${rw}×${rh}` }),
+            p.targets && p.targets.length > 1 ? Data.el("span", { className: "tag-chip", text: `타깃 ${p.targets.length}` }) : null,
+            (p.anyPicked || p.pickedCand) ? Data.el("span", { className: "tag-chip ok", text: `★ ${tl.icon}` })
+              : p.candidates.length ? Data.el("span", { className: "tag-chip", text: `후보 ${p.candidates.length}` })
+              : Data.el("span", { className: "tag-chip", text: "생성 전" }),
+            p.meta.modelOverride ? Data.el("span", { className: "tag-chip warn", text: p.modelInfo.label }) : null,
+          ),
         ),
-      ),
-      Data.el("div", { className: "pc-row-bot" },
-        Data.el("span", { className: "tag-chip accent", text: purp.short }),
-        Data.el("span", { className: "tag-chip", text: `${x1 - x0}×${y1 - y0}` }),
-        p.targets && p.targets.length > 1 ? Data.el("span", { className: "tag-chip", text: `타깃 ${p.targets.length}` }) : null,
-        (p.anyPicked || p.pickedCand) ? Data.el("span", { className: "tag-chip ok", text: `★ ${tl.icon}` })
-          : p.candidates.length ? Data.el("span", { className: "tag-chip", text: `후보 ${p.candidates.length}` })
-          : Data.el("span", { className: "tag-chip", text: "생성 전" }),
-        p.meta.modelOverride ? Data.el("span", { className: "tag-chip warn", text: p.modelInfo.label }) : null,
       ));
 
       // 패치 카드 드래그로 Z-Order 변경 + 레퍼런스 카드 드롭 연결
@@ -481,14 +497,13 @@ window.DPV2Inspector = (() => {
       ...Data.PURPOSES.map((purp) => Data.el("button", {
         type: "button",
         className: "purpose-btn" + (p.meta.purpose === purp.id ? " active" : ""),
-        text: purp.label,
         title: purp.desc,
         onClick: () => {
           p.meta.purpose = purp.id;
           p.meta.dirtySpec = true;
           Store.emit("selection");
         },
-      })),
+      }, Data.icon(purp.icon, 15), Data.el("span", { text: purp.label }))),
     );
 
     const cardBasic = Data.el("div", { className: "insp-card" },
@@ -564,10 +579,9 @@ window.DPV2Inspector = (() => {
         Data.el("button", {
           type: "button", className: "mini-btn accent-outline",
           disabled: Store.state.assistBusy,
-          text: Store.state.assistBusy ? "작성 중…" : "AI 작성 실행",
           title: "경량 LLM 호출로 영문 프롬프트를 작성합니다 (클릭 시에만 실행 · 별도 확인 상자 없음)",
           onClick: () => runAssistSequence([p], !!p.meta.body_en && !p.meta.dirtySpec),
-        }),
+        }, Data.icon("sparkles", 13), Data.el("span", { text: Store.state.assistBusy ? "작성 중…" : "AI 작성" })),
       ),
       Data.el("p", { className: "muted-text", text: "클릭 시 경량 LLM 호출로 영문 본문을 작성합니다(동일 입력은 캐시 재사용)." }),
       p.meta.specState === "blocked" && p.meta.specWhy
@@ -621,9 +635,9 @@ window.DPV2Inspector = (() => {
       Data.el("div", { className: "insp-card-head" },
         Data.el("h3", { className: "insp-title", text: `연결된 레퍼런스 (${refFiles.length})` }),
         Data.el("button", {
-          type: "button", className: "mini-btn accent-outline", text: "시트 오려내기",
+          type: "button", className: "mini-btn accent-outline",
           onClick: () => { if (window.DPV2Overlays) window.DPV2Overlays.openSheetCut(); },
-        }),
+        }, Data.icon("scissors", 13), Data.el("span", { text: "시트 오리기" })),
       ),
       refFiles.length ? Data.el("div", { className: "inline-row" },
         ...refFiles.map((rf) => Data.el("div", { className: "selected-file-chip" },
@@ -784,22 +798,20 @@ window.DPV2Inspector = (() => {
     const actionRow = Data.el("div", { className: "inline-row" },
       Data.el("button", {
         type: "button", className: "btn-primary-sm",
-        text: cand && cand.picked ? "★ 채택 해제" : "★ 이 후보 채택",
         onClick: () => pickCurrentCandidate(p, cand),
-      }),
+      }, Data.icon("star", 13), Data.el("span", { text: cand && cand.picked ? "채택 해제" : "이 후보 채택" })),
       Data.el("button", {
-        type: "button", className: "btn-secondary-sm", text: "크게 비교",
+        type: "button", className: "btn-secondary-sm",
         onClick: () => { if (window.DPV2Overlays) window.DPV2Overlays.openComparer(); },
-      }),
+      }, Data.icon("expand", 13), Data.el("span", { text: "크게 비교" })),
       Data.el("button", {
         type: "button", className: "mini-btn",
-        text: cand && cand.rejected ? "제외 해제" : "제외",
         onClick: () => rejectCurrentCandidate(cand),
-      }),
+      }, Data.icon("xCircle", 13), Data.el("span", { text: cand && cand.rejected ? "제외 해제" : "제외" })),
       Data.el("button", {
-        type: "button", className: "mini-btn accent-outline", text: "다시 생성 +1",
+        type: "button", className: "mini-btn accent-outline",
         onClick: () => requestReroll(p, cand),
-      }),
+      }, Data.icon("refresh", 13), Data.el("span", { text: "다시 생성 +1" })),
     );
 
     const grid = Data.el("div", { className: "cand-grid" });
@@ -943,16 +955,16 @@ window.DPV2Inspector = (() => {
         Data.el("div", { className: "inline-row" },
           Data.el("button", {
             type: "button", className: "mini-btn" + (Store.state.tool === "brush" ? " on" : ""),
-            text: "브러시 (B)", onClick: () => window.DPV2Canvas && window.DPV2Canvas.setTool("brush"),
-          }),
+            onClick: () => window.DPV2Canvas && window.DPV2Canvas.setTool("brush"),
+          }, Data.icon("brush", 13), Data.el("span", { text: "브러시 (B)" })),
           Data.el("button", {
             type: "button", className: "mini-btn" + (Store.state.tool === "eraser" ? " on" : ""),
-            text: "지우개 (E)", onClick: () => window.DPV2Canvas && window.DPV2Canvas.setTool("eraser"),
-          }),
+            onClick: () => window.DPV2Canvas && window.DPV2Canvas.setTool("eraser"),
+          }, Data.icon("eraser", 13), Data.el("span", { text: "지우개 (E)" })),
           Data.el("button", {
-            type: "button", className: "mini-btn", text: "자동 마스크 복원",
+            type: "button", className: "mini-btn",
             onClick: () => { mk.m.set(mk.base); mk.dirty = true; mk.ops.push("초기화"); Store.emit("mask"); },
-          }),
+          }, Data.icon("refresh", 13), Data.el("span", { text: "복원" })),
         ),
         Data.el("div", { className: "inline-row" },
           Data.el("span", { className: "muted-text", text: "가장자리 페이드:" }),
@@ -961,17 +973,17 @@ window.DPV2Inspector = (() => {
         ),
         Data.el("div", { className: "inline-row" },
           Data.el("button", {
-            type: "button", className: "btn-primary-sm", disabled: !mk.dirty, text: "마스크 저장",
+            type: "button", className: "btn-primary-sm", disabled: !mk.dirty,
             onClick: () => Store.saveMaskSession(),
-          }),
+          }, Data.icon("check", 13), Data.el("span", { text: "마스크 저장" })),
           Data.el("button", {
-            type: "button", className: "mini-btn", text: "서버 이전 판",
+            type: "button", className: "mini-btn",
             onClick: async () => {
               await Api.editMask(Store.state.root, { key: mk.key, seen: mk.file, op: "undo" });
               await Store.openMaskSession(mk.key);
               Store.toast("이전 마스크 판으로 되돌렸습니다.", "ok");
             },
-          }),
+          }, Data.icon("undo", 13), Data.el("span", { text: "서버 이전 판" })),
         ),
       );
     }
