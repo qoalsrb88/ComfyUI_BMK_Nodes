@@ -77,6 +77,7 @@
   let maskEd = null; // DPMaskEdit — 옛 서버는 mask_edit.js 를 주지 않아 null
   let maskOn = false;
   let seen = null; // Set — 본 후보 key(syncSeen 이 첫 state 에서 채움)
+  const promptCache = new Map();
 
   const $ = (id) => document.getElementById(id);
 
@@ -1346,11 +1347,16 @@
   }
 
   function candidateModel(c) {
-    if (!SM() || !c || !c.model) return "";
+    if (!SM() || !c) return "";
+    const name = c.model || c.origin_info?.model;
+    if (!name) return "";
     const models = window.DPEnv.caps && window.DPEnv.caps.models;
     if (!Array.isArray(models)) return "";
-    const model = models.find((m) => m.name === c.model);
-    return (model && model.label || c.model) + (c.quality && !(model && !model.qualities.length) ? ` · 품질 ${c.quality}` : "");
+    const model = models.find((m) => m.name === name), opts = c.opts || c.origin_info?.opts || {};
+    const thinking = { minimal: "간단히", medium: "보통", high: "깊게" };
+    return (model && model.label || name) + (c.quality && !(model && !model.qualities.length) ? ` · 품질 ${c.quality}` : "")
+      + (model?.opts?.image_size?.includes(opts.image_size) ? ` · 해상도 ${opts.image_size}` : "")
+      + (model?.opts?.thinking_level?.includes(opts.thinking_level) ? ` · 추론 ${thinking[opts.thinking_level]}` : "");
   }
 
   function row(parent, key, text, cls = "") {
@@ -1373,6 +1379,8 @@
 
   function renderDetail() {
     const d = $("detail");
+    const openPrompt = d.openPrompt;
+    delete d.openPrompt;
     d.replaceChildren();
     const sb = $("btn-star");
     const on = !!(curCand() && curCand().picked);
@@ -1416,6 +1424,50 @@
       + (ranText(c) ? ` · ${ranText(c)} 완료` : ""));
     const model = candidateModel(c);
     if (model) row(d, "모델", model).title = model;
+    if (SM() && (c.prompt_rewritten === true || c.prompt_used === true)) {
+      const r = row(d, "프롬프트", c.prompt_rewritten === true ? "공급자가 프롬프트를 고쳐 씀" : "프롬프트가 서버에서 바뀜");
+      r.classList.add("dp-prompt-detail");
+      if (c.prompt_used === true) {
+        const call = c.call_id, slot = c.slot, key = JSON.stringify([ROOT, call, slot]);
+        const candidate = JSON.stringify([ROOT, c.key, call, slot]);
+        // 폴링 중에도 같은 후보의 글 상자를 이어 쓴다. 조회 중인 응답도 이 상자에 도착한다.
+        const expanded = openPrompt?.candidate === candidate;
+        const text = expanded ? openPrompt.text : el("pre", "pp-prompt dp-server-prompt");
+        if (expanded) d.openPrompt = openPrompt;
+        text.hidden = !expanded;
+        text.tabIndex = 0;
+        const b = el("button", "inline", "서버가 쓴 프롬프트 보기");
+        b.type = "button";
+        b.setAttribute("aria-expanded", String(expanded));
+        b.addEventListener("click", async () => {
+          text.hidden = !text.hidden;
+          b.setAttribute("aria-expanded", String(!text.hidden));
+          if (text.hidden) {
+            delete d.openPrompt;
+            return;
+          }
+          d.openPrompt = { candidate, text };
+          if (!promptCache.has(key)) {
+            promptCache.set(key, (async () => {
+              try {
+                if (typeof call !== "string" || !call || !Number.isInteger(slot) || slot < 0) return null;
+                const res = await fetch(apiUrl("prompt?" + new URLSearchParams({ root: ROOT, call, slot })), { cache: "no-store" });
+                if (!res.ok) return null;
+                const data = await res.json();
+                return typeof data.prompt_used === "string" ? data.prompt_used : null;
+              } catch (_) { return null; }
+            })());
+          }
+          text.textContent = "불러오는 중…";
+          const request = promptCache.get(key);
+          const prompt = await request;
+          if (prompt === null && promptCache.get(key) === request) promptCache.delete(key);
+          text.textContent = prompt === null ? "프롬프트를 불러오지 못했습니다" : prompt;
+        });
+        r.append(b);
+        d.append(text);
+      }
+    }
     tookRow(d, crop, c);
     if (c.joint && c.joint.first && c.joint.first !== t.tid) {
       const r = row(d, "공동", `${c.joint.tids.join("·")} 를 한 번에 고친 결과 — ★ 는 ${c.joint.first} 에만 `, "warn");
@@ -2290,7 +2342,8 @@
       // psdPartial = 서버가 S1-a(PSD 기준점을 고른 이름만 갱신)인가 — S3 서버(state 에 pipeline_rev)와 함께 들어옴. 재시작 전 옛 서버는 take·ack 가
       // 기준점을 통째로 바꿔 나머지 갈라짐 경고도 꺼진다(편집기가 옛 문구로)
       editor = window.DPLayoutEdit.create({ list: $("layout-list"), panel: $("layout-panel"), head: $("layout-head") },
-        { apiUrl, root: ROOT, viewer, toast, queue: applyFree, applyWarn, psdPartial: () => !!S && "pipeline_rev" in S, exit: () => setEditing(false) });
+        { apiUrl, root: ROOT, viewer, toast, queue: applyFree, applyWarn, psdPartial: () => !!S && "pipeline_rev" in S,
+          savedModel: () => pipe?.savedModel?.(), exit: () => setEditing(false) });
     }
     if (window.DPRefEdit) {
       const sheetViewer = window.DPViewer.create($("ref-viewer"), { apiUrl });
@@ -2321,7 +2374,7 @@
           if (mode === "refs" && refsOn && cropId) refEd.select(cropId);
         },
         refresh: () => refresh(true),
-        stepsChanged: () => { renderMode(); renderHeader(); },
+        stepsChanged: () => { renderMode(); renderHeader(); editor?.modelChanged?.(); },
         maskPending: () => maskEd && maskEd.pending(),
         editPending: () => !!S && window.DPPipeline.layoutLines(S).length > 0,
         select: (id) => {

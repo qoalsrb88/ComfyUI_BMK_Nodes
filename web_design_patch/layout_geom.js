@@ -47,6 +47,54 @@ window.DPLayoutGeom = (() => {
     return s.replace(STRIP_RE, "");
   }
 
+  function ratioValue(label, ratioSizes = {}) {
+    const size = ratioSizes?.[label];
+    return Array.isArray(size) && size.length === 2 && size.every((v) => Number.isInteger(v) && v > 0) ? size[0] / size[1] : NaN;
+  }
+
+  function ratioMatch(w, h, ratios, tolerance = 0.01, ratioSizes = {}) {
+    if (![w, h].every((v) => Number.isInteger(v) && v > 0) || !Array.isArray(ratios)) return null;
+    let best = null, error = Infinity;
+    for (const label of ratios) {
+      const diff = Math.abs((w / h) / ratioValue(label, ratioSizes) - 1);
+      if (diff < error) { best = label; error = diff; }
+    }
+    return error <= tolerance ? best : null;
+  }
+
+  function ratioFitRect(rect, bounds, ratios, tolerance = 0.01, ratioSizes = {}) {
+    if (!Array.isArray(rect) || rect.length !== 4 || !rect.every(Number.isInteger) || !Array.isArray(bounds)) return null;
+    const area = bounds.length === 2 ? [0, 0, ...bounds] : bounds;
+    if (area.length !== 4 || !area.every(Number.isInteger)) return null;
+    const [x0, y0, x1, y1] = rect, [left, top, right, bottom] = area;
+    const w = x1 - x0, h = y1 - y0, maxW = right - left, maxH = bottom - top;
+    if (w <= 0 || h <= 0 || x0 < left || y0 < top || x1 > right || y1 > bottom || !Array.isArray(ratios)) return null;
+    const matched = ratioMatch(w, h, ratios, tolerance, ratioSizes);
+    if (matched) return { rect: rect.slice(), ratio: matched };
+    const nearest = ratios.map((ratio, i) => ({ ratio, value: ratioValue(ratio, ratioSizes), i }))
+      .filter((r) => Number.isFinite(r.value))
+      .sort((a, b) => Math.abs(Math.log((w / h) / a.value)) - Math.abs(Math.log((w / h) / b.value)) || a.i - b.i);
+    for (const { ratio, value } of nearest) {
+      let nw = w, nh = h;
+      if (w / h < value) nw = Math.ceil(h * value);
+      else nh = Math.ceil(w / value);
+      // 끝에서 필요한 한두 픽셀을 못 넓혀도 허용 오차 안이면 쓸 수 있다.
+      nw = Math.min(nw, maxW); nh = Math.min(nh, maxH);
+      if (!ratioMatch(nw, nh, [ratio], tolerance, ratioSizes)) {
+        // 작은 사각형은 한 픽셀 반올림도 1%를 넘는다. 허용 구간 안의 정수 크기를 찾아 양쪽으로 넓힌다.
+        for (nh = Math.max(h, Math.floor(w / (value * (1 + tolerance)))); nh <= maxH; nh++) {
+          nw = Math.max(w, Math.min(maxW, rnd(nh * value, 1)));
+          if (ratioMatch(nw, nh, [ratio], tolerance, ratioSizes) || maxW / nh < value * (1 - tolerance)) break;
+        }
+      }
+      if (nw < w || nh < h || nw > maxW || nh > maxH || !ratioMatch(nw, nh, [ratio], tolerance, ratioSizes)) continue;
+      const x = Math.min(Math.max(rnd((x0 + x1 - nw) / 2, 1), left), right - nw);
+      const y = Math.min(Math.max(rnd((y0 + y1 - nh) / 2, 1), top), bottom - nh);
+      return { rect: [x, y, x + nw, y + nh], ratio };
+    }
+    return null;
+  }
+
   // ── G1–G4 사각형 ──
   function size(raw, snap) {
     // 앵커에서 움직인 변까지의 거리 → 크기(앵커를 넘으면 최소)
@@ -453,5 +501,5 @@ window.DPLayoutGeom = (() => {
   }
 
   return { SIZE, POS, RATIO, NAME_MSGS, TEXT_MSGS, rnd, move, resize, grow, newRect, suggest, autoCrop, expandToBoxes, rectProblem, gptSize,
-    splitNnn, nameSide, checkName, checkText, fold, geomChecks };
+    splitNnn, nameSide, checkName, checkText, fold, geomChecks, ratioMatch, ratioFitRect };
 })();

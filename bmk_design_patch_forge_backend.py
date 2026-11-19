@@ -5,7 +5,7 @@ async request(job, input_paths, call_id) · async download(url, ctx))을 Forge �
 유료 실행 함수(runner._billable 등)의 본문은 바꾸지 않는다. Forge 고유 기록은 원장 파일이 아니라 사이드카에 둔다:
 
   cands/<cell_key>/r<rep>.forge.json   {"schema": "dp-forge/1", "requests": [{"id", "attempt", "state", "job_id"?, "time"}…],
-                                         "job_id", "result_ids", "prompt_changed": [슬롯별 bool]}
+                                         "job_id", "result_ids", "prompt_changed": [슬롯별 bool], "prompt_used": [슬롯별 글 또는 null]}
   cands/_forge.json                    {"schema": "dp-forge-project/1", "nonce": 12hex}   (프로젝트마다 한 번, 배타 생성)
 
 원장 resp.json 의 data[].url 에는 실제 주소 대신 불투명 주소 `forge-job:<job_id>/<slot>` 만 적힌다. 제출 응답을 받으면 폴링
@@ -27,6 +27,7 @@ import secrets
 import tempfile
 import threading
 import time
+import unicodedata
 from datetime import datetime
 
 from PIL import Image
@@ -57,6 +58,8 @@ _CALL_ID = re.compile(r"([0-9a-f]{24})_r(\d+)")
 _JOB_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _PRIVATE_TEXT = re.compile(r"://|data:|\\|[a-z0-9_.-]+:\d+|(?:\d{1,3}\.){3}\d{1,3}|::|(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}", re.I)
+# 주소와 UTF-8로 쓸 수 없는 서로게이트는 원문 전체에서 검사한 뒤 저장 길이를 제한한다.
+_UNRECORDABLE_PROMPT = re.compile(r"://|data:|[\ud800-\udfff]", re.I)
 _LOCK = threading.Lock()
 _PROGRESS = {}
 CATALOG_TTL = 600.0
@@ -73,6 +76,7 @@ _INPUT_ERRORS = {
     "ideogram": ("Ideogram 프롬프트는 1~10000자여야 합니다", "Ideogram은 원본 포함 입력 최대 5장",
                  "Ideogram 출력 수는 1~8장이어야 합니다", "Ideogram이 입력을 거절했습니다",
                  "지원하지 않는 이미지 파일 형식입니다", "입력 이미지를 읽을 수 없습니다"),
+    "gemini": (),
 }
 
 
@@ -216,8 +220,8 @@ def blocked_reason(job: dict) -> str | None:
         if why:
             # 잘못된 값 자체에는 토큰·주소가 들어 있을 수 있다.
             return f"{model.label} 의 품질 설정이 잘못되었습니다 — 반영을 다시 실행해 주세요."
-        return models.size_problem(model.name, job.get("size"))
-    return None
+    why = models.opts_problem(model.name, job.get("opts"))
+    return why or models.size_problem(model.name, job.get("size"), job.get("opts"))
 
 
 def encode_inputs(input_paths: list[str]) -> list[bytes]:
@@ -244,6 +248,11 @@ def build_request(job: dict, images: list[bytes], *, organization_id: str, reque
             body["image_size"] = f"{job['size'][0]}x{job['size'][1]}"
         elif model.kind == "ideogram":
             body["ideogram"] = {"operation": "auto", "quality": job["quality"], "magic_prompt": "off"}
+        elif model.kind == "gemini":
+            body["aspect_ratio"] = job["opts"]["aspect_ratio"]
+            body["image_size"] = job["opts"]["image_size"]
+            if "thinking_level" in model.opts:
+                body["thinking_level"] = job["opts"]["thinking_level"]
         body.update(num_outputs=job["n"],
                     input_images=[["data:image/png;base64," + base64.b64encode(data).decode("ascii") for data in images]],
                     organization_id=organization_id, request_id=request_id, prompt_autopilot=prompt_autopilot)
@@ -312,7 +321,9 @@ def read_sidecar(root: str, cell_key: str, rep: int) -> dict:
             or "result_ids" in value and (not isinstance(value["result_ids"], list) or
                                          not all(isinstance(item, str) for item in value["result_ids"]))
             or "prompt_changed" in value and (not isinstance(value["prompt_changed"], list) or
-                                             not all(type(item) is bool for item in value["prompt_changed"]))):
+                                             not all(type(item) is bool for item in value["prompt_changed"]))
+            or "prompt_used" in value and (not isinstance(value["prompt_used"], list) or
+                                          not all(item is None or isinstance(item, str) for item in value["prompt_used"]))):
         raise ValueError("Forge 결과 기록의 형식이 잘못되었습니다.")
     return value
 
@@ -327,6 +338,23 @@ def prompt_changed(root: str, call_id: str) -> list[bool]:
     except (OSError, ValueError, TypeError):
         return []
     return [flag is True for flag in flags] if isinstance(flags, list) else []
+
+
+def prompt_used(root: str, call_id: str) -> list[str | None]:
+    """그 호출에서 실제로 바뀐 슬롯의 서버 프롬프트 원문. 옛 기록·없는 기록은 []."""
+    match = _CALL_ID.fullmatch(call_id or "")
+    if match is None:
+        return []
+    try:
+        texts = read_sidecar(root, match[1], int(match[2])).get("prompt_used")
+    except (OSError, ValueError, TypeError):
+        return []
+    return texts if isinstance(texts, list) else []
+
+
+def _normalized_prompt(text: str) -> str:
+    text = unicodedata.normalize("NFC", text).replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(line.rstrip() for line in text.split("\n")).strip()
 
 
 def progress(root: str) -> dict | None:
@@ -464,7 +492,7 @@ class ForgeBackend:
                     last = {"id": f"dp-{_nonce(self._root)}-{call_id}-a{attempt}", "attempt": attempt,
                             "state": "open", "time": runner._now()}
                     side["requests"].append(last)
-                    for key in ("job_id", "result_ids", "prompt_changed"):
+                    for key in ("job_id", "result_ids", "prompt_changed", "prompt_used"):
                         side.pop(key, None)
                 self._save(ck, rep, side)
                 phase = "encode"
@@ -684,9 +712,14 @@ class ForgeBackend:
                                    phase="download" if recovery else "response", retryable=recovery or not user,
                                    maybe_billed=recovery or not user)
         metadata = result.get("metadata") or []
-        side["prompt_changed"] = [isinstance(item, dict) and isinstance(item.get("prompt_used"), str)
-                                  and item["prompt_used"] != prompt for item in
-                                  [metadata[i] if i < len(metadata) else {} for i in range(len(images))]]
+        normalized = _normalized_prompt(prompt) if isinstance(prompt, str) else prompt
+        side["prompt_changed"], side["prompt_used"] = [], []
+        for i in range(len(images)):
+            item = metadata[i] if i < len(metadata) else {}
+            text = item.get("prompt_used") if isinstance(item, dict) else None
+            changed = isinstance(text, str) and _normalized_prompt(text) != normalized
+            side["prompt_changed"].append(changed)
+            side["prompt_used"].append(text[:10000] if changed and not _UNRECORDABLE_PROMPT.search(text) else None)
         side["result_ids"] = [value for value in result.get("result_ids") or []
                               if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,256}", value)]
         self._save(ck, rep, side)

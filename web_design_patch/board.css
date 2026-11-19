@@ -214,6 +214,8 @@ body.no-viewer #compare { height: min(52vh, 560px); }
 .detail .warn { color: var(--warn); }
 .detail .bad { color: var(--bad); }
 .detail .row.warn, .detail .row.bad { white-space: normal; }
+.detail .row.dp-prompt-detail { white-space: normal; }
+.detail .dp-server-prompt { max-height: 240px; overflow: auto; }
 button.inline { margin-left: 8px; min-height: 24px; padding: 0 8px; font-size: 12px; line-height: 20px; border-radius: var(--radius-sm); }
 .actions { display: flex; gap: 4px; flex: none; }
 
