@@ -673,7 +673,8 @@ window.DPV2Canvas = (() => {
           onClick: () => {
             for (const sp of selList) {
               sp.meta.purpose = pr.id;
-              sp.meta.dirtySpec = true;
+              Store.markFieldDirty(sp.meta, "purpose");
+              if (!sp.meta.specLoaded && Api.can("v2_spec_edit")) Store.loadSpec(sp.id);
             }
             Store.emit("selection");
             if (!isMulti && Api.can("v2_spec_edit")) {
@@ -1235,7 +1236,7 @@ window.DPV2Canvas = (() => {
       const p = Store.primaryPatch();
       if (!p) return;
       p.meta.user_instruction_ko = e.target.value;
-      p.meta.dirtySpec = true;
+      Store.markFieldDirty(p.meta, "instruction");
       const rt = $("inp-instruction");
       if (rt && document.activeElement !== rt) rt.value = e.target.value;
     });
@@ -1428,8 +1429,9 @@ window.DPV2Canvas = (() => {
     });
   }
 
-  // 화살표 키 미세 이동 (현재 snapStep 연동 · Ctrl 1px · #C08-8 패치별 독립 디바운스 커밋)
+  // 화살표 키 미세 이동 (현재 snapStep 연동 · Ctrl 1px · #C08-8 패치별 독립 디바운스 · #C11-5① 이동 전 원본 좌표 보존)
   const nudgeTimers = new Map();
+  const nudgeOriginals = new Map();
   function nudgeSelectedPatch(dx, dy, stepOrSnap = 16) {
     const selList = Store.selectedPatches();
     if (selList.length !== 1) return false;
@@ -1439,15 +1441,21 @@ window.DPV2Canvas = (() => {
     const bounds = [view.imgW, view.imgH];
     const next = snapMoveRect(p.rect, dx, dy, bounds, step);
     if (next.every((v, i) => v === p.rect[i])) return true;
+    const id = p.id, name = p.name;
+    if (!nudgeOriginals.has(id)) {
+      nudgeOriginals.set(id, p.rect.slice());
+    }
     p.rect[0] = next[0]; p.rect[1] = next[1]; p.rect[2] = next[2]; p.rect[3] = next[3];
     renderOverlaySvg();
     updateFooterInfo();
-    const id = p.id, name = p.name, rectCopy = next.slice();
+    const rectCopy = next.slice();
     const prevTimer = nudgeTimers.get(id);
     if (prevTimer) clearTimeout(prevTimer);
     nudgeTimers.set(id, setTimeout(() => {
       nudgeTimers.delete(id);
-      Store.updateCrop(id, { rect: rectCopy }, `영역 이동 (${name})`);
+      const origRect = nudgeOriginals.get(id);
+      nudgeOriginals.delete(id);
+      Store.updateCrop(id, { rect: rectCopy }, `영역 이동 (${name})`, false, origRect ? { rect: origRect } : null);
     }, 280));
     return true;
   }

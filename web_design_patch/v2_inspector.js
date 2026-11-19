@@ -409,7 +409,9 @@ window.DPV2Inspector = (() => {
             onClick: () => {
               for (const sp of selList) {
                 sp.meta.purpose = pr.id;
-                sp.meta.dirtySpec = true;
+                Store.markFieldDirty(sp.meta, "purpose");
+                // #C09-1: 아직 읽지 않은 패치는 나머지 칸(지시문·AI 자동)을 서버에서 채워 둔다
+                if (!sp.meta.specLoaded && Api.can("v2_spec_edit")) Store.loadSpec(sp.id);
               }
               Store.emit("selection");
               if (!isMulti && Api.can("v2_spec_edit")) {
@@ -1150,7 +1152,7 @@ window.DPV2Inspector = (() => {
     const cur = patch.meta.user_instruction_ko || "";
     const sep = cur && !cur.endsWith(" ") ? " " : "";
     patch.meta.user_instruction_ko = `${cur}${sep}${tag} `;
-    patch.meta.dirtySpec = true;
+    Store.markFieldDirty(patch.meta, "instruction");
     Store.emit("selection");
     const el = $("inp-instruction");
     if (el) el.focus();
@@ -1251,6 +1253,8 @@ window.DPV2Inspector = (() => {
             p.meta.skill_ids = Array.isArray(res.skill_ids) ? res.skill_ids : [];
             p.meta.promptSource = "assist";
             p.meta.promptInputHash = res.input_hash || p.meta.specInputHash;
+            if (p.meta.dirtyFields) p.meta.dirtyFields.raw = false;
+            p.meta.editBaseSeen = null;
             p.meta.rawDirty = false;
           } else if (editedRawDuringWait) {
             Store.toast(`${p.name}: 작성 중 직접 수정한 원문을 유지했습니다 — 반영하려면 [저장]을 눌러 주세요.`);
@@ -1286,8 +1290,112 @@ window.DPV2Inspector = (() => {
     return runAssistForPatches(Store.selectedPatches(), true);
   }
 
-  // ── 7. 선택 영역 생성 실행 (#C06 선행 반영·미저장 스펙 저장 → D519 blocked 패치만 자동 assist → DPSubmit.submitPaid §3.6) ──
+  // ── 6.5 공용 가드 무료 반영 (#C10: 실행 설정 drift 시 「반영 확인」 + 중복·미완료 대기 차단) ──
+  let freeApplyBusy = false;
+  let pendingApplyId = null;
+  let runFlowBusy = false;
+
+  async function runGuardedFreeApply(root, { statusToast = "무료 반영 작업을 실행 중입니다…" } = {}) {
+    if (freeApplyBusy) {
+      Store.toast("무료 반영이 이미 진행 중입니다.");
+      return { ok: false, reason: "busy" };
+    }
+    if (Store.state.S && Store.state.S.running) {
+      Store.toast("생성이 실행 중입니다 — 끝난 뒤 다시 시도해 주세요.", "err");
+      return { ok: false, reason: "running" };
+    }
+    freeApplyBusy = true;
+    try {
+      // 이전에 timeout 으로 끝을 보지 못한 반영이 있으면 완료 여부를 짧게 확인하고, 아직 대기/실행 중이면 중복 제출하지 않는다
+      if (pendingApplyId) {
+        const prev = await Api.waitJob(root, pendingApplyId, { timeoutMs: 2500, intervalMs: 1000 });
+        if (!prev || !prev.done) {
+          Store.toast("이전 무료 반영이 아직 대기 또는 실행 중입니다 — 끝난 뒤 다시 시도해 주세요.", "err");
+          return { ok: false, reason: "pending" };
+        }
+        pendingApplyId = null;
+        await Store.refreshAll(true);
+      }
+
+      // 최신 파이프라인 설정 drift(prepare / import) 검사
+      let drifts = [];
+      try {
+        const pipe = await Api.getPipeline(root);
+        if (pipe) Store.state.P = pipe;
+        drifts = (pipe && Array.isArray(pipe.drift))
+          ? pipe.drift.filter((d) => d && (d.section === "prepare" || d.kind === "import"))
+          : [];
+      } catch (_) { /* 파이프라인 라우트 미지원 환경 무시 */ }
+
+      if (drifts.length) {
+        let planNotes = [];
+        try {
+          const pl = await Api.getPlan(root);
+          if (pl && Array.isArray(pl.notes)) planNotes = pl.notes;
+        } catch (_) {}
+        const detailLines = planNotes.length
+          ? planNotes
+          : drifts.map((d) => d.message || d.reason || `${d.section || d.kind || "실행 설정"}이 마지막 반영과 다릅니다.`);
+        const lines = [
+          "무료 반영을 먼저 실행합니다(과금 없음). 실행 설정이 마지막 반영과 다릅니다.",
+          ...detailLines,
+          "계속할까요?",
+        ];
+        const mod = Api.submitAdapter();
+        const confirmed = (mod && typeof mod.ask === "function")
+          ? await mod.ask(lines, [], "반영 확인")
+          : await Data.askDialogConfirm(lines.join("\n"), { ok: "승인", cancel: "취소" });
+        if (!confirmed) {
+          Store.toast("반영을 취소했습니다.");
+          return { ok: false, reason: "cancelled" };
+        }
+      }
+
+      const applied = await Api.submitStage("apply", { root });
+      if (applied && applied.pendingIntegration) {
+        Store.toast(applied.message, "accent");
+        return { ok: false, reason: "pendingIntegration" };
+      }
+      if (!applied || !applied.ok || !applied.prompt_id) {
+        const msg = (applied && (applied.error || applied.message || applied.reason)) || "무료 반영을 시작하지 못했습니다.";
+        Store.toast(msg, "err");
+        return { ok: false, reason: (applied && applied.reason) || "apply_failed", error: msg };
+      }
+
+      if (statusToast) Store.toast(statusToast);
+      const waited = await Api.waitJob(root, applied.prompt_id);
+      if (!waited || !waited.done) {
+        pendingApplyId = applied.prompt_id;
+        await Store.refreshAll(true);
+        Store.toast(
+          waited && waited.reason === "timeout"
+            ? "무료 반영 대기 시간이 초과되었습니다 — 잠시 후 상태를 다시 확인해 주세요."
+            : "무료 반영 완료 여부를 확인하지 못했습니다.",
+          "err"
+        );
+        return { ok: false, reason: (waited && waited.reason) || "timeout" };
+      }
+      pendingApplyId = null;
+      await Store.refreshAll(true);
+      if (!waited.ok) {
+        Store.toast("무료 반영 작업이 실패했습니다.", "err");
+        return { ok: false, reason: "apply_failed" };
+      }
+      return { ok: true, waited };
+    } catch (err) {
+      Store.toast(`합성 적용 실패: ${err.message}`, "err");
+      return { ok: false, reason: "error", error: err.message };
+    } finally {
+      freeApplyBusy = false;
+    }
+  }
+
+  // ── 7. 선택 영역 생성 실행 (#C06·#C09·#C10·#C11-1 선행 반영·미저장 스펙 저장 → D519 자동 assist → DPSubmit.submitPaid §3.6) ──
   async function runSelectedGeneration(useSelectedOnly = false) {
+    if (runFlowBusy) {
+      Store.toast("앞선 제출을 처리하는 중입니다");
+      return;
+    }
     const patches = Store.getPatches();
     const targets = useSelectedOnly
       ? Store.selectedPatches()
@@ -1297,118 +1405,124 @@ window.DPV2Inspector = (() => {
       return;
     }
 
-    // 1) 미로드 패치 스펙 동기화(applySpecResponse가 dirtySpec/rawDirty를 보존) 및 반영 전 새 영역 선행 반영(#C06-1·2·3)
-    if (Api.can("v2_spec_edit")) {
-      for (const p of targets) {
-        if (!p.meta.specLoaded) {
-          await Store.loadSpec(p.id);
+    runFlowBusy = true;
+    try {
+      // 1) 미로드 패치 스펙 동기화(칸별 dirty 보존) 및 반영 전 새 영역 선행 반영(#C06·#C09-1·#C10)
+      if (Api.can("v2_spec_edit")) {
+        for (const p of targets) {
+          if (!p.meta.specLoaded) {
+            await Store.loadSpec(p.id);
+          }
+        }
+
+        const hasPendingNewWithEdits = targets.some((p) => p.meta.needsApplyForSpec && (
+          p.meta.dirtySpec || p.meta.rawDirty
+          || !!(p.meta.user_instruction_ko || "").trim()
+          || p.meta.purpose !== "correct"
+          || !p.meta.aiAuto
+        ));
+        if (hasPendingNewWithEdits) {
+          const ap = await runGuardedFreeApply(Store.state.root, {
+            statusToast: "새 영역을 먼저 반영한 뒤 지시문을 저장합니다 (무료 반영)…",
+          });
+          if (!ap.ok) return;
+          // 반영 후 새 영역들의 seen·crop_sig 수신 (미저장 편집은 applySpecResponse가 칸별로 보존)
+          for (const p of targets) {
+            if (p.meta.needsApplyForSpec || !p.meta.specLoaded) {
+              await Store.loadSpec(p.id, true);
+            }
+            if (p.meta.needsApplyForSpec) {
+              Store.toast(`${p.name}: 아직 반영되지 않아 지시문을 저장할 수 없습니다 — [합성 적용]을 확인해 주세요.`, "err");
+              return;
+            }
+          }
+        }
+
+        // 미저장 변경이 있는 모든 대상 패치를 서버에 저장 (직접 입력 포함)
+        for (const p of targets) {
+          if ((p.meta.dirtySpec || p.meta.rawDirty) && !p.meta.needsApplyForSpec) {
+            try {
+              await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
+            } catch (err) {
+              Store.toast(`${p.name} 지시문 저장 실패: ${err.message}`, "err");
+              return;
+            }
+          }
         }
       }
 
-      const hasPendingNewWithEdits = targets.some((p) => p.meta.needsApplyForSpec && (
-        p.meta.dirtySpec || p.meta.rawDirty
-        || !!(p.meta.user_instruction_ko || "").trim()
-        || p.meta.purpose !== "correct"
-        || !p.meta.aiAuto
-      ));
-      if (hasPendingNewWithEdits) {
-        Store.toast("새 영역을 먼저 반영한 뒤 지시문을 저장합니다 (무료 반영)…");
-        try {
-          const applied = await Api.submitStage("apply", { root: Store.state.root });
-          if (applied && applied.pendingIntegration) {
-            Store.toast(applied.message, "accent");
-            return;
-          }
-          if (!applied || !applied.ok || !applied.prompt_id) {
-            Store.toast((applied && (applied.error || applied.message || applied.reason)) || "새 영역 무료 반영을 시작하지 못했습니다.", "err");
-            return;
-          }
-          const waited = await Api.waitJob(Store.state.root, applied.prompt_id);
-          await Store.refreshAll(true);
-          if (!waited || !waited.done || !waited.ok) {
-            Store.toast(
-              waited && !waited.done && waited.reason === "timeout"
-                ? "무료 반영 대기 시간이 초과되었습니다 — 완료 후 다시 생성해 주세요."
-                : "새 영역 무료 반영이 완료되지 않았습니다 — [합성 적용] 후 다시 시도해 주세요.",
-              "err"
-            );
-            return;
-          }
-        } catch (err) {
-          Store.toast(`새 영역 무료 반영 실패: ${err.message}`, "err");
+      // #C09-2: 출처가 "manual" 인 직접 입력 글은 레퍼런스 변경 등으로 blocked 가 되어도 AI 작성으로 덮어쓰지 않는다
+      const manualBlocked = targets.filter((p) =>
+        !p.meta.needsApplyForSpec && p.meta.specState === "blocked" && p.meta.promptSource === "manual"
+      );
+      if (manualBlocked.length) {
+        const det = $("raw-prompt-details");
+        if (det) det.open = true;
+        const first = manualBlocked[0];
+        const whyMsg = first.meta.specWhy || "직접 입력한 프롬프트의 그림 번호를 다시 확인하고 저장해 주세요.";
+        if (manualBlocked.length === targets.length) {
+          Store.toast(`${first.name}: ${whyMsg} (승인할 작업이 없습니다)`, "err");
           return;
         }
-        // 반영 후 새 영역들의 seen·crop_sig 수신 (미저장 편집은 applySpecResponse가 그대로 보존)
-        for (const p of targets) {
-          if (p.meta.needsApplyForSpec || !p.meta.specLoaded) {
-            await Store.loadSpec(p.id, true);
-          }
-          if (p.meta.needsApplyForSpec) {
-            Store.toast(`${p.name}: 아직 반영되지 않아 지시문을 저장할 수 없습니다 — [합성 적용]을 확인해 주세요.`, "err");
-            return;
-          }
+        Store.toast(`${first.name}: ${whyMsg}`, "err");
+      }
+
+      // D519 · #C06-4 · #C09-2: 서버 판정 state === "blocked" 이고 aiAuto 켜짐 + manual 출처가 아닌 패치만 자동 작성
+      const needAssist = targets.filter((p) => {
+        if (!p.meta.aiAuto || p.meta.needsApplyForSpec) return false;
+        if (p.meta.specState !== "blocked") return false;
+        if (p.meta.promptSource === "manual") return false;
+        return true;
+      });
+      if (needAssist.length && Api.can("v2_forge_prompt")) {
+        const ar = await runAssistForPatches(needAssist, false);
+        if (ar.aborted) return;
+        if (needAssist.length > 8) {
+          Store.toast(`상한(8개)을 넘은 ${needAssist.length - 8}개 영역은 작성 대기 상태로 남습니다.`);
         }
       }
 
-      // 미저장 변경이 있는 모든 대상 패치를 서버에 저장 (직접 입력 포함)
-      for (const p of targets) {
-        if ((p.meta.dirtySpec || p.meta.rawDirty) && !p.meta.needsApplyForSpec) {
-          try {
-            await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
-          } catch (err) {
-            Store.toast(`${p.name} 지시문 저장 실패: ${err.message}`, "err");
-            return;
-          }
-        }
-      }
-    }
-
-    // D519 · #C06-4: 서버 판정(state)을 신뢰 — state === "body"(직접 입력 manual·기존 AI assist 무관)는 절대 덮지 않고
-    // state === "blocked" 이고 aiAuto가 켜진 패치만 최대 8건 자동 작성한다.
-    const needAssist = targets.filter((p) => {
-      if (!p.meta.aiAuto || p.meta.needsApplyForSpec) return false;
-      if (p.meta.specState === "body") return false;
-      return p.meta.specState === "blocked";
-    });
-    if (needAssist.length && Api.can("v2_forge_prompt")) {
-      const ar = await runAssistForPatches(needAssist, false);
-      if (ar.aborted) return;
-      if (needAssist.length > 8) {
-        Store.toast(`상한(8개)을 넘은 ${needAssist.length - 8}개 영역은 작성 대기 상태로 남습니다.`);
-      }
-    }
-
-    // §3.6: DPSubmit.submitPaid("run", { root, only }) 는 선택된 crop id 목록을 항상 쉼표로 전달
-    const only = targets.map((p) => p.id).join(",");
-    try {
-      const res = await Api.submitStage("run", { root: Store.state.root, only });
-      if (res && res.pendingIntegration) {
-        Store.toast(res.message, "accent");
+      // #C11-1: 저장·작성 응답을 기다리는 사이 지시문·목적·원문을 고쳤으면 옛 글로 승인 상자가 뜨지 않게 차단
+      const stillDirty = targets.find((p) => p.meta.dirtySpec || p.meta.rawDirty);
+      if (stillDirty) {
+        Store.toast(`${stillDirty.name}: 작성 중 수정한 내용이 아직 저장되지 않았습니다 — 다시 눌러 주세요.`, "err");
         return;
       }
-      if (res && res.ok) {
-        Store.toast("생성을 시작했습니다.", "ok");
-        await Store.refreshAll(true);
-      } else if (res && res.reason === "cancelled") {
-        Store.toast("생성을 취소했습니다.");
-      } else if (res && res.reason === "nothing_to_approve") {
-        const noJobs = res.summary && Array.isArray(res.summary.no_job) ? res.summary.no_job : [];
-        const names = noJobs.map((id) => (Store.getPatch(id)?.name || id)).join(", ");
-        Store.toast(
-          names
-            ? `승인할 작업이 없습니다 (작업 없음: ${names}) — 지시문 작성 상태를 확인해 주세요.`
-            : (res.error || "승인할 생성 작업이 없습니다."),
-          "err"
-        );
-        await Store.refreshAll(true);
-      } else if (res && (res.reason === "stale" || res.reason === "stale_settings")) {
-        await Store.refreshAll(true);
-        Store.toast(res.error || "설정 또는 계획이 변경되었습니다 — 최신 상태로 갱신했으니 다시 눌러 주세요.", "err");
-      } else if (res) {
-        Store.toast(res.error || res.message || res.reason || "생성을 시작하지 못했습니다.", "err");
+
+      // §3.6: DPSubmit.submitPaid("run", { root, only }) 는 선택된 crop id 목록을 항상 쉼표로 전달
+      const only = targets.map((p) => p.id).join(",");
+      try {
+        const res = await Api.submitStage("run", { root: Store.state.root, only });
+        if (res && res.pendingIntegration) {
+          Store.toast(res.message, "accent");
+          return;
+        }
+        if (res && res.ok) {
+          Store.toast("생성을 시작했습니다.", "ok");
+          await Store.refreshAll(true);
+        } else if (res && res.reason === "cancelled") {
+          Store.toast("생성을 취소했습니다.");
+        } else if (res && res.reason === "nothing_to_approve") {
+          const noJobs = res.summary && Array.isArray(res.summary.no_job) ? res.summary.no_job : [];
+          const names = noJobs.map((id) => (Store.getPatch(id)?.name || id)).join(", ");
+          Store.toast(
+            names
+              ? `승인할 작업이 없습니다 (작업 없음: ${names}) — 지시문 작성 상태를 확인해 주세요.`
+              : (res.error || "승인할 생성 작업이 없습니다."),
+            "err"
+          );
+          await Store.refreshAll(true);
+        } else if (res && (res.reason === "stale" || res.reason === "stale_settings")) {
+          await Store.refreshAll(true);
+          Store.toast(res.error || "설정 또는 계획이 변경되었습니다 — 최신 상태로 갱신했으니 다시 눌러 주세요.", "err");
+        } else if (res) {
+          Store.toast(res.error || res.message || res.reason || "생성을 시작하지 못했습니다.", "err");
+        }
+      } catch (err) {
+        Store.toast(`생성 요청 실패: ${err.message}`, "err");
       }
-    } catch (err) {
-      Store.toast(`생성 요청 실패: ${err.message}`, "err");
+    } finally {
+      runFlowBusy = false;
     }
   }
 
@@ -1580,9 +1694,14 @@ window.DPV2Inspector = (() => {
 
     const chkAuto = $("chk-ai-auto");
     if (chkAuto) chkAuto.addEventListener("change", (e) => {
-      for (const p of Store.selectedPatches()) { p.meta.aiAuto = e.target.checked; p.meta.dirtySpec = true; }
+      const sel = Store.selectedPatches();
+      for (const sp of sel) {
+        sp.meta.aiAuto = e.target.checked;
+        Store.markFieldDirty(sp.meta, "aiAuto");
+        if (!sp.meta.specLoaded && Api.can("v2_spec_edit")) Store.loadSpec(sp.id);
+      }
       const p = Store.primaryPatch();
-      if (p && Api.can("v2_spec_edit")) {
+      if (p && sel.length <= 1 && Api.can("v2_spec_edit")) {
         Store.savePatchSpec(p).catch((err) => Store.toast(`지시문 저장 실패: ${err.message}`, "err"));
       }
     });
@@ -1592,7 +1711,7 @@ window.DPV2Inspector = (() => {
       const p = Store.primaryPatch();
       if (!p) return;
       p.meta.user_instruction_ko = e.target.value;
-      p.meta.dirtySpec = true;
+      Store.markFieldDirty(p.meta, "instruction");
       const fb = $("fb-instruction");
       if (fb && document.activeElement !== fb) fb.value = e.target.value;
     });
@@ -1602,7 +1721,7 @@ window.DPV2Inspector = (() => {
       const p = Store.primaryPatch();
       if (!p) return;
       p.meta.body_en = e.target.value;
-      p.meta.rawDirty = true;
+      Store.markFieldDirty(p.meta, "raw");
     });
 
     const btnSaveSpec = $("btn-save-spec");
@@ -1748,8 +1867,10 @@ window.DPV2Inspector = (() => {
         const p = Store.primaryPatch();
         if (!p) return;
         p.meta.filters[key] = Number(e.target.value);
-        if (key === "feather") p.meta.filters._edgeTouched = true;
-        if (key === "dx" || key === "dy" || key === "scale" || key === "rot") p.meta.filters._tfTouched = true;
+        if (!p.meta.filters._touched) p.meta.filters._touched = {};
+        if (["feather", "dx", "dy", "scale", "rot"].includes(key)) {
+          p.meta.filters._touched[key] = true;
+        }
         const valEl = $(`${id}-val`);
         if (valEl) {
           const n = p.meta.filters[key];
@@ -1778,7 +1899,7 @@ window.DPV2Inspector = (() => {
       const p = Store.primaryPatch();
       if (!p) return;
       p.meta.filters.dx = 0; p.meta.filters.dy = 0; p.meta.filters.scale = 100; p.meta.filters.rot = 0;
-      p.meta.filters._tfTouched = true;
+      p.meta.filters._touched = Object.assign({}, p.meta.filters._touched, { dx: true, dy: true, scale: true, rot: true });
       Store.emit("filters");
       renderInspector();
     });
@@ -1798,18 +1919,24 @@ window.DPV2Inspector = (() => {
         }
         prev = prev || {};
         const seen = prev.at || "";
-        // #C07-3: v1에서 설정한 invert·flip_h·flip_v 및 수정하지 않은 비등방 sx/sy·이동/회전 값을 덮어쓰지 않고 보존한다
-        const tfChanged = !!(f._tfTouched || f.dx || f.dy || f.rot || (f.scale && f.scale !== 100));
-        const edgeChanged = !!(f._edgeTouched || f.feather || !f.edgeEnabled);
+        // #C07-3 · #C11-3: 축별 개별 dirty 추적 — 사용자가 건드리지 않은 축(dx/dy/rot/비등방 sx·sy/blur)과 invert·flip 은 서버 값을 그대로 보존한다
+        const touched = f._touched || {};
+        const blurChanged = !!(touched.feather || f._edgeTouched || f.feather || !f.edgeEnabled);
+        const dxChanged = !!(touched.dx || f.dx || !f.transformEnabled);
+        const dyChanged = !!(touched.dy || f.dy || !f.transformEnabled);
+        const rotChanged = !!(touched.rot || f.rot || !f.transformEnabled);
+        const scaleChanged = !!(touched.scale || (f.scale && f.scale !== 100) || !f.transformEnabled);
         const scaleVal = f.transformEnabled ? Math.max(0.5, Math.min(2.0, (f.scale || 100) / 100)) : 1.0;
-        const blurVal = edgeChanged
+
+        const blurVal = blurChanged
           ? (f.edgeEnabled ? Math.max(0, Math.min(24, Math.round(f.feather || 0))) : 0)
           : (typeof prev.blur === "number" ? prev.blur : 0);
-        const dxVal = tfChanged ? (f.transformEnabled ? Number(f.dx || 0) : 0) : (typeof prev.dx === "number" ? prev.dx : 0);
-        const dyVal = tfChanged ? (f.transformEnabled ? Number(f.dy || 0) : 0) : (typeof prev.dy === "number" ? prev.dy : 0);
-        const rotVal = tfChanged ? (f.transformEnabled ? Number(f.rot || 0) : 0) : (typeof prev.rot === "number" ? prev.rot : 0);
-        const sxVal = tfChanged ? scaleVal : (typeof prev.sx === "number" ? prev.sx : 1.0);
-        const syVal = tfChanged ? scaleVal : (typeof prev.sy === "number" ? prev.sy : 1.0);
+        const dxVal = dxChanged ? (f.transformEnabled ? Number(f.dx || 0) : 0) : (typeof prev.dx === "number" ? prev.dx : 0);
+        const dyVal = dyChanged ? (f.transformEnabled ? Number(f.dy || 0) : 0) : (typeof prev.dy === "number" ? prev.dy : 0);
+        const rotVal = rotChanged ? (f.transformEnabled ? Number(f.rot || 0) : 0) : (typeof prev.rot === "number" ? prev.rot : 0);
+        const sxVal = scaleChanged ? scaleVal : (typeof prev.sx === "number" ? prev.sx : 1.0);
+        const syVal = scaleChanged ? scaleVal : (typeof prev.sy === "number" ? prev.sy : 1.0);
+
         const res = await Api.adjustMask(Store.state.root, {
           key: cand.key,
           op: "set",
@@ -1824,6 +1951,7 @@ window.DPV2Inspector = (() => {
           flip_h: !!prev.flip_h,
           flip_v: !!prev.flip_v,
         });
+        f._touched = {};
         f._tfTouched = false;
         f._edgeTouched = false;
         if (Store.state.mask && Store.state.mask.key === cand.key && res && res.adjust) {
@@ -1841,34 +1969,11 @@ window.DPV2Inspector = (() => {
     if (btnRun) btnRun.addEventListener("click", () => runSelectedGeneration(false));
     const btnApplyFree = $("btn-apply-free");
     if (btnApplyFree) btnApplyFree.addEventListener("click", async () => {
-      try {
-        const res = await Api.submitStage("apply", { root: Store.state.root });
-        if (res && res.pendingIntegration) {
-          Store.toast(res.message, "accent");
-          return;
-        }
-        if (res && res.ok) {
-          Store.toast("무료 반영 작업을 실행 중입니다…");
-          const waited = await Api.waitJob(Store.state.root, res.prompt_id);
-          await Store.refreshAll(true);
-          // #C07-2: waited.done && waited.ok 일 때만 완료로 처리한다 (상태 갱신 뒤 토스트)
-          if (!waited || !waited.done) {
-            Store.toast(
-              waited && waited.reason === "timeout"
-                ? "무료 반영 대기 시간이 초과되었습니다 — 잠시 후 상태를 다시 확인해 주세요."
-                : "무료 반영 완료 여부를 확인하지 못했습니다.",
-              "err"
-            );
-          } else if (!waited.ok) {
-            Store.toast("무료 반영 작업이 실패했습니다.", "err");
-          } else {
-            Store.toast("합성 반영을 완료했습니다.", "ok");
-          }
-        } else if (res) {
-          Store.toast(res.error || res.message || res.reason || "합성 적용을 시작하지 못했습니다.", "err");
-        }
-      } catch (err) {
-        Store.toast(`합성 적용 실패: ${err.message}`, "err");
+      const ap = await runGuardedFreeApply(Store.state.root, {
+        statusToast: "무료 반영 작업을 실행 중입니다…",
+      });
+      if (ap && ap.ok) {
+        Store.toast("합성 반영을 완료했습니다.", "ok");
       }
     });
     const btnCancel = $("btn-cancel-run");

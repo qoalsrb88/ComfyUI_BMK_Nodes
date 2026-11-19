@@ -252,6 +252,8 @@ window.DPV2Store = (() => {
         specImages: [],
         dirtySpec: false,
         rawDirty: false,
+        dirtyFields: { purpose: false, instruction: false, aiAuto: false, raw: false },
+        editBaseSeen: null,
         forgeCalls: 0,
         cached: false,
         modelOverride: "", // "" = 프로젝트 기본 모델 상속
@@ -267,17 +269,50 @@ window.DPV2Store = (() => {
     return m;
   }
 
+  function markFieldDirty(meta, field) {
+    if (!meta) return;
+    if (!meta.dirtyFields) {
+      meta.dirtyFields = { purpose: false, instruction: false, aiAuto: false, raw: false };
+    }
+    // #C11-2: 원문/지시 편집 시작 시점의 seen 스냅샷을 기억해 두 창 간 레퍼런스 변경 충돌을 서버 409로 안전하게 감지한다
+    if (field === "raw" && !meta.editBaseSeen && meta.specLoaded && meta.seen && meta.seen !== "null") {
+      meta.editBaseSeen = meta.seen;
+    }
+    if (field in meta.dirtyFields) meta.dirtyFields[field] = true;
+    meta.dirtySpec = !!(meta.dirtyFields.purpose || meta.dirtyFields.instruction || meta.dirtyFields.aiAuto);
+    meta.rawDirty = !!meta.dirtyFields.raw;
+  }
+
   function applySpecResponse(cropId, res, opts = {}) {
     if (!res || typeof res !== "object") return;
     const m = ensurePatchMeta(cropId);
+    if (!m.dirtyFields) {
+      m.dirtyFields = { purpose: false, instruction: false, aiAuto: false, raw: false };
+    }
+    const wasLoaded = !!m.specLoaded;
     const fromSave = !!opts.fromSave;
     const includedRaw = !!opts.includedRaw;
     const sent = opts.sent || null;
 
-    // 서버 메타(동시성 토큰·판정 상태·이미지 목록)는 항상 최신값으로 갱신
+    // #C09-1: 칸별 dirty 플래그 판정 (레거시 코드/테스트가 dirtySpec만 단독 세팅한 경우도 호환)
+    const df = m.dirtyFields;
+    const hasFieldFlag = !!(df.purpose || df.instruction || df.aiAuto);
+    const dirtyPurpose = df.purpose || (m.dirtySpec && !hasFieldFlag);
+    const dirtyInstruction = df.instruction || (m.dirtySpec && !hasFieldFlag);
+    const dirtyAiAuto = df.aiAuto || (m.dirtySpec && !hasFieldFlag);
+    const dirtyRaw = !!(df.raw || m.rawDirty);
+
+    // 서버 메타(동시성 토큰·판정 상태·이미지 목록) 갱신
     m.specLoaded = true;
     m.needsApplyForSpec = false;
-    if ("seen" in res) m.seen = res.seen ?? "null";
+    // #C11-2: 미저장 원문(rawDirty) 편집 중이고 최초 로드가 끝난 상태라면 editBaseSeen을 보존해
+    //         다른 창이 레퍼런스를 바꿨을 때 새 seen으로 조용히 덮어쓰지 않고 서버 409 충돌로 감지한다
+    if ("seen" in res) {
+      const incomingSeen = res.seen ?? "null";
+      if (fromSave || !wasLoaded || !dirtyRaw || !m.editBaseSeen) {
+        m.seen = incomingSeen;
+      }
+    }
     if ("crop_sig" in res) m.crop_sig = res.crop_sig ?? "";
     if ("state" in res) m.specState = res.state || "template";
     if ("why" in res) m.specWhy = res.why || null;
@@ -286,23 +321,20 @@ window.DPV2Store = (() => {
     if ("model" in res && typeof res.model === "string") m.specModel = res.model;
     if (Array.isArray(res.images)) m.specImages = res.images;
 
-    // #C06-2·#C06-3: 저장하지 않은 편집(dirtySpec / rawDirty)이 있으면 GET/refresh 응답으로 절대 덮어쓰지 않는다
-    const specStillSameAsSent = fromSave && (!sent || (
-      m.purpose === sent.purpose
-      && (m.user_instruction_ko || "") === (sent.user_instruction_ko || "")
-      && !!m.aiAuto === !!sent.aiAuto
-    ));
-    const rawStillSameAsSent = fromSave && includedRaw && (!sent || (m.body_en || "") === (sent.body_en || ""));
+    const purposeSameAsSent = fromSave && (!sent || m.purpose === sent.purpose);
+    const instSameAsSent = fromSave && (!sent || (m.user_instruction_ko || "") === (sent.user_instruction_ko || ""));
+    const aiAutoSameAsSent = fromSave && (!sent || !!m.aiAuto === !!sent.aiAuto);
+    const rawSameAsSent = fromSave && includedRaw && (!sent || (m.body_en || "") === (sent.body_en || ""));
 
-    const canOverwriteSpec = !m.dirtySpec || specStillSameAsSent;
-    const canOverwriteRaw = !m.rawDirty || rawStillSameAsSent;
+    const canOverwritePurpose = !dirtyPurpose || purposeSameAsSent;
+    const canOverwriteInst = !dirtyInstruction || instSameAsSent;
+    const canOverwriteAiAuto = !dirtyAiAuto || aiAutoSameAsSent;
+    const canOverwriteRaw = !dirtyRaw || rawSameAsSent;
 
     if (res.v2 && typeof res.v2 === "object") {
-      if (canOverwriteSpec) {
-        m.purpose = res.v2.purpose || "correct";
-        m.user_instruction_ko = typeof res.v2.user_instruction_ko === "string" ? res.v2.user_instruction_ko : "";
-        m.aiAuto = typeof res.v2.ai_auto === "boolean" ? res.v2.ai_auto : true;
-      }
+      if (canOverwritePurpose) m.purpose = res.v2.purpose || "correct";
+      if (canOverwriteInst) m.user_instruction_ko = typeof res.v2.user_instruction_ko === "string" ? res.v2.user_instruction_ko : "";
+      if (canOverwriteAiAuto) m.aiAuto = typeof res.v2.ai_auto === "boolean" ? res.v2.ai_auto : true;
       if (canOverwriteRaw) {
         const pr = res.v2.prompt;
         if (pr && typeof pr === "object") {
@@ -320,11 +352,9 @@ window.DPV2Store = (() => {
         }
       }
     } else if (res.v2 === null) {
-      if (canOverwriteSpec) {
-        m.purpose = "correct";
-        m.user_instruction_ko = "";
-        m.aiAuto = true;
-      }
+      if (canOverwritePurpose) m.purpose = "correct";
+      if (canOverwriteInst) m.user_instruction_ko = "";
+      if (canOverwriteAiAuto) m.aiAuto = true;
       if (canOverwriteRaw) {
         m.promptSource = "";
         m.body_en = "";
@@ -334,8 +364,20 @@ window.DPV2Store = (() => {
       }
     }
 
-    if (specStillSameAsSent) m.dirtySpec = false;
-    if (rawStillSameAsSent) m.rawDirty = false;
+    if (purposeSameAsSent) df.purpose = false;
+    if (instSameAsSent) df.instruction = false;
+    if (aiAutoSameAsSent) df.aiAuto = false;
+    if (rawSameAsSent) {
+      df.raw = false;
+      m.editBaseSeen = null;
+    }
+    // 레거시 dirtySpec 단독 플래그 호환 갱신
+    if (fromSave && purposeSameAsSent && instSameAsSent && aiAutoSameAsSent) {
+      m.dirtySpec = false;
+    } else {
+      m.dirtySpec = !!(df.purpose || df.instruction || df.aiAuto || (!hasFieldFlag && m.dirtySpec && !fromSave));
+    }
+    m.rawDirty = !!(df.raw || (!rawSameAsSent && m.rawDirty));
   }
 
   function invalidateAllSpecs() {
@@ -379,6 +421,7 @@ window.DPV2Store = (() => {
       return { ok: false, unsupported: true, reason: "지시문 저장은 아직 연결되지 않았습니다." };
     }
     const m = patch.meta;
+    // #C09-1: 읽지 않은 패치는 반드시 GET /spec 으로 나머지 칸(지시문·목적·AI 자동)을 채운 뒤 저장한다
     if (!m.specLoaded) {
       await loadSpec(patch.id, true);
       if (m.needsApplyForSpec) {
@@ -386,6 +429,9 @@ window.DPV2Store = (() => {
           status: 409,
           data: { reason: "apply_needed" },
         });
+      }
+      if (!m.specLoaded) {
+        throw new Error("서버에서 기존 스펙을 읽지 못했습니다 — 잠시 후 다시 시도해 주세요.");
       }
     }
     const includeRaw = !!(opts.includeRaw || m.rawDirty);
@@ -395,9 +441,10 @@ window.DPV2Store = (() => {
       aiAuto: !!m.aiAuto,
       body_en: m.body_en || "",
     };
+    const seenToSend = (includeRaw && m.editBaseSeen) ? m.editBaseSeen : m.seen;
     const payload = {
       crop_id: patch.id,
-      seen: m.seen,
+      seen: seenToSend,
       crop_sig: m.crop_sig,
       purpose: sent.purpose,
       user_instruction_ko: sent.user_instruction_ko,
@@ -415,6 +462,7 @@ window.DPV2Store = (() => {
       return res;
     } catch (err) {
       if (err && err.status === 409 && err.data && err.data.reason === "stale") {
+        m.editBaseSeen = null;
         await loadSpec(patch.id, true);
       }
       throw err;
@@ -554,6 +602,8 @@ window.DPV2Store = (() => {
     });
   }
 
+  let maskSwitchAsking = false;
+
   function closeMaskSession() {
     if (!state.mask) return;
     state.mask = null;
@@ -564,7 +614,20 @@ window.DPV2Store = (() => {
     if (!state.mask) return;
     const cand = currentCandidate();
     if (!cand || cand.key !== state.mask.key) {
+      const oldMask = state.mask;
       closeMaskSession();
+      // #C11-4: 저장하지 않은 붓 획이 있으면 말없이 버리지 않고 저장 여부를 묻는다
+      if (oldMask.dirty && !maskSwitchAsking) {
+        maskSwitchAsking = true;
+        Data.askDialogConfirm(
+          "이전 후보에 저장하지 않은 마스크 붓 편집이 있습니다. 지금 저장할까요?",
+          { ok: "저장하기", cancel: "버리기" }
+        ).then((ok) => {
+          if (ok) return saveMaskSession(oldMask);
+        }).finally(() => {
+          maskSwitchAsking = false;
+        });
+      }
     }
   }
 
@@ -663,6 +726,9 @@ window.DPV2Store = (() => {
         state.primaryId = id;
         syncMaskWithActiveCandidate();
         emit("selection");
+        if (Api.can("v2_spec_edit")) {
+          for (const sid of state.selectedIds) loadSpec(sid);
+        }
         return;
       }
     }
@@ -679,6 +745,9 @@ window.DPV2Store = (() => {
       state.lastClickedId = id;
       syncMaskWithActiveCandidate();
       emit("selection");
+      if (Api.can("v2_spec_edit")) {
+        for (const sid of state.selectedIds) loadSpec(sid);
+      }
       return;
     }
     state.selectedIds = new Set([id]);
@@ -1035,9 +1104,9 @@ window.DPV2Store = (() => {
         note: "",
       }, extraFields || {});
       const res = await Api.mutateCrop(state.root, state.L.rev, body);
+      // #C11-5②: 자기 쓰기 응답의 rev 만 기록(뒤따른 loadLayout 이 다른 창의 rev 를 받아도 자기 쓰기로 오인하지 않게)
       if (res && res.rev !== undefined) lastOwnLayoutRev = res.rev;
       await loadLayout();
-      if (state.L && state.L.rev !== undefined) lastOwnLayoutRev = state.L.rev;
       if (res.crop && res.crop.id) {
         const ref = { id: res.crop.id };
         selectPatch(ref.id);
@@ -1055,20 +1124,24 @@ window.DPV2Store = (() => {
     });
   }
 
-  function updateCrop(id, changes, historyLabel = null, skipHistory = false) {
+  function updateCrop(id, changes, historyLabel = null, skipHistory = false, beforeOverride = null) {
     return enqueueLayout(async () => {
       await ensureLayoutStarted();
       const prev = state.L && (state.L.crops || []).find((c) => c.id === id);
       if (!prev) return null;
       const before = ("locked" in changes && Object.keys(changes).length === 1) ? {} : { restore_rev: state.L.rev };
       for (const k of Object.keys(changes)) {
-        before[k] = k === "targets" ? plainTargets(prev) : k === "locked" ? !!prev.locked : prev[k];
+        // #C11-5①: 방향키 이동 등 제자리 수정 후 커밋할 때는 beforeOverride 의 원래 좌표를 실행 취소 기준값으로 기록한다
+        if (beforeOverride && k in beforeOverride) {
+          before[k] = Array.isArray(beforeOverride[k]) ? beforeOverride[k].slice() : beforeOverride[k];
+        } else {
+          before[k] = k === "targets" ? plainTargets(prev) : k === "locked" ? !!prev.locked : (Array.isArray(prev[k]) ? prev[k].slice() : prev[k]);
+        }
       }
       const payload = Object.assign({ op: "update", id }, changes);
       const res = await Api.mutateCrop(state.root, state.L.rev, payload);
       if (res && res.rev !== undefined) lastOwnLayoutRev = res.rev;
       await loadLayout();
-      if (state.L && state.L.rev !== undefined) lastOwnLayoutRev = state.L.rev;
       if (!skipHistory && historyLabel) {
         pushHistory(historyLabel,
           () => updateCrop(id, before, null, true),
@@ -1101,7 +1174,6 @@ window.DPV2Store = (() => {
       const res = await Api.mutateCrop(state.root, state.L.rev, { op: "delete", id });
       if (res && res.rev !== undefined) lastOwnLayoutRev = res.rev;
       await loadLayout();
-      if (state.L && state.L.rev !== undefined) lastOwnLayoutRev = state.L.rev;
       state.selectedIds.delete(id);
       if (state.primaryId === id) {
         state.primaryId = state.selectedIds.size ? [...state.selectedIds][0] : null;
@@ -1163,6 +1235,20 @@ window.DPV2Store = (() => {
         brushHard: 0.65,
         brushFlow: 1,
       };
+      // #C11-3: 서버 adjust 값이 있으면 미수정 슬라이더를 서버 보정값으로 동기화한다
+      if (info && info.adjust && info.crop_id) {
+        const pm = ensurePatchMeta(info.crop_id);
+        const f = pm.filters;
+        const t = f._touched || {};
+        if (!t.feather && typeof info.adjust.blur === "number") f.feather = info.adjust.blur;
+        if (!t.dx && typeof info.adjust.dx === "number") f.dx = info.adjust.dx;
+        if (!t.dy && typeof info.adjust.dy === "number") f.dy = info.adjust.dy;
+        if (!t.rot && typeof info.adjust.rot === "number") f.rot = info.adjust.rot;
+        if (!t.scale && typeof info.adjust.sx === "number" && typeof info.adjust.sy === "number"
+            && Math.abs(info.adjust.sx - info.adjust.sy) < 0.001) {
+          f.scale = Math.round(info.adjust.sx * 100);
+        }
+      }
       emit("mask");
       return state.mask;
     } catch (err) {
@@ -1171,15 +1257,17 @@ window.DPV2Store = (() => {
     }
   }
 
-  async function saveMaskSession() {
-    const ms = state.mask;
+  async function saveMaskSession(targetMask = null) {
+    const ms = targetMask || state.mask;
     if (!ms || !state.root) return null;
-    // #C07-5: 선택된 활성 후보와 마스크 세션 대상이 다르면 다른 후보에 잘못 저장하지 않는다
-    const activeCand = currentCandidate();
-    if (activeCand && activeCand.key !== ms.key) {
-      toast("현재 선택한 후보와 마스크 편집 대상이 다릅니다 — 브러시 도구를 다시 열어 주세요.", "err");
-      closeMaskSession();
-      return null;
+    // #C07-5: 현재 열린 세션 저장 시 활성 후보와 다르면 다른 후보에 잘못 저장하지 않는다
+    if (!targetMask) {
+      const activeCand = currentCandidate();
+      if (activeCand && activeCand.key !== ms.key) {
+        toast("현재 선택한 후보와 마스크 편집 대상이 다릅니다 — 브러시 도구를 다시 열어 주세요.", "err");
+        closeMaskSession();
+        return null;
+      }
     }
     const px = new Uint8Array(ms.w * ms.h);
     for (let i = 0; i < px.length; i++) px[i] = Math.max(0, Math.min(255, Math.round(ms.m[i] * 255)));
@@ -1214,7 +1302,7 @@ window.DPV2Store = (() => {
   return {
     state, subscribe, emit, toast,
     loadPrefs, savePrefs, applyPrefsToDom, activeTheme, activeAccentHex, initForgeThemeListener,
-    ensurePatchMeta, loadSpec, savePatchSpec, applySpecResponse, invalidateAllSpecs, projectPrepareRaw, projectPrepare, buildPreparePayload,
+    ensurePatchMeta, markFieldDirty, loadSpec, savePatchSpec, applySpecResponse, invalidateAllSpecs, projectPrepareRaw, projectPrepare, buildPreparePayload,
     isPatchCheckedForRun, setPatchCheckedForRun, setAllCheckedForRun,
     getPatches, getPatch, primaryPatch, selectedPatches, clearSelection,
     currentCandidate, selectCandidate, selectTargetForCrop, moveCropZ,

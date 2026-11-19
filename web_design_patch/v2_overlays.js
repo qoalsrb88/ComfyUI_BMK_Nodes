@@ -483,26 +483,37 @@ window.DPV2Overlays = (() => {
     });
   }
 
+  let sheetLoadSeq = 0;
+
   async function loadSelectedSheet(sheetPath) {
     const sheets = Store.state.sheets || [];
     const sh = sheets.find((s) => s.path === sheetPath) || sheets[0] || null;
     if (!sh) {
+      sheetLoadSeq += 1;
+      sheetState.loading = false;
       sheetState.sheetPath = "";
       sheetState.sheetImg = null;
       drawSheetSource();
       drawSheetWarp();
       return;
     }
+    const seq = ++sheetLoadSeq;
+    sheetState.loading = true;
     sheetState.sheetPath = sh.path;
+    sheetState.sheetImg = null;
     const sel = $("sheet-select");
     if (sel) sel.value = sh.path;
     try {
       const url = Api.sheetUrl(Store.state.root, sh, "preview");
-      sheetState.sheetImg = await loadImage(url);
+      const loaded = await loadImage(url);
+      if (seq !== sheetLoadSeq) return;
+      sheetState.sheetImg = loaded;
+      sheetState.loading = false;
       fitSheetToView();
       drawSheetSource();
       drawSheetWarp();
     } catch (err) {
+      if (seq === sheetLoadSeq) sheetState.loading = false;
       Store.toast(`시트 이미지를 불러오지 못했습니다: ${err.message}`, "err");
     }
   }
@@ -594,6 +605,11 @@ window.DPV2Overlays = (() => {
   }
 
   async function saveSheetCut(attachToCrop) {
+    // #C11-6: 시트 교체로 새 미리보기가 뜨기 전에는 앞 시트 사각형이 새 시트 크기로 저장되지 않게 막는다
+    if (sheetState.loading) {
+      Store.toast("시트 이미지를 불러오는 중입니다 — 잠시 후 다시 저장해 주세요.");
+      return;
+    }
     const img = sheetState.sheetImg;
     if (!img || !sheetState.sheetPath) {
       Store.toast("먼저 시트 이미지를 업로드해 주세요.");
@@ -1066,7 +1082,15 @@ window.DPV2Overlays = (() => {
               Store.toast("PSD 내보내기 작업이 실패했습니다.", "err");
               return;
             }
+            // #C11-7: 내보낼 후보가 없어 outcome === "empty" 로 끝나면 옛 PSD 를 내려받지 않는다
+            const expOut = waited.record && waited.record.outputs && waited.record.outputs.dp_export
+              && waited.record.outputs.dp_export.bmk_dp_export;
+            const expInfo = Array.isArray(expOut) && expOut.length ? expOut[0] : null;
             await Store.refreshAll(true);
+            if (expInfo && expInfo.outcome === "empty") {
+              Store.toast("PSD를 쓰지 않았습니다 — 내보낼 후보(★ 채택)가 없습니다.", "err");
+              return;
+            }
             if (dlUrl) {
               const a = document.createElement("a");
               a.href = dlUrl;
@@ -1103,7 +1127,7 @@ window.DPV2Overlays = (() => {
         type: "button", className: "preset-card",
         onClick: () => {
           p.meta.user_instruction_ko = txt;
-          p.meta.dirtySpec = true;
+          Store.markFieldDirty(p.meta, "instruction");
           closeModal();
           Store.emit("selection");
         },
