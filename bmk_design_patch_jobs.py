@@ -488,7 +488,7 @@ class JobRunner:
                 forge_token = backend.set_forge(ctx)
                 if job.get("stage") in ("apply", "run", "reroll"):
                     _refresh_catalog(ctx)
-            before = _apply_manifest(job["raw_root"]) if job["stage"] == "apply" and compat.server_mode() else None
+            before = _apply_manifest(job["raw_root"]) if job.get("stage") == "apply" and compat.server_mode() else None
             result = execute(job["prompt"])
             after = _apply_manifest(job["raw_root"]) if before is not None else None
             record = _record(result["outputs"], node=job["node"], scope=job["scope"])
