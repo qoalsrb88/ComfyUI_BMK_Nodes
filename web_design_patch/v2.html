@@ -3,13 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>디자인 패치 스튜디오</title>
-  <link rel="stylesheet" href="forge-fonts.css" />
+  <title>Design Patch Studio v2</title>
   <link rel="stylesheet" href="v2.css" />
   <script defer src="env.js"></script>
   <script defer src="dialog.js"></script>
-  <script defer src="forge_import.js"></script>
   <script defer src="layout_geom.js"></script>
+  <script defer src="forge_import.js"></script>
   <script defer src="v2_data.js"></script>
   <script defer src="v2_api.js"></script>
   <script defer src="v2_store.js"></script>
@@ -18,580 +17,705 @@
   <script defer src="v2_overlays.js"></script>
   <script defer src="v2_app.js"></script>
 </head>
-<body>
-  <!-- ==================== 1. 프로젝트 홈 (?root 없음) ==================== -->
-  <div id="projects-view" class="projects-view hidden" aria-label="프로젝트 목록">
-    <header class="topbar">
-      <div class="topbar-left">
-        <div class="brand-tag">
-          <span class="brand-dot" aria-hidden="true"></span>
-          <span class="brand-name">디자인 패치 스튜디오</span>
-          <span class="badge-v2">v2</span>
-        </div>
-      </div>
-      <div class="topbar-right">
-        <span id="home-account" class="round-pill hidden"></span>
-        <button id="btn-home-v1" type="button" class="pill-btn" title="기존 스튜디오 화면(v1)으로 전환">
-          <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
-          <span>기존 화면(v1)</span>
-        </button>
-        <button id="btn-home-settings" type="button" class="icon-btn" title="테마 · UI 크기 · 배치 설정">
-          <svg class="v2-ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </button>
-      </div>
-    </header>
-    <main class="projects-main">
-      <div class="projects-hero">
+<body class="layout-standard">
+  <!-- ==================== 1. 프로젝트 홈 (?root= 미지정 시) ==================== -->
+  <div id="projects-view" class="hidden">
+    <div class="projects-inner">
+      <div class="projects-head">
         <div>
-          <h1>작업 프로젝트</h1>
-          <p class="projects-sub">원화를 불러와 수정·추가·제거 영역을 선택하고, 레퍼런스와 간단한 지시로 패치를 생성한 뒤 PSD로 내보내세요.</p>
+          <h1><span class="brand-dot"></span>Design Patch Studio <span class="round-pill">v2</span></h1>
+          <p>작업을 선택하거나 새 원화로 부분 수정 스튜디오를 시작하세요.</p>
         </div>
-        <div class="projects-hero-actions">
-          <input id="home-search" type="search" class="projects-search-input" placeholder="프로젝트 검색…" aria-label="프로젝트 이름 검색" />
-          <button id="btn-home-reload" type="button" class="btn-secondary">새로고침</button>
-          <button id="btn-home-new" type="button" class="btn-primary">+ 새 프로젝트</button>
+        <div class="projects-actions">
+          <button type="button" class="btn-secondary-sm" id="btn-home-settings">환경설정</button>
+          <button type="button" class="btn-secondary-sm" id="btn-home-switch-v1">기존 화면(v1)</button>
+          <button type="button" class="btn-primary-sm" id="btn-home-new">+ 새 프로젝트</button>
         </div>
       </div>
-      <p id="home-status" class="projects-status" role="status">프로젝트를 불러오는 중…</p>
-      <div id="home-grid" class="projects-grid"></div>
-    </main>
+      <div class="projects-grid" id="projects-grid"></div>
+    </div>
   </div>
 
-  <!-- ==================== 2. 캔버스 중심 3공간 스튜디오 (?root 있음) ==================== -->
-  <div id="studio-view" class="studio-view hidden">
+  <!-- ==================== 2. 메인 스튜디오 작업 화면 ==================== -->
+  <div id="studio-view" class="hidden">
+    <!-- 상단 슬림 톱바 -->
     <header class="topbar">
       <div class="topbar-left">
-        <button id="btn-back-projects" type="button" class="pill-btn" title="프로젝트 목록으로 돌아가기">
-          <svg class="v2-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-          <span>프로젝트</span>
+        <button type="button" class="brand-btn" id="btn-projects" title="프로젝트 목록으로 돌아가기">
+          <span class="brand-dot"></span>
+          <span>Patch Studio</span>
         </button>
-        <div class="brand-tag">
-          <span class="brand-dot" aria-hidden="true"></span>
-          <span class="brand-name">Patch Studio</span>
-          <span class="badge-v2">v2</span>
-        </div>
-        <span class="divider-v" aria-hidden="true"></span>
-        <div class="project-title-wrap">
-          <span id="project-title" class="project-title-label" title="현재 프로젝트">—</span>
-          <span id="project-rev-pill" class="round-pill">rev -</span>
-        </div>
-        <span id="autosync-status" class="autosync-status" title="서버 상태 동기화">
+        <span class="project-name-pill" id="project-name-label" title="현재 프로젝트">프로젝트</span>
+        <span class="round-pill" id="status-pill">대기</span>
+        <span class="autosync-pill" id="autosync-status" title="서버 동기화 상태">
           <span class="sync-dot"></span>
-          <span id="autosync-text">준비 중</span>
+          <span id="autosync-text">동기화됨</span>
         </span>
       </div>
 
       <div class="topbar-center">
-        <div class="btn-group" role="group" aria-label="실행 취소 및 히스토리">
-          <button id="btn-undo" type="button" class="icon-btn" title="실행 취소 (Ctrl+Z)" disabled>
-            <svg class="v2-ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
-          </button>
-          <button id="btn-redo" type="button" class="icon-btn" title="다시 실행 (Ctrl+Y)" disabled>
-            <svg class="v2-ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/></svg>
-          </button>
-          <button id="btn-history" type="button" class="pill-btn" title="작업 히스토리 패널 열기/닫기 (H)">
-            <svg class="v2-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
-            <span>히스토리</span><kbd>H</kbd>
-          </button>
-        </div>
-        <span class="divider-v" aria-hidden="true"></span>
-        <div class="view-toggles" role="group" aria-label="캔버스 보기 전환">
-          <button id="btn-hold-before" type="button" class="pill-btn" title="누르는 동안 원본 보기 (Q)">
-            <svg class="v2-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M12 5v14"/></svg>
-            <span>원본</span><kbd>Q</kbd>
-          </button>
-          <button id="btn-split-compare" type="button" class="pill-btn" title="캔버스 전/후 분할 비교 (S)">
-            <svg class="v2-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1.5"/><line x1="12" y1="2" x2="12" y2="22"/><polyline points="8 9 5 12 8 15"/><polyline points="16 9 19 12 16 15"/></svg>
-            <span>전/후 비교</span><kbd>S</kbd>
-          </button>
-          <button id="btn-toggle-seams" type="button" class="pill-btn" title="경계 이음매 표시 (N)">
-            <svg class="v2-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3L2 20h20L12 3z"/><line x1="12" y1="9" x2="12" y2="14"/><circle cx="12" cy="17" r="0.8" fill="currentColor"/></svg>
-            <span>이음매</span><kbd>N</kbd>
-          </button>
+        <button type="button" class="icon-btn" id="btn-undo" title="실행 취소 (Ctrl+Z)" disabled></button>
+        <button type="button" class="icon-btn" id="btn-redo" title="다시 실행 (Ctrl+Shift+Z)" disabled></button>
+        <button type="button" class="icon-btn" id="btn-history-panel" title="히스토리 패널 (H)"></button>
+        <div class="topbar-divider"></div>
+        <div class="btn-group">
+          <button type="button" class="pill-btn" id="btn-view-original" title="원본과 즉시 비교 (Q 또는 Tab)">원본 비교 <kbd>Q</kbd></button>
+          <button type="button" class="pill-btn" id="btn-view-split" title="좌우 분할 비교 (S)">분할 <kbd>S</kbd></button>
+          <button type="button" class="pill-btn on" id="btn-view-guides" title="수정 영역 가이드 표시/숨김 (O)">영역선 <kbd>O</kbd></button>
+          <button type="button" class="pill-btn" id="btn-view-seams" title="경계 이음매 표시 (N)">이음매 <kbd>N</kbd></button>
         </div>
       </div>
 
       <div class="topbar-right">
-        <button id="btn-drain" type="button" class="pill-btn danger-pill hidden" title="진행 중인 호출 이후 새 호출 멈춤">실행 중지</button>
-        <button id="btn-switch-v1" type="button" class="pill-btn" title="같은 프로젝트로 기존 화면(v1) 열기">
-          <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
-          <span>기존 화면(v1)</span>
-        </button>
-        <button id="btn-settings" type="button" class="icon-btn" title="작업공간 설정 · 테마 · UI 크기">
-          <svg class="v2-ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </button>
-        <button id="btn-export-psd" type="button" class="btn-primary" title="후편집용 레이어 PSD 내보내기 (Ctrl+E)">
-          <svg class="v2-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          <span>PSD 내보내기</span>
-        </button>
+        <button type="button" class="icon-btn" id="btn-layout-cycle" title="패널 배치 전환 (기본 3단 / 우측 집중 / 좌측 집중 / 캔버스 집중)"></button>
+        <button type="button" class="icon-btn" id="btn-settings" title="환경설정 (테마 · 포인트 컬러 · UI 크기 · 패널 배치)"></button>
+        <button type="button" class="icon-btn" id="btn-shortcuts" title="단축키 안내 (?)"></button>
+        <div class="topbar-divider"></div>
+        <button type="button" class="btn-secondary-sm" id="btn-switch-v1" title="기존 v1 화면으로 전환 (동일 프로젝트 유지)">기존 화면(v1)</button>
+        <button type="button" class="btn-primary-sm" id="btn-export-psd" title="PSD / PNG 내보내기">PSD 내보내기</button>
       </div>
     </header>
 
-    <main id="workspace" class="workspace layout-standard">
-      <!-- [좌측] 패치 목록 & 레퍼런스 보관함 -->
-      <aside id="left-dock" class="left-dock" data-panel="left" aria-label="패치 및 레퍼런스 보관함">
-        <div class="dock-tabs">
-          <span class="panel-drag-handle" data-drag-panel="left" draggable="true" title="드래그해 패널 위치 바꾸기 또는 한쪽 몰아넣기">⋮⋮</span>
-          <button type="button" class="dock-tab active" data-left-tab="patches">
-            패치 목록 <span id="badge-patch-count" class="count-pill">0</span>
-          </button>
-          <button type="button" class="dock-tab" data-left-tab="refs">
-            레퍼런스 <span id="badge-ref-count" class="count-pill">0</span>
-          </button>
+    <!-- 3단 워크스페이스 -->
+    <main class="workspace layout-standard" id="workspace">
+      <!-- 좌측 동시 도크 (상: 수정 영역 레이어 + 하: 레퍼런스 보관함) -->
+      <aside class="left-dock" id="left-dock" data-panel-id="layers">
+        <div class="panel-dock-bar" draggable="true" data-drag-panel="layers" title="드래그해 우측 도크로 이동할 수 있습니다">
+          <span><span class="dock-grip">⋮⋮</span>레이어 · 보관함</span>
+          <button type="button" class="dock-move-btn" data-dock-action="move-right" title="우측으로 몰아넣기 / 원위치">⇄</button>
         </div>
 
-        <!-- 좌측 탭 A: 패치(크롭) 레이어 목록 -->
-        <section id="left-panel-patches" class="dock-body">
-          <div class="dock-toolbar">
-            <button id="btn-add-patch" type="button" class="btn-secondary-sm">+ 새 영역 <kbd>M</kbd></button>
-            <button id="btn-add-full-patch" type="button" class="mini-btn" title="전체 화면 대상 패치 추가">전체 화면</button>
-            <button id="btn-select-all-patches" type="button" class="mini-btn" title="모든 패치 일괄 선택">전체 선택</button>
+        <section class="dock-section layers-section">
+          <div class="dock-head">
+            <span class="dock-title">수정 영역 <span class="count-badge" id="layer-count">0</span></span>
+            <div class="dock-actions">
+              <button type="button" class="mini-btn" id="btn-deselect-patch" title="선택 해제하여 밝은 원본 전체 보기 (Esc)">선택 해제</button>
+              <button type="button" class="mini-btn accent-outline" id="btn-add-rect" title="캔버스에서 드래그해 새 수정 영역 추가 (M)">+ 추가</button>
+            </div>
           </div>
-          <div class="dock-hint">클릭: 선택 · <kbd>Shift</kbd>/<kbd>Ctrl</kbd>+클릭: 복수 선택 일괄 수정</div>
-          <div id="patch-list" class="patch-list" role="listbox" aria-multiselectable="true"></div>
-          <div class="dock-footer">
-            <div id="patch-summary-line" class="summary-line">패치 0 · ★ 0</div>
+          <div class="layers-subbar">
+            <label class="chk-inline">
+              <input type="checkbox" id="chk-select-all" checked />
+              <span>생성 대상 전체</span>
+            </label>
+            <span class="block-sub" id="layers-selection-hint">Shift/Ctrl 다중선택</span>
           </div>
+          <ul class="patch-list" id="patch-list"></ul>
         </section>
 
-        <!-- 좌측 탭 B: 레퍼런스 보관함 -->
-        <section id="left-panel-refs" class="dock-body hidden">
-          <div class="dock-toolbar wrap">
-          <button id="btn-open-sheet-cut" type="button" class="btn-primary-sm">
-            <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
-            <span>시트 오리기</span>
-          </button>
-          <button id="btn-upload-ref" type="button" class="btn-secondary-sm">
-            <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <span>올리기</span>
-          </button>
-            <button id="btn-forge-ref" type="button" class="mini-btn accent-outline hidden">Forge 가져오기</button>
-            <input id="input-upload-ref" type="file" accept=".psd,.psb,.png,.jpg,.jpeg,.webp" multiple hidden />
+        <section class="dock-section refs-section">
+          <div class="dock-head">
+            <span class="dock-title">레퍼런스 <span class="count-badge" id="ref-count">0</span></span>
+            <div class="dock-actions">
+              <button type="button" class="mini-btn" id="btn-ref-upload" title="내 PC에서 레퍼런스/시트 이미지 추가">+ 추가</button>
+              <button type="button" class="mini-btn" id="btn-ref-forge" title="Forge 자료함에서 불러오기">Forge</button>
+              <button type="button" class="mini-btn accent-outline" id="btn-open-sheet-cut" title="시트에서 영역 오려내기 · 4점 원근 맞추기 (R)">오리기</button>
+            </div>
           </div>
-          <div class="dock-hint">카드를 클릭하거나 캔버스 패치로 드래그하면 선택 패치에 연결됩니다.</div>
-          <div class="vault-section-label">시트 원본</div>
-          <div id="sheet-thumb-list" class="ref-vault-grid compact"></div>
-          <div class="vault-section-label">연결 가능한 레퍼런스</div>
-          <div id="ref-vault-grid" class="ref-vault-grid"></div>
+          <div class="ref-vault-grid" id="ref-vault-grid"></div>
         </section>
       </aside>
 
-      <!-- [중앙] 라이브 캔버스 스테이지 -->
-      <section id="canvas-stage" class="canvas-stage" aria-label="작업 캔버스">
-        <!-- 좌측 세로 도구 레일 -->
-        <div class="tool-rail" role="toolbar" aria-label="캔버스 도구">
-          <button type="button" class="tool-btn active" data-tool="select" title="선택 · 이동 · 크기/회전 (V)">
-            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M4 2l11 9-5 1 2.5 5-2 1-2.5-5-4 3.5V2z" fill="currentColor"/></svg>
-            <span class="tool-key">V</span>
-          </button>
-          <button type="button" class="tool-btn" data-tool="rect" title="사각형 영역 추가 (M)">
-            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><rect x="3" y="4" width="14" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-dasharray="3 2"/></svg>
-            <span class="tool-key">M</span>
-          </button>
-          <button type="button" class="tool-btn" data-tool="brush" title="마스크 브러시 살리기 (B)">
-            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M14.8 3.2a2.1 2.1 0 013 3L9.5 14.5l-4.2 1.2 1.2-4.2L14.8 3.2z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
-            <span class="tool-key">B</span>
-          </button>
-          <button type="button" class="tool-btn" data-tool="eraser" title="마스크 지우개 (E)">
-            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M12.5 4.5l4 4-6.5 6.5H5.5l-2-2 9-8.5zM9 15h7" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
-            <span class="tool-key">E</span>
-          </button>
-          <button type="button" class="tool-btn" data-tool="pan" title="손바닥 화면 이동 (Space 누름 또는 H)">
-            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M6 10V5.5a1 1 0 112 0V9m0-4.5a1 1 0 112 0V9m0-3.5a1 1 0 112 0V9.5m0-2.5a1 1 0 112 0V13a4 4 0 01-4 4H9a4 4 0 01-3.5-2.1L3.6 11.5a1 1 0 011.6-1.2L6 11.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-            <span class="tool-key">␣</span>
-          </button>
-          <span class="rail-sep" aria-hidden="true"></span>
-          <button id="btn-tool-sheet" type="button" class="tool-btn" title="레퍼런스 시트 오려내기 · 4점 원근 보정">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
-          </button>
-          <button id="btn-toggle-autocrop" type="button" class="tool-btn" title="AI 자동 크롭 경계 미리보기 표시">
-            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M6 3v11h11M3 6h11v11" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
-          </button>
-          <button id="btn-fit-crop" type="button" class="tool-btn" title="선택 패치에 화면 맞추기 (F)">
-            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
-            <span class="tool-key">F</span>
-          </button>
+      <div class="splitter" id="splitter-left" title="드래그해 좌측 패널 너비 조절 (더블클릭 초기화)"></div>
+
+      <!-- 중앙 원화 캔버스 스테이지 -->
+      <section class="canvas-stage" id="canvas-stage">
+        <!-- 포토샵 스타일 세로 도구 레일 -->
+        <div class="tool-rail" id="tool-rail">
+          <button type="button" class="tool-btn on" data-tool="select" title="선택 · 이동 · 크기 · 모서리 바깥 회전 (V)"></button>
+          <button type="button" class="tool-btn" data-tool="rect" title="사각형 수정 영역 추가 (M)"></button>
+          <div class="tool-sep"></div>
+          <button type="button" class="tool-btn" data-tool="brush" title="마스크 살리기 브러시 (B)"></button>
+          <button type="button" class="tool-btn" data-tool="eraser" title="마스크 지우개 (E)"></button>
+          <div class="tool-sep"></div>
+          <button type="button" class="tool-btn" data-tool="pan" title="캔버스 이동 · 손 도구 (Space)"></button>
+          <button type="button" class="tool-btn" data-tool="sheet" title="레퍼런스 시트 오리기 · 4점 원근 (R)"></button>
         </div>
 
-        <!-- 브러시 HUD (B/E 도구 활성 시) -->
-        <div id="brush-hud" class="brush-hud hidden">
-          <span id="brush-hud-label" class="brush-hud-title">마스크 브러시</span>
-          <label class="hud-field">크기 <input id="hud-brush-size" type="range" min="4" max="240" value="48" /><span id="hud-brush-size-val">48px</span></label>
-          <label class="hud-field">경도 <input id="hud-brush-hard" type="range" min="0" max="100" value="65" /><span id="hud-brush-hard-val">65%</span></label>
-          <label class="hud-field">세기 <input id="hud-brush-flow" type="range" min="5" max="100" value="80" /><span id="hud-brush-flow-val">80%</span></label>
-          <button id="btn-hud-apply-mask" type="button" class="btn-primary-sm">마스크 저장</button>
+        <!-- 브러시 / 지우개 HUD -->
+        <div class="brush-hud hidden" id="brush-hud">
+          <span class="hud-title" id="brush-mode-label">마스크 브러시</span>
+          <label>크기 <input type="range" id="hud-brush-size" min="8" max="160" value="48" /><span id="hud-brush-size-val">48px</span></label>
+          <label>경도 <input type="range" id="hud-brush-hard" min="0" max="100" value="65" /><span id="hud-brush-hard-val">65%</span></label>
+          <button type="button" class="mini-btn accent-outline" id="btn-hud-save-mask">마스크 저장</button>
+          <button type="button" class="mini-btn" id="btn-hud-done-mask">완료</button>
         </div>
 
-        <!-- 캔버스 뷰포트 -->
-        <div id="canvas-viewport" class="canvas-viewport" tabindex="0">
-          <div id="canvas-world" class="canvas-world">
-            <img id="img-base" class="canvas-img" alt="원본 이미지" draggable="false" />
-            <img id="img-composite" class="canvas-img" alt="현재 합성 이미지" draggable="false" />
-            <div id="cand-live-overlay" class="cand-live-overlay hidden">
-              <img id="img-cand-live" class="canvas-img" alt="선택 후보 실시간 겹침 미리보기" draggable="false" />
-            </div>
-            <div id="canvas-split-clip" class="canvas-split-clip hidden">
-              <img id="img-split-before" class="canvas-img" alt="" draggable="false" />
-            </div>
-            <canvas id="mask-live-canvas" class="mask-live-canvas hidden"></canvas>
-            <svg id="canvas-svg" class="canvas-svg"></svg>
+        <!-- 실시간 후보 프리뷰 배지 -->
+        <div class="live-preview-badge hidden" id="live-preview-badge">
+          <span id="live-preview-text">후보 미리보기 중</span>
+          <button type="button" class="mini-btn accent-outline" id="btn-live-pick">★ 이 후보 확정</button>
+        </div>
+
+        <!-- 인터랙티브 캔버스 뷰포트 -->
+        <div class="canvas-viewport mode-select" id="canvas-viewport">
+          <div class="canvas-transform" id="canvas-transform">
+            <img id="canvas-base" class="canvas-img" alt="" draggable="false" />
+            <img id="canvas-composite" class="canvas-img" alt="" draggable="false" />
+            <img id="cand-live-overlay" class="hidden" alt="" draggable="false" />
+            <canvas id="mask-canvas" class="hidden"></canvas>
+            <svg id="overlay-svg" class="overlay-svg"></svg>
           </div>
-          <!-- 캔버스 분할 비교 드래그 바 (S) -->
-          <div id="canvas-split-bar" class="canvas-split-bar hidden" title="좌우로 드래그해 원본과 합성을 비교하세요">
-            <div class="canvas-split-knob">↔</div>
-          </div>
-          <!-- 빈 캔버스 / 로딩 안내 -->
-          <div id="canvas-empty" class="canvas-empty hidden">
-            <div class="canvas-empty-card">
-              <p id="canvas-empty-title">캔버스를 불러오는 중…</p>
-              <p id="canvas-empty-sub" class="muted-text"></p>
-              <button id="btn-canvas-apply-first" type="button" class="btn-primary hidden">무료 반영으로 원화 불러오기</button>
+          <div id="split-line" class="split-line hidden" title="좌우로 드래그해 원본과 합성본을 비교하세요"></div>
+        </div>
+
+        <!-- 2단 리치 플로팅 컨텍스트 바 (목업 100% 복원) -->
+        <div class="floating-bar hidden" id="floating-bar">
+          <div class="fb-row fb-row-top">
+            <div class="fb-purposes" id="fb-purposes"></div>
+            <div class="fb-refs" id="fb-refs"></div>
+            <div class="fb-actions-mini">
+              <button type="button" class="fb-mini-btn hidden" id="fb-compare-btn" title="풀스크린 Before/After 정밀 비교">비교</button>
+              <button type="button" class="fb-mini-btn hidden" id="fb-ratio-btn" title="선택 모델의 지정 비율에 맞게 영역 틀 조정">비율 맞춤</button>
+              <button type="button" class="fb-mini-btn" id="fb-lock-btn" title="영역 위치 잠금 / 해제"></button>
+              <button type="button" class="fb-mini-btn danger" id="fb-del-btn" title="선택 영역 삭제"></button>
+              <button type="button" class="fb-mini-btn" id="fb-deselect-btn" title="선택 해제 (밝은 원본 보기 · Esc)"></button>
             </div>
           </div>
+          <div class="fb-row">
+            <input type="text" class="fb-input" id="fb-instruction" placeholder="이 영역을 어떻게 수정할까요? (한국어로 편하게 입력)" />
+            <button type="button" class="fb-ai-btn" id="fb-ai-btn" title="한국어 지시를 모델 최적 프롬프트로 작성 (사내 Forge 보조 호출)"></button>
+            <button type="button" class="fb-model-btn" id="fb-model-btn" title="이 영역에 사용할 생성 모델 변경">
+              <span id="fb-model-label">GPT 2.6</span>
+              <span>▾</span>
+            </button>
+            <button type="button" class="btn-primary-sm" id="fb-run-btn">생성</button>
+          </div>
         </div>
 
-        <!-- 하단 중앙 도킹 컨텍스트 바 (패치 선택 시 — 아이콘 + 라벨 직관 구성) -->
-        <div id="floating-bar" class="floating-bar hidden" aria-label="선택 패치 빠른 작업">
-          <div class="fb-thumb" id="fb-thumb" aria-hidden="true"></div>
-          <div class="fb-meta">
-            <span id="fb-name" class="fb-name">—</span>
-            <span id="fb-dims" class="fb-dims">0×0</span>
-          </div>
-          <span class="divider-v" aria-hidden="true"></span>
-          <div id="fb-purpose-group" class="fb-pills"></div>
-          <span class="divider-v" aria-hidden="true"></span>
-          <button id="btn-fb-ratio-fit" type="button" class="mini-btn accent-outline hidden" title="선택 모델 비율에 맞춰 크롭 영역 넓히기">
-            <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="1.5"/><polyline points="7 13 7 9 11 9"/><polyline points="17 11 17 15 13 15"/></svg>
-            <span>비율 맞춤</span>
-          </button>
-          <button id="btn-fb-compare" type="button" class="mini-btn hidden" title="선택 패치 후보 크게 비교">
-            <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-            <span>비교</span>
-          </button>
-          <button id="btn-fb-lock" type="button" class="mini-btn" title="패치 잠금/해제 (L)"></button>
-          <button id="btn-fb-delete" type="button" class="mini-btn danger-text" title="패치 삭제 (Del)">
-            <svg class="v2-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-            <span>삭제</span>
-          </button>
+        <!-- 우측 하단 줌 컨트롤 -->
+        <div class="zoom-controls">
+          <button type="button" id="btn-zoom-out" title="축소">-</button>
+          <button type="button" id="btn-zoom-fit" title="화면 맞춤 (0)">100%</button>
+          <button type="button" id="btn-zoom-in" title="확대">+</button>
         </div>
 
-        <!-- 캔버스 하단 푸터 -->
-        <footer class="canvas-footer">
-          <div class="cf-left">
-            <button id="btn-zoom-out" type="button" class="mini-btn" title="축소 (-)">−</button>
-            <span id="zoom-readout" class="zoom-readout">100%</span>
-            <button id="btn-zoom-in" type="button" class="mini-btn" title="확대 (+)">+</button>
-            <button id="btn-zoom-fit" type="button" class="mini-btn" title="전체 맞춤 (0)">맞춤</button>
-            <button id="btn-zoom-100" type="button" class="mini-btn" title="원해상도 1:1 (1)">1:1</button>
+        <!-- 3컬럼 고정 그리드 캔버스 푸터 (마우스 이동 시 흔들림 0px) -->
+        <div class="canvas-footer">
+          <span class="footer-left" id="canvas-cursor-info">선택된 영역 없음 · M으로 새 영역 추가</span>
+          <label class="focus-dim-ctrl" title="선택 영역 바깥만 살짝 어둡게 하여 시선을 집중시킵니다 (선택 해제 시 자동 투명)">
+            <span>바깥 어둡게</span>
+            <input type="range" id="input-focus-dim" min="0" max="75" value="36" />
+            <span class="focus-dim-val" id="val-focus-dim">36%</span>
+          </label>
+          <div class="footer-right">
+            <span id="canvas-res-label">- × - px</span>
+            <span class="footer-coords" id="canvas-coords">0, 0</span>
           </div>
-          <div class="cf-center">
-            <label class="dim-slider-wrap" title="선택 영역 바깥만 어둡게 하여 원본 색감을 왜곡 없이 집중 확인합니다">
-              <span>바깥 어둡게</span>
-              <input id="input-focus-dim" type="range" min="0" max="75" value="42" />
-              <span id="val-focus-dim">42%</span>
-            </label>
-          </div>
-          <div class="cf-right">
-            <span id="canvas-coords" class="coords-readout">0, 0</span>
-            <span id="canvas-job-pill" class="job-pill hidden"></span>
-          </div>
-        </footer>
+        </div>
       </section>
 
-      <!-- [우측] 상황별 3탭 인스펙터 + 하단 고정 실행 독 -->
-      <aside id="right-dock" class="right-dock" data-panel="right" aria-label="패치 속성 및 실행 패널">
-        <div class="dock-tabs">
-          <span class="panel-drag-handle" data-drag-panel="right" draggable="true" title="드래그해 패널 위치 바꾸기 또는 한쪽 몰아넣기">⋮⋮</span>
-          <button type="button" class="dock-tab active" data-right-tab="instruct">① 지시·모델</button>
-          <button type="button" class="dock-tab" data-right-tab="review">② 후보 비교 <span id="badge-cand-count" class="count-pill">0</span></button>
-          <button type="button" class="dock-tab" data-right-tab="retouch">③ 후보정</button>
+      <div class="splitter" id="splitter-right" title="드래그해 우측 패널 너비 조절 (더블클릭 초기화)"></div>
+
+      <!-- 우측 3탭 컨텍스트 인스펙터 -->
+      <aside class="right-dock" id="right-dock" data-panel-id="inspector">
+        <div class="panel-dock-bar" draggable="true" data-drag-panel="inspector" title="드래그해 좌측 도크로 이동할 수 있습니다">
+          <span><span class="dock-grip">⋮⋮</span>속성 · 비교 · 후보정</span>
+          <button type="button" class="dock-move-btn" data-dock-action="move-left" title="좌측으로 몰아넣기 / 원위치">⇄</button>
         </div>
 
-        <div class="inspector-scroll">
-          <!-- 유니티식 복수 선택 일괄 수정 배너 -->
-          <div id="multi-select-banner" class="multi-banner hidden"></div>
+        <nav class="inspector-tabs">
+          <button type="button" class="itab on" data-tab="instruct">지시 · 모델</button>
+          <button type="button" class="itab" data-tab="compare">후보 비교 <span class="tab-badge hidden" id="tab-cand-badge">0</span></button>
+          <button type="button" class="itab" data-tab="retouch">후보정</button>
+        </nav>
 
-          <!-- 탭 1: 지시 · 레퍼런스 · 모델 -->
-          <section id="right-tab-instruct" class="inspector-panel"></section>
+        <div class="inspector-body">
+          <!-- TAB 1: 지시 · 모델 -->
+          <div class="tab-pane" id="pane-instruct">
+            <div class="empty-card hidden" id="instruct-empty">
+              <p>선택된 수정 영역이 없습니다</p>
+              <small>지금은 바깥 음영 없이 원본 전체가 밝게 보입니다.<br/>왼쪽 목록에서 영역을 클릭하거나 캔버스에 새 영역을 그려보세요.</small>
+              <div class="empty-actions">
+                <button type="button" class="btn-primary-sm" id="btn-empty-rect">사각형 영역 추가 (M)</button>
+              </div>
+            </div>
 
-          <!-- 탭 2: 후보 비교 · 신호등 품질 -->
-          <section id="right-tab-review" class="inspector-panel hidden"></section>
+            <div id="instruct-content" class="tab-pane">
+              <!-- Unity식 다중 선택 배너 -->
+              <div class="multi-select-banner hidden" id="multi-select-banner">
+                <div class="msb-head">
+                  <strong id="msb-title">2개 영역 동시 선택 중</strong>
+                  <button type="button" class="mini-btn" id="btn-clear-multi">단일 선택</button>
+                </div>
+                <div class="msb-actions">
+                  <button type="button" class="mini-btn" id="btn-multi-vis">일괄 표시/숨김</button>
+                  <button type="button" class="mini-btn" id="btn-multi-lock">일괄 잠금</button>
+                  <button type="button" class="mini-btn danger-outline" id="btn-multi-del">일괄 삭제</button>
+                </div>
+              </div>
 
-          <!-- 탭 3: 비파괴 후보정 · 마스크 · 변형 -->
-          <section id="right-tab-retouch" class="inspector-panel hidden"></section>
-        </div>
+              <!-- 단일 영역 헤더 카드 -->
+              <div class="card-block" id="single-patch-head-card">
+                <div class="patch-head-row">
+                  <input type="text" class="patch-name-input" id="inp-patch-name" placeholder="영역 이름" />
+                  <span class="patch-kind-badge" id="patch-kind-badge">부분 수정</span>
+                </div>
+                <div class="crop-auto-info" id="crop-auto-info">
+                  <span>크기 계산 중...</span>
+                </div>
+              </div>
 
-        <!-- 우측 하단 고정 실행 독 -->
-        <div id="run-dock" class="run-dock">
-          <div id="run-dock-summary" class="run-dock-summary">계획 확인 중…</div>
-          <div class="run-dock-actions">
-            <button id="btn-apply-free" type="button" class="btn-secondary hidden" title="레이아웃·레퍼런스·설정을 무료로 반영">무료 반영</button>
-            <button id="btn-run-generate" type="button" class="btn-run-main">선택 패치 생성하기</button>
+              <!-- 작업 목적 5종 -->
+              <div class="card-block" id="purpose-card">
+                <div class="block-head">
+                  <span class="block-label">작업 목적</span>
+                  <span class="block-sub">선택 시 맞춤 프롬프트 구성</span>
+                </div>
+                <div class="purpose-grid" id="purpose-grid"></div>
+                <div class="rec-banner hidden" id="purpose-model-rec"></div>
+              </div>
+
+              <!-- 연결된 레퍼런스 -->
+              <div class="card-block" id="ref-drop-slot">
+                <div class="block-head">
+                  <span class="block-label">연결된 레퍼런스</span>
+                  <div class="dock-actions">
+                    <button type="button" class="mini-btn accent-outline" id="btn-slot-cut">시트 오리기</button>
+                    <button type="button" class="mini-btn" id="btn-slot-forge">Forge</button>
+                  </div>
+                </div>
+                <div class="attached-refs-list" id="attached-refs-list"></div>
+              </div>
+
+              <!-- 수정 방향성 & AI 스마트 프롬프트 -->
+              <div class="card-block" id="prompt-card">
+                <div class="block-head">
+                  <span class="block-label">수정 지시 (한국어)</span>
+                  <label class="chk-inline">
+                    <input type="checkbox" id="chk-ai-auto" checked />
+                    <span>AI 자동 최적화</span>
+                  </label>
+                </div>
+                <div class="mention-bar" id="mention-bar"></div>
+                <textarea class="prompt-textarea" id="inp-instruction" rows="3" placeholder="수정할 내용을 한국어로 자연스럽게 적어주세요"></textarea>
+                <div class="prompt-actions-row">
+                  <button type="button" class="btn-ai-draft" id="btn-ai-draft" title="한국어 지시를 저장하고 Forge AI가 모델별 영문 프롬프트를 작성합니다 (최대 8패치 · 확인 창 없이 즉시 호출)"></button>
+                  <button type="button" class="mini-btn" id="btn-prompt-presets" title="자주 쓰는 지시 프리셋 선택">프리셋 ▾</button>
+                  <button type="button" class="mini-btn" id="btn-save-spec" title="현재 지시문 즉시 저장">저장</button>
+                </div>
+                <div class="spec-blocked-note hidden" id="spec-blocked-note"></div>
+                <div class="ai-summary-box hidden" id="ai-summary-box">
+                  <div class="ai-summary-head">
+                    <span class="ai-skill-tag" id="ai-skill-tag">AI 프롬프트</span>
+                    <span class="ai-target-model" id="ai-target-model"></span>
+                  </div>
+                  <p class="ai-summary-ko" id="ai-summary-ko"></p>
+                  <details class="raw-prompt-details" id="raw-prompt-details">
+                    <summary>원문 프롬프트 확인 / 직접 덮어쓰기</summary>
+                    <textarea class="raw-prompt-textarea" id="inp-raw-prompt" rows="3" placeholder="직접 영문 요청 본문을 입력하려면 여기에 작성 후 저장하세요"></textarea>
+                    <div class="raw-prompt-readonly hidden" id="box-full-prompt"></div>
+                  </details>
+                </div>
+              </div>
+
+              <!-- 모델 & 생성 옵션 -->
+              <div class="card-block" id="model-card">
+                <div class="block-head">
+                  <span class="block-label">사용 모델 · 옵션</span>
+                  <label class="chk-inline">
+                    <input type="checkbox" id="chk-inherit-model" checked />
+                    <span>프로젝트 기본 모델</span>
+                  </label>
+                </div>
+                <button type="button" class="model-dropdown-trigger" id="btn-model-dropdown">
+                  <div class="mdt-main">
+                    <strong id="mdt-name">GPT Image 2.6 Sunburst</strong>
+                    <small id="mdt-sub">추천 · 정밀 수정</small>
+                  </div>
+                  <span>▾</span>
+                </button>
+                <div class="param-row">
+                  <div class="param-col">
+                    <label>후보 장수</label>
+                    <div class="seg-group" id="seg-count">
+                      <button type="button" data-val="1">1</button>
+                      <button type="button" data-val="2">2</button>
+                      <button type="button" data-val="4" class="on">4</button>
+                      <button type="button" data-val="6">6</button>
+                    </div>
+                  </div>
+                  <div class="param-col">
+                    <label>생성 품질</label>
+                    <div class="seg-group" id="seg-quality"></div>
+                  </div>
+                </div>
+                <div class="param-row hidden" id="model-extra-opts"></div>
+              </div>
+
+              <!-- 전문가 설정 (접이식) -->
+              <details class="adv-details" id="adv-details">
+                <summary>
+                  <span>전문가 설정</span>
+                  <span class="adv-dot hidden" id="adv-changed-dot"></span>
+                  <span class="adv-summary-text" id="adv-summary-text">기본값 적용 중</span>
+                </summary>
+                <div class="adv-body">
+                  <div class="adv-row">
+                    <span>AI 자동 크롭 가이드 표시</span>
+                    <input type="checkbox" id="adv-show-autocrop" />
+                  </div>
+                  <div class="adv-row">
+                    <span>지시 복잡도</span>
+                    <select id="adv-complexity">
+                      <option value="low">낮음</option>
+                      <option value="medium">보통</option>
+                      <option value="high" selected>높음 (기본)</option>
+                    </select>
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+
+          <!-- TAB 2: 후보 비교 -->
+          <div class="tab-pane hidden" id="pane-compare">
+            <div class="empty-card hidden" id="compare-empty">
+              <p>생성된 후보 이미지가 아직 없습니다</p>
+              <small>지시 · 모델 탭에서 수정 방향을 적은 뒤 하단 생성 버튼을 눌러 후보를 뽑아보세요.</small>
+              <div class="empty-actions">
+                <button type="button" class="btn-primary-sm" id="btn-compare-goto-instruct">지시 · 모델로 이동</button>
+              </div>
+            </div>
+
+            <div id="compare-content" class="tab-pane hidden">
+              <div class="block-head">
+                <span class="block-label" id="compare-patch-title">후보 목록</span>
+                <button type="button" class="mini-btn accent-outline" id="btn-open-fullscreen-compare">크게 비교</button>
+              </div>
+              <div class="target-pill-row hidden" id="target-pill-row"></div>
+
+              <div class="traffic-banner ok" id="quality-traffic-light">
+                <span class="tl-dot"></span>
+                <div class="tl-body">
+                  <strong id="tl-title">경계 자연스러움</strong>
+                  <small id="tl-desc">원본 영역 보존 및 톤 매칭이 안정적입니다.</small>
+                </div>
+                <button type="button" class="mini-btn accent-outline hidden" id="btn-tl-fix">경계 다듬기</button>
+              </div>
+
+              <div class="cand-grid" id="cand-grid"></div>
+
+              <div class="compare-actions-row">
+                <button type="button" class="btn-secondary-sm" id="btn-reroll-more">+ 후보 다시 뽑기</button>
+                <button type="button" class="btn-secondary-sm accent-outline" id="btn-goto-retouch">후보정으로 이동 →</button>
+              </div>
+
+              <div class="card-block">
+                <span class="block-label">이 결과를 만든 설정 (클릭 시 이동)</span>
+                <div class="settings-jump-grid" id="used-settings-summary"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 3: 후보정 (비파괴 스마트 필터) -->
+          <div class="tab-pane hidden" id="pane-retouch">
+            <div class="empty-card hidden" id="retouch-empty">
+              <p>후보정할 확정 시안이 없습니다</p>
+              <small>먼저 후보 비교 탭에서 마음에 드는 후보를 ★ 채택하거나 클릭해 선택하세요.</small>
+              <div class="empty-actions">
+                <button type="button" class="btn-secondary-sm" id="btn-retouch-goto-compare">후보 비교로 이동</button>
+              </div>
+            </div>
+
+            <div id="retouch-content" class="tab-pane hidden">
+              <div class="retouch-note">
+                포토샵 스마트 필터처럼 각 효과 눈(👁)을 끄고 켜며 비파괴로 비교할 수 있습니다.
+              </div>
+
+              <!-- 1. 브러시 마스크 -->
+              <div class="filter-card" data-filter="brush">
+                <div class="filter-head">
+                  <button type="button" class="eye-btn on" data-toggle-filter="brush" title="브러시 마스크 표시 전환"></button>
+                  <strong>브러시 마스크</strong>
+                  <span class="filter-meta" id="fm-brush">활성</span>
+                </div>
+                <div class="filter-body">
+                  <div class="retouch-tool-row">
+                    <button type="button" class="mini-btn" data-rt-tool="brush">살리기 (B)</button>
+                    <button type="button" class="mini-btn" data-rt-tool="eraser">지우기 (E)</button>
+                    <button type="button" class="mini-btn" id="btn-rt-reset-mask">초기화</button>
+                  </div>
+                  <div class="slider-row">
+                    <label>브러시 크기</label>
+                    <input type="range" id="rt-brush-size" min="8" max="160" value="48" />
+                    <span id="rt-brush-size-val">48px</span>
+                  </div>
+                  <div class="retouch-tool-row">
+                    <button type="button" class="mini-btn accent-outline" id="btn-rt-save-mask">마스크 서버 저장</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 2. 경계 부드럽게 (페더 + 4면 페이드) -->
+              <div class="filter-card" data-filter="edge">
+                <div class="filter-head">
+                  <button type="button" class="eye-btn on" data-toggle-filter="edge" title="경계 페더 표시 전환"></button>
+                  <strong>경계 부드럽게 (페더)</strong>
+                  <span class="filter-meta" id="fm-edge">0px</span>
+                </div>
+                <div class="filter-body">
+                  <div class="slider-row">
+                    <label>전체 페더</label>
+                    <input type="range" id="rt-feather" min="0" max="60" value="0" />
+                    <span id="rt-feather-val">0px</span>
+                  </div>
+                  <div class="four-side-grid">
+                    <label>위 <input type="range" id="rt-fade-top" min="0" max="40" value="0" /></label>
+                    <label>아래 <input type="range" id="rt-fade-bottom" min="0" max="40" value="0" /></label>
+                    <label>좌 <input type="range" id="rt-fade-left" min="0" max="40" value="0" /></label>
+                    <label>우 <input type="range" id="rt-fade-right" min="0" max="40" value="0" /></label>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 3. 위치 · 크기 · 회전 (실제 /mask/adjust 연동) -->
+              <div class="filter-card" data-filter="transform">
+                <div class="filter-head">
+                  <button type="button" class="eye-btn on" data-toggle-filter="transform" title="변형 표시 전환"></button>
+                  <strong>위치 · 크기 · 회전</strong>
+                  <button type="button" class="text-link-btn" id="btn-rt-reset-tf">원위치</button>
+                </div>
+                <div class="filter-body">
+                  <div class="transform-grid">
+                    <label>X 이동 <input type="number" id="rt-dx" value="0" step="1" /></label>
+                    <label>Y 이동 <input type="number" id="rt-dy" value="0" step="1" /></label>
+                    <label>크기 % <input type="number" id="rt-scale" value="100" min="50" max="160" step="1" /></label>
+                    <label>회전 ° <input type="number" id="rt-rot" value="0" min="-45" max="45" step="0.5" /></label>
+                  </div>
+                  <div class="retouch-tool-row">
+                    <button type="button" class="mini-btn accent-outline" id="btn-rt-apply-tf">변형 서버 적용</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 4. 투명도 · 색감 미세 조정 -->
+              <div class="filter-card" data-filter="color">
+                <div class="filter-head">
+                  <button type="button" class="eye-btn on" data-toggle-filter="color" title="색감/투명도 표시 전환"></button>
+                  <strong>투명도 · 색감 프리뷰</strong>
+                  <span class="filter-meta" id="fm-color">100%</span>
+                </div>
+                <div class="filter-body">
+                  <div class="slider-row">
+                    <label>불투명도</label>
+                    <input type="range" id="rt-opacity" min="0" max="100" value="100" />
+                    <span id="rt-opacity-val">100%</span>
+                  </div>
+                  <div class="slider-row">
+                    <label>밝기</label>
+                    <input type="range" id="rt-bright" min="-30" max="30" value="0" />
+                    <span id="rt-bright-val">0</span>
+                  </div>
+                  <div class="slider-row">
+                    <label>채도</label>
+                    <input type="range" id="rt-sat" min="-40" max="40" value="0" />
+                    <span id="rt-sat-val">0</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 5. Forge 후처리 도구 (v2_postprocess 게이트) -->
+              <div class="forge-tools-card">
+                <span class="block-label">Forge 후처리 도구</span>
+                <button type="button" class="forge-tool-btn" id="btn-tool-upscale">
+                  <span><strong>업스케일 · 질감 정리</strong><small id="upscale-desc">Phase V2-B 연결 예정</small></span>
+                </button>
+                <button type="button" class="forge-tool-btn" id="btn-tool-bgremove">
+                  <span><strong>배경 제거 (누끼)</strong><small id="bgremove-desc">Phase V2-B 연결 예정</small></span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
+
+        <!-- 하단 고정 실행 도크 -->
+        <footer class="run-dock">
+          <div class="dock-summary">
+            <span id="dock-summary-left">선택된 영역 0개</span>
+            <span class="dock-model-pill" id="dock-summary-right">-</span>
+          </div>
+          <div class="run-progress-wrap hidden" id="run-progress-wrap">
+            <div class="run-progress-bar"><div class="run-progress-fill" id="run-progress-fill"></div></div>
+            <div class="run-progress-meta">
+              <span id="run-progress-text">생성 진행 중...</span>
+              <button type="button" class="text-link-btn" id="btn-cancel-run">중단</button>
+            </div>
+          </div>
+          <div class="run-dock-btns">
+            <button type="button" class="btn-secondary" id="btn-apply-free" title="확정된 후보를 전체 합성본에 무료로 반영">합성 적용</button>
+            <button type="button" class="btn-primary" id="btn-run-selected">선택 영역 생성 시작</button>
+          </div>
+        </footer>
       </aside>
     </main>
+
+    <!-- 포토샵식 히스토리 드로어 -->
+    <aside class="history-drawer hidden" id="history-drawer">
+      <div class="history-head">
+        <strong>작업 히스토리</strong>
+        <button type="button" class="icon-btn" id="btn-close-history" title="닫기">×</button>
+      </div>
+      <ul class="history-list" id="history-list"></ul>
+      <div class="history-foot">항목을 클릭하면 해당 시점으로 즉시 이동합니다.</div>
+    </aside>
+
+    <!-- 2열 검색형 모델 선택 팝오버 -->
+    <div class="model-popover hidden" id="model-popover">
+      <div class="mp-left">
+        <input type="text" class="mp-search" id="mp-search" placeholder="모델명·용도 검색 (예: 정밀, 질감, 4K)" />
+        <div class="mp-list" id="mp-list"></div>
+      </div>
+      <div class="mp-guide" id="mp-guide"></div>
+    </div>
+
+    <!-- 50/50 분할 레퍼런스 시트 오리기 & 4점 원근 오버레이 (버그 1 영구 해결) -->
+    <div class="sheet-overlay hidden" id="sheet-overlay">
+      <div class="sheet-overlay-head">
+        <div class="sheet-head-left">
+          <strong>레퍼런스 시트 오리기 · 4점 원근 맞추기</strong>
+          <small>좌측: 휠 줌 · Space/우클릭 패닝 · 드래그 오리기 &nbsp;|&nbsp; 우측: 노란 꼭짓점 4개 드래그해 타깃 각도에 맞추기</small>
+        </div>
+        <div class="sheet-head-right">
+          <select class="select-input" id="sheet-select" title="작업할 레퍼런스 시트 선택"></select>
+          <button type="button" class="btn-secondary-sm" id="btn-sheet-upload">시트 업로드</button>
+          <button type="button" class="btn-secondary-sm" id="btn-sheet-forge">Forge 자료함</button>
+          <button type="button" class="btn-secondary-sm" id="btn-sheet-close">닫기 (Esc)</button>
+        </div>
+      </div>
+
+      <div class="sheet-split-body" id="sheet-split-body">
+        <!-- 좌측: 원본 시트 1:1 / 오버스크롤 오리기 -->
+        <div class="sheet-pane sheet-pane-left">
+          <div class="sheet-pane-bar">
+            <span><strong>1. 시트에서 영역 오리기</strong></span>
+            <div class="sheet-zoom-ctrls">
+              <button type="button" class="mini-btn" id="btn-sheet-zout">-</button>
+              <span class="sheet-zoom-val" id="sheet-zoom-val">100%</span>
+              <button type="button" class="mini-btn" id="btn-sheet-zin">+</button>
+              <button type="button" class="mini-btn" id="btn-sheet-1to1" title="원본 1:1 픽셀 배율">1:1</button>
+              <button type="button" class="mini-btn" id="btn-sheet-fit" title="화면에 맞춤">맞춤</button>
+              <button type="button" class="mini-btn accent-outline" id="btn-sheet-max" title="오리기 영역 최대화/분할 전환">⤢ 최대화</button>
+            </div>
+          </div>
+          <div class="sheet-canvas-wrap overscroll-stage" id="sheet-source-wrap">
+            <div class="sheet-transform" id="sheet-source-transform">
+              <canvas id="sheet-source-canvas"></canvas>
+            </div>
+            <div class="sheet-empty-overlay hidden" id="sheet-source-empty">
+              <strong>업로드된 시트가 없습니다</strong>
+              <small>상단의 [시트 업로드] 또는 [Forge 자료함]으로 레퍼런스 시트를 불러오세요.</small>
+            </div>
+          </div>
+          <div class="sheet-pane-foot">
+            <span id="sheet-cut-size">드래그해서 오릴 영역을 선택하세요</span>
+            <span class="block-sub">휠: 커서 줌 · Space/우클릭: 자유 이동</span>
+          </div>
+        </div>
+
+        <!-- 우측: 대상 크롭 오버레이 + 4점 원근 왜곡 -->
+        <div class="sheet-pane sheet-pane-right">
+          <div class="sheet-pane-bar">
+            <span><strong>2. 대상 원화 위 4점 원근 맞추기</strong></span>
+            <div class="sheet-warp-ctrls">
+              <select class="select-input" id="sheet-target-crop" title="연결할 수정 영역"></select>
+              <select class="select-input" id="sheet-role-select" title="레퍼런스 역할">
+                <option value="main">대표 ★</option>
+                <option value="sub">보조</option>
+              </select>
+            </div>
+          </div>
+          <div class="sheet-canvas-wrap" id="sheet-warp-wrap">
+            <canvas id="sheet-warp-canvas" width="480" height="480"></canvas>
+            <div class="sheet-empty-overlay hidden" id="sheet-warp-empty">
+              <strong>4점 원근 미리보기 대기 중</strong>
+              <small>좌측 시트에서 영역을 드래그하면 대상 원화 위에 겹쳐져 4점 꼭짓점을 조절할 수 있습니다.</small>
+            </div>
+          </div>
+          <div class="sheet-pane-foot">
+            <div class="sheet-warp-ctrls">
+              <label>투명도 <input type="range" id="sheet-overlay-alpha" min="15" max="100" value="65" /></label>
+              <button type="button" class="mini-btn" id="btn-sheet-flip">좌우 반전</button>
+              <button type="button" class="mini-btn" id="btn-sheet-reset-quad">각도 초기화</button>
+            </div>
+            <div class="dock-actions">
+              <button type="button" class="btn-secondary-sm" id="btn-sheet-save-vault">보관함에만 저장</button>
+              <button type="button" class="btn-primary-sm" id="btn-sheet-attach">저장 및 영역 연결</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 풀스크린 Before/After 정밀 비교 오버레이 -->
+    <div class="compare-overlay hidden" id="compare-overlay">
+      <div class="co-head">
+        <div class="co-head-left">
+          <strong id="co-title">정밀 비교</strong>
+          <small>이미지 위 어디든 클릭·드래그로 구분선 이동 · Tab 깜빡임 · 휠 확대 · 1~4 후보 전환</small>
+        </div>
+        <div class="co-head-right">
+          <button type="button" class="btn-secondary-sm" id="co-toggle-blink">원본 깜빡임 (Tab)</button>
+          <button type="button" class="btn-secondary-sm" id="co-zoom-reset">100%</button>
+          <button type="button" class="btn-secondary-sm" id="co-close">닫기 (Esc)</button>
+        </div>
+      </div>
+      <div class="co-body">
+        <div class="co-stage" id="co-stage">
+          <div class="co-compare-box" id="co-compare-box">
+            <canvas id="co-canvas-after"></canvas>
+            <div class="co-before-clip" id="co-before-clip">
+              <canvas id="co-canvas-before"></canvas>
+            </div>
+            <div class="co-divider" id="co-divider">
+              <div class="co-divider-handle">◀▶</div>
+            </div>
+            <span class="co-label co-label-before">원본 (Before)</span>
+            <span class="co-label co-label-after" id="co-label-after">후보 (After)</span>
+          </div>
+        </div>
+        <div class="co-rail" id="co-rail"></div>
+      </div>
+      <div class="co-foot">
+        <button type="button" class="btn-primary" id="co-pick">★ 이 후보 확정 적용</button>
+        <button type="button" class="btn-secondary" id="co-to-retouch">후보정으로 다듬기</button>
+        <button type="button" class="btn-secondary" id="co-reedit">지시 수정하기</button>
+      </div>
+    </div>
   </div>
 
-  <!-- ==================== 3. 오버레이 & 모달 ==================== -->
-  <!-- 새 프로젝트 모달 -->
-  <div id="new-project-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-label="새 프로젝트 만들기">
-    <div class="modal-box modal-md">
+  <!-- 공용 모달 백드롭 (환경설정 · 새 프로젝트 · PSD 내보내기 · 단축키 · 프리셋) -->
+  <div class="modal-backdrop hidden" id="modal-backdrop">
+    <div class="modal-box" id="modal-box">
       <div class="modal-head">
-        <h2>새 프로젝트 만들기</h2>
-        <button id="btn-close-new-project" type="button" class="icon-btn-sm" aria-label="닫기">×</button>
+        <strong id="modal-title">안내</strong>
+        <button type="button" class="icon-btn" id="modal-close" title="닫기">×</button>
       </div>
-      <div class="modal-body">
-        <div class="field-block">
-          <label for="np-name">프로젝트 이름</label>
-          <input id="np-name" type="text" placeholder="예: 캐릭터_의상수정_01" autocomplete="off" />
-          <p id="np-name-err" class="field-err"></p>
-        </div>
-        <div class="field-block">
-          <div class="field-label-row">
-            <label>대상 원화 (필수 1장)</label>
-            <button id="btn-np-forge" type="button" class="mini-btn accent-outline hidden">Forge에서 가져오기</button>
-          </div>
-          <div id="np-target-drop" class="drop-zone">
-            <p class="drop-title">여기로 원화(PSD · PNG · JPG · WEBP)를 끌어다 놓거나 클릭하세요</p>
-            <input id="np-target-file" type="file" accept=".psd,.psb,.png,.jpg,.jpeg,.webp" hidden />
-          </div>
-          <div id="np-target-preview" class="selected-file-chip hidden">
-            <span id="np-target-filename" class="file-chip-name"></span>
-            <button id="btn-np-remove-target" type="button" class="icon-btn-sm" title="선택한 원화 제거">×</button>
-          </div>
-          <div id="np-path-wrap" class="field-sub hidden">
-            <label for="np-path-input">또는 로컬 전체 경로</label>
-            <input id="np-path-input" type="text" placeholder="탐색기에서 복사한 파일 전체 경로" />
-          </div>
-        </div>
-        <div class="field-block">
-          <label>초기 레퍼런스 시트 (선택 · 여러 장 가능)</label>
-          <div id="np-refs-drop" class="drop-zone compact">
-            <p class="drop-title">참고 시트를 함께 올려 두면 프로젝트 생성 직후 바로 보관함에 추가됩니다</p>
-            <input id="np-refs-files" type="file" accept=".psd,.psb,.png,.jpg,.jpeg,.webp" multiple hidden />
-          </div>
-          <div id="np-refs-list" class="file-chip-list"></div>
-        </div>
-        <p id="np-status" class="modal-status" role="status"></p>
-      </div>
-      <div class="modal-foot">
-        <button id="btn-cancel-new-project" type="button" class="btn-secondary">취소</button>
-        <button id="btn-submit-new-project" type="button" class="btn-primary" disabled>프로젝트 만들기</button>
-      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-foot" id="modal-foot"></div>
     </div>
   </div>
 
-  <!-- 레퍼런스 시트 오려내기 & 4점 원근 보정 풀스크린 오버레이 -->
-  <div id="sheet-overlay" class="fullscreen-overlay hidden" role="dialog" aria-modal="true" aria-label="레퍼런스 시트 오려내기">
-    <div class="fs-header">
-      <div class="fs-head-left">
-        <strong>레퍼런스 시트 오려내기 · 4점 원근 보정</strong>
-        <select id="sheet-select" aria-label="시트 선택"></select>
-        <button id="btn-sheet-upload" type="button" class="btn-secondary-sm">+ 시트 올리기</button>
-        <button id="btn-sheet-forge" type="button" class="mini-btn accent-outline hidden">Forge 시트</button>
-        <input id="input-sheet-upload" type="file" accept=".psd,.psb,.png,.jpg,.jpeg,.webp" hidden />
+  <!-- 전역 파일 드롭 가드 -->
+  <div class="global-drop-overlay hidden" id="global-drop-overlay">
+    <div class="drop-zones-grid">
+      <div class="drop-zone" data-drop-role="ref">
+        <strong>레퍼런스 / 시트로 추가</strong>
+        <span>보관함과 시트 오리기에 바로 등록합니다</span>
       </div>
-      <div class="fs-head-center">
-        <button id="btn-sheet-mode-rect" type="button" class="pill-btn on">사각형 컷</button>
-        <button id="btn-sheet-mode-poly" type="button" class="pill-btn">다각형 컷</button>
-        <span class="divider-v" aria-hidden="true"></span>
-        <button id="btn-sheet-zoom-out" type="button" class="mini-btn">−</button>
-        <span id="sheet-zoom-val" class="zoom-readout">100%</span>
-        <button id="btn-sheet-zoom-in" type="button" class="mini-btn">+</button>
-        <button id="btn-sheet-zoom-100" type="button" class="mini-btn" title="1:1 원해상도">1:1</button>
-        <button id="btn-sheet-zoom-fit" type="button" class="mini-btn" title="창에 맞춤">맞춤</button>
-        <button id="btn-sheet-maximize" type="button" class="mini-btn" title="시트 보기 최대화 토글">최대화</button>
+      <div class="drop-zone" data-drop-role="target">
+        <strong>새 프로젝트로 시작</strong>
+        <span>드롭한 원화로 새 수정 프로젝트를 만듭니다</span>
       </div>
-      <div class="fs-head-right">
-        <button id="btn-close-sheet" type="button" class="btn-secondary">닫기 (Esc)</button>
-      </div>
-    </div>
-    <div id="sheet-body" class="sheet-split-body">
-      <div id="sheet-canvas-wrap" class="sheet-canvas-wrap">
-        <div id="sheet-stage" class="sheet-stage">
-          <img id="sheet-img" class="sheet-img" alt="레퍼런스 시트" draggable="false" />
-          <svg id="sheet-svg" class="sheet-svg"></svg>
-        </div>
-        <div id="sheet-empty" class="sheet-empty hidden">오려낼 시트 이미지를 먼저 올려 주세요.</div>
-      </div>
-      <aside id="sheet-side" class="sheet-side">
-        <div class="side-block">
-          <div class="side-title">컷 미리보기 & 4점 원근</div>
-          <div id="cut-preview-box" class="cut-preview-box">
-            <canvas id="cut-preview-canvas" class="cut-preview-canvas"></canvas>
-            <svg id="cut-persp-svg" class="cut-persp-svg"></svg>
-            <span id="cut-preview-empty" class="muted-text">시트에서 영역을 드래그해 오려내세요</span>
-          </div>
-          <div class="cut-actions-row">
-            <button id="btn-sheet-cut-run" type="button" class="btn-primary-sm" disabled>영역 오려내기</button>
-            <button id="btn-persp-reset" type="button" class="mini-btn">원근 초기화</button>
-          </div>
-        </div>
-        <div class="side-block">
-          <div class="side-title">각도 · 반전 · 크기</div>
-          <label class="slider-row"><span>회전</span><input id="cut-rotate" type="range" min="-180" max="180" step="0.5" value="0" /><span id="cut-rotate-val">0°</span></label>
-          <label class="slider-row"><span>배율</span><input id="cut-scale" type="range" min="20" max="100" step="5" value="100" /><span id="cut-scale-val">100%</span></label>
-          <div class="inline-row">
-            <button id="btn-cut-flip" type="button" class="mini-btn">좌우 반전</button>
-            <span id="cut-size-readout" class="muted-text">—</span>
-          </div>
-        </div>
-        <div class="side-block">
-          <div class="side-title">저장 대상 & 역할</div>
-          <label class="field-inline"><span>연결 패치</span><select id="cut-target-crop"></select></label>
-          <label class="field-inline"><span>역할</span>
-            <select id="cut-role">
-              <option value="main">대표 레퍼런스</option>
-              <option value="aux">보조 레퍼런스</option>
-            </select>
-          </label>
-          <label id="cut-desc-wrap" class="field-inline hidden"><span>보조 설명</span><input id="cut-desc" type="text" maxlength="24" placeholder="예: 정면디테일" /></label>
-          <button id="btn-cut-save" type="button" class="btn-primary full-w" disabled>레퍼런스 저장 및 연결</button>
-        </div>
-      </aside>
-    </div>
-  </div>
-
-  <!-- 풀스크린 후보 Before/After 비교기 -->
-  <div id="compare-overlay" class="fullscreen-overlay hidden" role="dialog" aria-modal="true" aria-label="후보 크게 비교">
-    <div class="fs-header">
-      <div class="fs-head-left">
-        <strong id="co-title">후보 비교</strong>
-        <span id="co-badge" class="round-pill"></span>
-      </div>
-      <div class="fs-head-center">
-        <button id="btn-co-blink" type="button" class="pill-btn" title="원본/후보 즉시 깜빡임 전환 (Tab)">원본 토글 <kbd>Tab</kbd></button>
-        <button id="btn-co-zoom-fit" type="button" class="mini-btn">맞춤</button>
-        <button id="btn-co-zoom-100" type="button" class="mini-btn">1:1</button>
-        <span id="co-zoom-val" class="zoom-readout">100%</span>
-      </div>
-      <div class="fs-head-right">
-        <button id="btn-co-reject" type="button" class="btn-secondary">제외 (X)</button>
-        <button id="btn-co-star" type="button" class="btn-primary">★ 이 후보 채택 (Space)</button>
-        <button id="btn-close-compare" type="button" class="btn-secondary">닫기 (Esc)</button>
-      </div>
-    </div>
-    <div class="co-main">
-      <div id="co-stage" class="co-stage">
-        <div id="co-compare-box" class="co-compare-box">
-          <img id="co-img-after" class="co-img" alt="후보 이미지" draggable="false" />
-          <div id="co-before-clip" class="co-before-clip">
-            <img id="co-img-before" class="co-img" alt="원본 이미지" draggable="false" />
-          </div>
-          <div id="co-divider" class="co-divider" title="드래그하거나 화면 아무 곳이나 클릭/드래그해 비교하세요">
-            <div class="co-divider-line"></div>
-            <div class="co-divider-knob">↔</div>
-          </div>
-          <span class="co-tag left">원본 (Before)</span>
-          <span class="co-tag right">후보 (After)</span>
-        </div>
-      </div>
-      <div id="co-rail" class="co-rail" aria-label="후보 목록"></div>
-    </div>
-  </div>
-
-  <!-- 포토샵식 히스토리 드로어 (H) -->
-  <aside id="history-drawer" class="history-drawer hidden" aria-label="작업 히스토리">
-    <div class="drawer-head">
-      <strong>작업 히스토리</strong>
-      <div class="drawer-head-actions">
-        <button id="btn-hist-undo" type="button" class="mini-btn">↶</button>
-        <button id="btn-hist-redo" type="button" class="mini-btn">↷</button>
-        <button id="btn-close-history" type="button" class="icon-btn-sm" aria-label="닫기">×</button>
-      </div>
-    </div>
-    <div id="history-list" class="history-list"></div>
-  </aside>
-
-  <!-- 작업공간 · 테마 · UI 스케일 설정 모달 -->
-  <div id="settings-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-label="작업공간 및 테마 설정">
-    <div class="modal-box modal-lg">
-      <div class="modal-head">
-        <h2>작업공간 · 테마 · UI 스케일 설정</h2>
-        <button id="btn-close-settings" type="button" class="icon-btn-sm" aria-label="닫기">×</button>
-      </div>
-      <div class="modal-body settings-body">
-        <div class="settings-section">
-          <h3>컬러 테마 (Forge 연동)</h3>
-          <div id="settings-theme-grid" class="theme-grid"></div>
-          <label class="check-row">
-            <input id="chk-forge-theme-sync" type="checkbox" />
-            <span>상위 Forge 프레임 테마 변경 시 자동으로 동기화</span>
-          </label>
-        </div>
-        <div class="settings-section">
-          <h3>포인트 컬러</h3>
-          <div id="settings-point-row" class="point-row"></div>
-        </div>
-        <div class="settings-section">
-          <h3>글자 · 버튼 UI 스케일 (캔버스 픽셀은 1:1 유지)</h3>
-          <div class="scale-control-row">
-            <input id="input-ui-scale" type="range" min="85" max="140" step="5" value="100" />
-            <span id="val-ui-scale" class="scale-badge">100%</span>
-            <button id="btn-ui-scale-reset" type="button" class="mini-btn">기본 (100%)</button>
-          </div>
-        </div>
-        <div class="settings-section">
-          <h3>패널 배치 프리셋 (패널 상단 ⋮⋮ 드래그로도 변경 가능)</h3>
-          <div id="settings-layout-grid" class="layout-preset-grid"></div>
-        </div>
-        <div class="settings-section">
-          <h3>주요 단축키</h3>
-          <div class="shortcuts-grid">
-            <div><kbd>V</kbd> 선택 · 이동 · 크기</div>
-            <div><kbd>M</kbd> 새 영역 사각형</div>
-            <div><kbd>B</kbd> / <kbd>E</kbd> 마스크 브러시 · 지우개</div>
-            <div><kbd>Space</kbd> 화면 이동 (드래그)</div>
-            <div><kbd>Q</kbd> 원본 보기 (누름)</div>
-            <div><kbd>S</kbd> 전/후 비교 슬라이더</div>
-            <div><kbd>N</kbd> 이음매 표시 전환</div>
-            <div><kbd>H</kbd> 히스토리 패널</div>
-            <div><kbd>0</kbd> / <kbd>1</kbd> / <kbd>F</kbd> 전체 · 1:1 · 선택 맞춤</div>
-            <div><kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd> 실행 취소 · 다시</div>
-          </div>
-        </div>
-      </div>
-      <div class="modal-foot">
-        <button id="btn-done-settings" type="button" class="btn-primary">완료</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- PSD 내보내기 미리보기 모달 -->
-  <div id="export-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-label="PSD 내보내기">
-    <div class="modal-box modal-md">
-      <div class="modal-head">
-        <h2>후편집용 PSD 내보내기</h2>
-        <button id="btn-close-export" type="button" class="icon-btn-sm" aria-label="닫기">×</button>
-      </div>
-      <div id="export-modal-body" class="modal-body"></div>
-      <div class="modal-foot">
-        <button id="btn-export-forge-save" type="button" class="btn-secondary hidden">Forge 자료에 저장</button>
-        <a id="btn-export-download" class="btn-secondary link-as-btn hidden" download>마지막 PSD 내려받기</a>
-        <button id="btn-export-run" type="button" class="btn-primary">PSD 내보내기 실행</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 모델 선택 가이드 팝오버 -->
-  <div id="model-popover" class="model-popover hidden" role="dialog" aria-label="생성 모델 선택 가이드">
-    <div class="mp-head">
-      <input id="mp-search" type="search" placeholder="모델 이름 · 특성 검색…" aria-label="모델 검색" />
-      <button id="btn-close-mp" type="button" class="icon-btn-sm" aria-label="닫기">×</button>
-    </div>
-    <div id="mp-list" class="mp-list"></div>
-  </div>
-
-  <!-- 전역 파일 드롭 가이드 -->
-  <div id="global-drop-overlay" class="global-drop-overlay hidden">
-    <div class="global-drop-card">
-      <strong>이미지를 놓아 레퍼런스 시트로 추가</strong>
-      <p>PSD · PNG · JPG · WEBP 파일을 바로 레퍼런스 보관함에 올립니다.</p>
     </div>
   </div>
 
   <!-- 토스트 알림 호스트 -->
-  <div id="toast-host" class="toast-host" aria-live="polite"></div>
+  <div class="toast-host" id="toast-host"></div>
+
+  <!-- 숨김 파일 선택 입력 (form 태그 0개) -->
+  <input type="file" id="hidden-file-target" class="hidden" accept="image/*" />
+  <input type="file" id="hidden-file-ref" class="hidden" accept="image/*" multiple />
+  <input type="file" id="hidden-file-sheet" class="hidden" accept="image/*" />
 </body>
 </html>

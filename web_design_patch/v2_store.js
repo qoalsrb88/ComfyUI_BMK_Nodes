@@ -1,4 +1,4 @@
-// BMK Design Patch Studio v2 — 중앙 상태 저장소 · 설정 동기화 · 멀티선택 · 히스토리 · 가시성 인식 폴링.
+// BMK Design Patch Studio v2 — 중앙 상태 저장소 · 설정 동기화 · 선택/해제 · 멀티선택 · 히스토리 · 가시성 인식 폴링.
 "use strict";
 
 window.DPV2Store = (() => {
@@ -13,7 +13,7 @@ window.DPV2Store = (() => {
     pointColor: "lime",
     uiScale: 100,
     layoutPreset: "standard",
-    focusDimAlpha: 42,
+    focusDimAlpha: 36,
     forgeThemeSync: true,
     showAutoCrop: false,
   };
@@ -32,27 +32,29 @@ window.DPV2Store = (() => {
     progress: null,  // GET /pipeline/progress
     seams: null,     // GET /seams
     seamsByCrop: new Map(),
-    mask: null,      // 활성 마스크 편집 세션 { key, info, win, base, m, start, layers, dirty, undo, redo, file, tool, size, hard, flow }
+    mask: null,      // 활성 마스크 편집 세션
     selectedIds: new Set(),
     primaryId: null,
     lastClickedId: null,
+    initialSelectionDone: false,     // 최초 로드 1회만 자동 선택 (이후 선택 해제 시 강제 재선택 금지)
+    runUncheckedIds: new Set(),      // 생성 대상에서 명시적으로 체크 해제한 crop_id 집합
     selectedTargetByCrop: new Map(), // crop_id -> target.key (다중 타깃 A/B/C 지원)
     selectedCandByTarget: new Map(), // target.key -> cand.key
-    leftTab: "patches",              // patches | refs
-    rightTab: "instruct",            // instruct | review | retouch
+    rightTab: "instruct",            // instruct | compare | retouch
     tool: "select",                  // select | rect | brush | eraser | pan
     viewFlags: {
       beforeHeld: false,
       splitOn: false,
       splitRatio: 0.5,
+      guidesOn: true,
       seamsOn: false,
     },
     prefs: Object.assign({}, DEFAULT_PREFS),
-    patchMeta: new Map(), // crop_id -> { purpose, direction_ko, aiAuto, summary_ko, prompt_en, skill_ids, modelOverride, quality, count, opts, hidden, rotDeg, filters }
-    history: [],          // 포토샵식 히스토리 항목 [{ id, label, time, undoOp, redoOp }]
+    patchMeta: new Map(),
+    history: [],
     histIndex: -1,
     assistBusy: false,
-    syncState: "idle",    // idle | syncing | err
+    syncState: "idle", // idle | syncing | err
     syncMsg: "준비 중",
     pollTimer: null,
     polling: false,
@@ -70,16 +72,25 @@ window.DPV2Store = (() => {
     return () => listeners.delete(fn);
   }
 
-  // ── 토스트 알림 ──
-  function toast(message, kind = "") {
+  // ── 토스트 알림 (선택적 액션 버튼 지원) ──
+  function toast(message, kind = "", action = null) {
     const host = document.getElementById("toast-host");
     if (!host) return;
-    const item = Data.el("div", { className: `toast-item ${kind}`.trim(), text: message });
+    const item = Data.el("div", { className: `toast-item ${kind}`.trim() },
+      Data.el("span", { text: message }),
+    );
+    if (action && action.label && typeof action.onClick === "function") {
+      item.append(Data.el("button", {
+        type: "button",
+        text: action.label,
+        onClick: () => { action.onClick(); item.remove(); },
+      }));
+    }
     host.append(item);
-    setTimeout(() => item.remove(), kind === "err" ? 5200 : 3200);
+    setTimeout(() => { if (item.parentNode) item.remove(); }, kind === "err" ? 5400 : 3400);
   }
 
-  // ── 설정 불러오기 · 저장 · 적용 (서버 모드에서는 DPEnv.store 로 자동 계정 동기화) ──
+  // ── 설정 불러오기 · 저장 · DOM 적용 ──
   function storageObj() {
     if (window.DPEnv && window.DPEnv.store) return window.DPEnv.store;
     try { return window.localStorage; } catch (_) { return null; }
@@ -104,28 +115,53 @@ window.DPV2Store = (() => {
     emit("prefs");
   }
 
+  function activeTheme() {
+    return Data.THEMES.find((t) => t.id === state.prefs.themeId) || Data.THEMES[0];
+  }
+
+  function activeAccentHex() {
+    const theme = activeTheme();
+    const point = Data.POINT_COLORS.find((p) => p.id === state.prefs.pointColor) || Data.POINT_COLORS[0];
+    return point[theme.mode] || point.hex;
+  }
+
   function applyPrefsToDom() {
     const rootEl = document.documentElement;
-    const theme = Data.THEMES.find((t) => t.id === state.prefs.themeId) || Data.THEMES[0];
-    const point = Data.POINT_COLORS.find((p) => p.id === state.prefs.pointColor) || Data.POINT_COLORS[0];
+    const theme = activeTheme();
+    const isLight = theme.mode === "light";
+    const accent = activeAccentHex();
+    const bg = theme.vars["--bg"] || (isLight ? "#f4f6f9" : "#09090b");
+
     rootEl.dataset.theme = theme.mode;
+    rootEl.dataset.themeId = theme.id;
+    rootEl.dataset.pointColor = state.prefs.pointColor || "lime";
+
     for (const [k, v] of Object.entries(theme.vars)) rootEl.style.setProperty(k, v);
-    rootEl.style.setProperty("--accent", point.hex);
-    rootEl.style.setProperty("--accent-hover", point.hover);
-    rootEl.style.setProperty("--on-accent", point.on);
-    rootEl.style.setProperty("--accent-soft", Data.hexToRgba(point.hex, theme.mode === "light" ? 0.16 : 0.12));
-    rootEl.style.setProperty("--accent-border", Data.hexToRgba(point.hex, theme.mode === "light" ? 0.55 : 0.45));
+    rootEl.style.setProperty("--accent", accent);
+    rootEl.style.setProperty("--accent-hover", Data.hexMix(accent, isLight ? "#000000" : "#ffffff", 0.14));
+    rootEl.style.setProperty("--accent-soft", isLight ? Data.hexMix("#ffffff", accent, 0.13) : Data.hexMix(bg, accent, 0.14));
+    rootEl.style.setProperty("--accent-border", Data.hexMix(bg, accent, 0.48));
+    rootEl.style.setProperty("--on-accent", isLight ? "#ffffff" : "#09090b");
+
     const scale = Math.min(140, Math.max(85, Number(state.prefs.uiScale) || 100));
     rootEl.style.setProperty("--ui-scale", String(scale / 100));
+
+    const layoutCls = "layout-" + (state.prefs.layoutPreset || "standard");
     const ws = document.getElementById("workspace");
     if (ws) {
       ws.classList.remove("layout-standard", "layout-right-stack", "layout-left-stack", "layout-focus");
-      ws.classList.add("layout-" + (state.prefs.layoutPreset || "standard"));
+      ws.classList.add(layoutCls);
     }
+    if (document.body && document.body.classList) {
+      document.body.classList.remove("layout-standard", "layout-right-stack", "layout-left-stack", "layout-focus");
+      document.body.classList.add(layoutCls);
+    }
+
+    const dimValNum = state.prefs.focusDimAlpha ?? 36;
     const dimInput = document.getElementById("input-focus-dim");
     const dimVal = document.getElementById("val-focus-dim");
-    if (dimInput) dimInput.value = String(state.prefs.focusDimAlpha ?? 42);
-    if (dimVal) dimVal.textContent = `${state.prefs.focusDimAlpha ?? 42}%`;
+    if (dimInput) dimInput.value = String(dimValNum);
+    if (dimVal) dimVal.textContent = `${dimValNum}%`;
   }
 
   // 계약 §7.1 A4: forge-theme-sync 는 반드시 DPEnv.parent_origins 에 속한 부모 출처만 수용
@@ -148,7 +184,28 @@ window.DPV2Store = (() => {
     });
   }
 
-  // ── 패치 메타 · 스펙 동기화(§3.1–§3.3) · 통합 뷰 ──
+  // ── 패치 메타 · 스펙 동기화(§3.1–§3.3) ──
+  function defaultFilters() {
+    return {
+      brushEnabled: true,
+      edgeEnabled: true,
+      feather: 0,
+      fadeTop: 0,
+      fadeBottom: 0,
+      fadeLeft: 0,
+      fadeRight: 0,
+      transformEnabled: true,
+      dx: 0,
+      dy: 0,
+      scale: 100,
+      rot: 0,
+      colorEnabled: true,
+      opacity: 100,
+      bright: 0,
+      sat: 0,
+    };
+  }
+
   function ensurePatchMeta(cropId, cropObj) {
     let m = state.patchMeta.get(cropId);
     if (!m) {
@@ -181,7 +238,7 @@ window.DPV2Store = (() => {
         opts: {},
         hidden: false,
         rotDeg: 0,
-        filters: { brightness: 0, contrast: 0, saturation: 0, feather: 0, edgeFade: 0 },
+        filters: defaultFilters(),
       };
       state.patchMeta.set(cropId, m);
     }
@@ -280,6 +337,24 @@ window.DPV2Store = (() => {
     };
   }
 
+  function isPatchCheckedForRun(cropId) {
+    return !state.runUncheckedIds.has(cropId);
+  }
+
+  function setPatchCheckedForRun(cropId, on) {
+    if (on) state.runUncheckedIds.delete(cropId);
+    else state.runUncheckedIds.add(cropId);
+    emit("selection");
+  }
+
+  function setAllCheckedForRun(on) {
+    state.runUncheckedIds.clear();
+    if (!on) {
+      for (const p of getPatches()) state.runUncheckedIds.add(p.id);
+    }
+    emit("selection");
+  }
+
   function getPatches() {
     const layoutCrops = (state.L && Array.isArray(state.L.crops)) ? state.L.crops : [];
     const stateCrops = (state.S && Array.isArray(state.S.crops)) ? state.S.crops : [];
@@ -290,7 +365,7 @@ window.DPV2Store = (() => {
     const refMap = new Map(refCrops.map((c) => [c.id, c]));
     let sourceList = layoutCrops.length ? layoutCrops.slice() : stateCrops.slice();
 
-    // S.z.crops 기준 위→아래(Z-order 높은 레이어가 목록 위쪽, rows.js:order 와 동일)
+    // S.z.crops 기준 위→아래 (Z-order 높은 레이어가 목록 위쪽)
     const zIds = state.S && state.S.z && Array.isArray(state.S.z.crops) ? state.S.z.crops : null;
     if (zIds && zIds.length) {
       const ranks = new Map(zIds.map((id, i) => [id, i]));
@@ -333,6 +408,7 @@ window.DPV2Store = (() => {
         anyPicked,
         seam: state.seamsByCrop.get(raw.id) || null,
         meta,
+        selectedForRun: isPatchCheckedForRun(raw.id),
         effectiveModel,
         modelInfo,
         effectiveQuality: meta.quality || prep.quality,
@@ -382,28 +458,27 @@ window.DPV2Store = (() => {
     return getPatches().find((p) => p.id === id) || null;
   }
 
+  // 버그 2 영구 수정: 선택 해제(primaryId === null) 시 절대 list[0]을 강제 반환하지 않음!
   function primaryPatch() {
-    const list = getPatches();
-    if (!list.length) return null;
-    if (state.primaryId) {
-      const found = list.find((p) => p.id === state.primaryId);
-      if (found) return found;
-    }
-    return list[0];
+    if (!state.primaryId) return null;
+    return getPatches().find((p) => p.id === state.primaryId) || null;
   }
 
   function selectedPatches() {
+    if (!state.selectedIds.size) return [];
     const list = getPatches();
-    if (!state.selectedIds.size) {
-      const p = primaryPatch();
-      return p ? [p] : [];
-    }
-    const picked = list.filter((p) => state.selectedIds.has(p.id));
-    return picked.length ? picked : (list[0] ? [list[0]] : []);
+    return list.filter((p) => state.selectedIds.has(p.id));
+  }
+
+  function clearSelection() {
+    state.primaryId = null;
+    state.selectedIds.clear();
+    state.initialSelectionDone = true;
+    emit("selection");
   }
 
   function currentCandidate(patch) {
-    const p = patch || primaryPatch();
+    const p = patch === undefined ? primaryPatch() : patch;
     if (!p || !p.target || !p.candidates.length) return null;
     const key = state.selectedCandByTarget.get(p.target.key);
     return p.candidates.find((c) => c.key === key) || p.pickedCand || p.candidates[0] || null;
@@ -414,10 +489,16 @@ window.DPV2Store = (() => {
     emit("selection");
   }
 
-  // ── 유니티식 다중 선택 (Shift 범위 · Ctrl 토글) ──
+  // ── 유니티식 다중 선택 (Shift 범위 · Ctrl 토글 · 마지막 1개 Ctrl 클릭 시 선택 해제) ──
   function selectPatch(id, opts = {}) {
+    if (!id) {
+      clearSelection();
+      return;
+    }
     const list = getPatches();
     if (!list.some((p) => p.id === id)) return;
+    state.initialSelectionDone = true;
+
     if (opts.shift && state.lastClickedId) {
       const a = list.findIndex((p) => p.id === state.lastClickedId);
       const b = list.findIndex((p) => p.id === id);
@@ -431,9 +512,11 @@ window.DPV2Store = (() => {
       }
     }
     if (opts.ctrl) {
-      if (state.selectedIds.has(id) && state.selectedIds.size > 1) {
+      if (state.selectedIds.has(id)) {
         state.selectedIds.delete(id);
-        if (state.primaryId === id) state.primaryId = [...state.selectedIds][0];
+        if (state.primaryId === id) {
+          state.primaryId = state.selectedIds.size ? [...state.selectedIds][0] : null;
+        }
       } else {
         state.selectedIds.add(id);
         state.primaryId = id;
@@ -451,6 +534,7 @@ window.DPV2Store = (() => {
 
   function selectAllPatches() {
     const list = getPatches();
+    state.initialSelectionDone = true;
     state.selectedIds = new Set(list.map((p) => p.id));
     if (!state.primaryId && list[0]) state.primaryId = list[0].id;
     emit("selection");
@@ -546,8 +630,9 @@ window.DPV2Store = (() => {
       state.P = await Api.getPipeline(state.root);
     } catch (_) { /* 무시 */ }
     try {
-      const onlyIds = [...state.selectedIds];
-      const only = onlyIds.length && onlyIds.length < getPatches().length ? onlyIds.join(",") : null;
+      const patches = getPatches();
+      const checked = patches.filter((p) => p.selectedForRun).map((p) => p.id);
+      const only = checked.length && checked.length < patches.length ? checked.join(",") : null;
       const plan = await Api.getPlan(state.root, only, false);
       if (plan && !plan.busy) state.plan = plan;
     } catch (_) { /* 무시 */ }
@@ -613,9 +698,19 @@ window.DPV2Store = (() => {
         await Promise.all([loadLayout(), loadRefs(true), loadPipelineAndPlan()]);
         await loadSeams();
         const patches = getPatches();
-        if (patches.length && (!state.primaryId || !patches.some((p) => p.id === state.primaryId))) {
+        const validIds = new Set(patches.map((p) => p.id));
+        // 삭제된 id 만 선택 집합에서 정리
+        for (const sid of [...state.selectedIds]) {
+          if (!validIds.has(sid)) state.selectedIds.delete(sid);
+        }
+        if (state.primaryId && !validIds.has(state.primaryId)) {
+          state.primaryId = state.selectedIds.size ? [...state.selectedIds][0] : null;
+        }
+        // 최초 로드 1회만 기본 선택 (사용자가 선택 해제한 뒤에는 절대 강제 재선택하지 않음!)
+        if (!state.initialSelectionDone && patches.length) {
           state.primaryId = patches[0].id;
           state.selectedIds = new Set([patches[0].id]);
+          state.initialSelectionDone = true;
         }
         if (state.primaryId && Api.can("v2_spec_edit")) {
           await loadSpec(state.primaryId, true);
@@ -741,9 +836,7 @@ window.DPV2Store = (() => {
       await loadLayout();
       state.selectedIds.delete(id);
       if (state.primaryId === id) {
-        const rest = getPatches();
-        state.primaryId = rest[0] ? rest[0].id : null;
-        if (state.primaryId) state.selectedIds.add(state.primaryId);
+        state.primaryId = state.selectedIds.size ? [...state.selectedIds][0] : null;
       }
       if (!skipHistory) {
         const ref = { id };
@@ -798,49 +891,52 @@ window.DPV2Store = (() => {
         ops: [],
         brushSize: 48,
         brushHard: 0.65,
-        brushFlow: 0.8,
+        brushFlow: 1,
       };
       emit("mask");
       return state.mask;
     } catch (err) {
-      toast(`마스크 불러오기 실패: ${err.message}`, "err");
-      state.mask = null;
-      emit("mask");
+      toast(`마스크를 열 수 없습니다: ${err.message}`, "err");
       return null;
     }
   }
 
   async function saveMaskSession() {
-    const mk = state.mask;
-    if (!mk || !mk.dirty) return false;
-    const px = new Uint8Array(mk.w * mk.h);
-    for (let i = 0; i < px.length; i++) px[i] = Math.floor(Math.min(1, Math.max(0, mk.m[i])) * 255 + 0.5);
-    const opsText = (mk.ops.slice(-8).join(" · ") || "브러시 수정").slice(0, 190);
+    const ms = state.mask;
+    if (!ms || !state.root) return null;
+    const px = new Uint8Array(ms.w * ms.h);
+    for (let i = 0; i < px.length; i++) px[i] = Math.max(0, Math.min(255, Math.round(ms.m[i] * 255)));
     const res = await Api.saveMaskPng(state.root, {
-      key: mk.key, seen: mk.file, ops: opsText, rect: mk.win.join(","),
-    }, px, mk.w, mk.h);
-    if (res.conflict) {
-      toast("다른 곳에서 마스크가 변경되었습니다 — 다시 불러옵니다.", "warn");
-      await openMaskSession(mk.key);
-      return false;
+      key: ms.key,
+      crop: ms.info.crop,
+      base_sha: ms.info.base.sha,
+      expect: ms.info.edit ? ms.info.edit.sha : "",
+      file: ms.file || "",
+    }, px, ms.w, ms.h);
+    if (res && res.conflict) {
+      toast("다른 창에서 마스크가 변경되었습니다 — 최신 상태로 다시 열어주세요.", "err");
+      return res;
     }
-    mk.file = (res.edit && res.edit.file) || mk.file;
-    mk.start = mk.m.slice();
-    mk.dirty = false;
-    mk.ops = [];
-    toast("마스크가 저장되었습니다.", "ok");
+    ms.dirty = false;
+    ms.start = ms.m.slice();
+    if (res && res.file) ms.file = res.file;
+    toast("마스크를 저장했습니다.", "ok");
     await refreshAll(true);
-    emit("mask");
-    return true;
+    return res;
   }
 
   return {
     state, subscribe, emit, toast,
-    loadPrefs, savePrefs, applyPrefsToDom, initForgeThemeListener,
-    ensurePatchMeta, loadSpec, savePatchSpec, projectPrepare, getPatches, getPatch, primaryPatch, selectedPatches,
-    currentCandidate, selectCandidate, selectTargetForCrop, moveCropZ, selectPatch, selectAllPatches, getCommonOrMixed,
+    loadPrefs, savePrefs, applyPrefsToDom, activeTheme, activeAccentHex, initForgeThemeListener,
+    ensurePatchMeta, loadSpec, savePatchSpec, applySpecResponse, projectPrepare,
+    isPatchCheckedForRun, setPatchCheckedForRun, setAllCheckedForRun,
+    getPatches, getPatch, primaryPatch, selectedPatches, clearSelection,
+    currentCandidate, selectCandidate, selectTargetForCrop, moveCropZ,
+    selectPatch, selectAllPatches, getCommonOrMixed,
     pushHistory, undoHistory, redoHistory, jumpHistory,
-    refreshAll, loadLayout, loadRefs, loadPipelineAndPlan, loadSeams, startPolling, stopPolling,
-    addCrop, updateCrop, deleteCrop, openMaskSession, saveMaskSession,
+    loadLayout, loadRefs, loadPipelineAndPlan, loadSeams, refreshAll,
+    startPolling, stopPolling,
+    addCrop, updateCrop, deleteCrop,
+    openMaskSession, saveMaskSession,
   };
 })();

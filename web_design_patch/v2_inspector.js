@@ -1,1282 +1,1497 @@
-// BMK Design Patch Studio v2 — 좌측 패치/레퍼런스 독 · 우측 3탭 인스펙터 · 유니티 복수선택 · 모델 가이드 · 실행 독.
+// BMK Design Patch Studio v2 — 좌측 동시 도크(레이어+보관함) · 스플리터/드래그 도킹 · 우측 3탭 인스펙터 · 2열 모델 가이드 · 실행 도크.
 "use strict";
 
 window.DPV2Inspector = (() => {
   const Data = window.DPV2Data;
   const Api = window.DPV2Api;
   const Store = window.DPV2Store;
+  const Canvas = window.DPV2Canvas;
 
-  const MAX_ASSIST_BATCH = 8; // 계약 §7.3 C1: 클릭당 최대 8패치, 동시 1건, 자동 재시도 없음
-  let modelPopoverMode = "single"; // single | project | batch
+  const $ = (id) => document.getElementById(id);
+  let popoverAnchor = null;
+  let draggedPatchId = null;
 
-  function $(id) { return document.getElementById(id); }
-
-  function init() {
-    wireLeftDock();
-    wireRightTabsAndDock();
-    wireModelPopover();
-
-    Store.subscribe((reason) => {
-      if (["state", "selection", "prefs", "mask", "sync", "tool"].includes(reason)) {
-        renderAll();
-      }
-    });
+  function pulseCard(sel) {
+    const el = document.querySelector(sel);
+    if (!el) return;
+    el.classList.remove("pulse-flash");
+    void el.offsetWidth;
+    el.classList.add("pulse-flash");
   }
 
-  function renderAll() {
-    renderHeaderSync();
-    renderLeftPatches();
-    renderLeftRefs();
-    renderMultiBanner();
-    renderTabInstruct();
-    renderTabReview();
-    renderTabRetouch();
-    renderRunDock();
+  function setActiveTab(tab) {
+    Store.state.rightTab = tab;
+    document.querySelectorAll(".itab").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+    const p1 = $("pane-instruct"), p2 = $("pane-compare"), p3 = $("pane-retouch");
+    if (p1) p1.classList.toggle("hidden", tab !== "instruct");
+    if (p2) p2.classList.toggle("hidden", tab !== "compare");
+    if (p3) p3.classList.toggle("hidden", tab !== "retouch");
+    renderInspector();
   }
 
-  function renderHeaderSync() {
-    const S = Store.state.S;
-    if (S) {
-      $("project-title").textContent = S.project || Store.state.root;
-      $("project-rev-pill").textContent = `rev ${S.rev ?? "-"}`;
-      document.title = `${S.project || "프로젝트"} · 디자인 패치 스튜디오 v2`;
-      $("btn-drain").classList.toggle("hidden", !S.running);
-    }
-    const syncWrap = $("autosync-status");
-    syncWrap.className = "autosync-status" + (Store.state.syncState === "syncing" ? " syncing" : Store.state.syncState === "err" ? " err" : "");
-    $("autosync-text").textContent = Store.state.syncMsg;
-    $("btn-undo").disabled = Store.state.histIndex < 0;
-    $("btn-redo").disabled = Store.state.histIndex >= Store.state.history.length - 1;
-    const jobPill = $("canvas-job-pill");
-    if (S && S.running) {
-      jobPill.classList.remove("hidden");
-      const pr = Store.state.progress;
-      const q = pr && pr.forge && pr.forge.queue;
-      jobPill.textContent = q ? `대기열 ${q.position}/${q.total}` : "생성 진행 중…";
-    } else {
-      jobPill.classList.add("hidden");
-    }
-  }
-
-  // ==================== 좌측: 패치 목록 ====================
-  function renderLeftPatches() {
-    const list = Store.getPatches();
-    $("badge-patch-count").textContent = String(list.length);
-    const host = $("patch-list");
-    host.replaceChildren();
-
+  // ── 레퍼런스 연결 공용 헬퍼 ──
+  async function linkRefToPatches(fileName, patches) {
+    const list = (patches || []).filter(Boolean);
     if (!list.length) {
-      host.append(Data.el("div", { className: "insp-empty", text: "아직 패치 영역이 없습니다. 상단 [+ 새 영역] 또는 캔버스에서 M 도구로 드래그하세요." }));
-      $("patch-summary-line").textContent = "패치 0 · ★ 0";
+      Store.toast("먼저 왼쪽 목록이나 캔버스에서 수정 영역을 선택해 주세요.");
       return;
     }
-
-    const primary = Store.primaryPatch();
-    const canReorder = list.length > 1 && !(Store.state.S && Store.state.S.running);
-    const cv = Store.state.S && Store.state.S.canvas;
-    const baseUrl = cv && cv.base_url ? Api.apiUrl(cv.base_url) : "";
-    const [cw, ch] = (cv && cv.size) || [0, 0];
-    let stars = 0;
-    for (let idx = 0; idx < list.length; idx++) {
-      const p = list[idx];
-      if (p.anyPicked || p.pickedCand) stars += 1;
-      const isPrimary = primary && primary.id === p.id;
-      const isSelected = Store.state.selectedIds.has(p.id);
-      const cls = ["patch-card"];
-      if (isPrimary) cls.push("selected");
-      else if (isSelected) cls.push("multi-sub");
-      if (p.meta.hidden) cls.push("hidden-layer");
-
-      const purp = Data.purposeInfo(p.meta.purpose);
-      const tl = Data.trafficLight(p.pickedCand || p.candidates[0], p.seam);
-      const [x0, y0, x1, y1] = p.rect;
-      const rw = Math.max(1, x1 - x0), rh = Math.max(1, y1 - y0);
-
-      // 포토샵식 실시간 크롭 부위 썸네일 미리보기 (추가 요청 0회)
-      const thumb = Data.el("div", { className: "pc-thumb" },
-        Data.el("span", { className: "pc-thumb-idx", text: String(p.index) }),
-      );
-      if (baseUrl && cw > 0 && ch > 0) {
-        thumb.style.backgroundImage = `url("${baseUrl}")`;
-        thumb.style.backgroundSize = `${(100 * cw) / rw}% ${(100 * ch) / rh}%`;
-        thumb.style.backgroundPosition = `${cw > rw ? (100 * x0) / (cw - rw) : 0}% ${ch > rh ? (100 * y0) / (ch - rh) : 0}%`;
-      }
-
-      const zUpBtn = canReorder ? Data.el("button", {
-        type: "button", className: "pc-icon-btn",
-        disabled: idx === 0, title: "겹침 순서 위로 (더 위 레이어)",
-        onClick: (e) => { e.stopPropagation(); Store.moveCropZ(p.id, "step", "up"); },
-      }, Data.icon("up", 12)) : null;
-      const zDownBtn = canReorder ? Data.el("button", {
-        type: "button", className: "pc-icon-btn",
-        disabled: idx === list.length - 1, title: "겹침 순서 아래로",
-        onClick: (e) => { e.stopPropagation(); Store.moveCropZ(p.id, "step", "down"); },
-      }, Data.icon("down", 12)) : null;
-
-      const visBtn = Data.el("button", {
-        type: "button",
-        className: "pc-icon-btn" + (p.meta.hidden ? "" : " on"),
-        title: p.meta.hidden ? "캔버스에 표시" : "캔버스에서 숨기기",
-        onClick: (e) => {
-          e.stopPropagation();
-          p.meta.hidden = !p.meta.hidden;
-          Store.emit("selection");
-        },
-      }, Data.icon(p.meta.hidden ? "eyeOff" : "eye", 13));
-      const lockBtn = Data.el("button", {
-        type: "button",
-        className: "pc-icon-btn" + (p.locked ? " on" : ""),
-        title: p.locked ? "잠금 해제" : "잠그기",
-        onClick: async (e) => {
-          e.stopPropagation();
-          await Store.updateCrop(p.id, { locked: !p.locked }, p.locked ? "잠금 해제" : "잠금");
-        },
-      }, Data.icon(p.locked ? "lock" : "unlock", 13));
-
-      const card = Data.el("div", {
-        className: cls.join(" "),
-        role: "option",
-        draggable: canReorder,
-        "aria-selected": String(isSelected || isPrimary),
-        onClick: (e) => {
-          Store.selectPatch(p.id, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey });
-        },
-        onDblclick: () => {
-          if (window.DPV2Canvas) window.DPV2Canvas.fitCrop(p.id);
-        },
-      },
-      Data.el("div", { className: "pc-card-grid" },
-        thumb,
-        Data.el("div", { className: "pc-body" },
-          Data.el("div", { className: "pc-row-top" },
-            Data.el("span", { className: "pc-name", text: p.name, title: p.name }),
-            Data.el("div", { className: "pc-actions" },
-              canReorder ? Data.el("span", { className: "pc-z-btns" }, zUpBtn, zDownBtn) : null,
-              visBtn, lockBtn,
-            ),
-          ),
-          Data.el("div", { className: "pc-row-bot" },
-            Data.el("span", { className: "tag-chip accent" }, Data.icon(purp.icon, 10), Data.el("span", { text: purp.short })),
-            Data.el("span", { className: "tag-chip", text: `${rw}×${rh}` }),
-            p.targets && p.targets.length > 1 ? Data.el("span", { className: "tag-chip", text: `타깃 ${p.targets.length}` }) : null,
-            (p.anyPicked || p.pickedCand) ? Data.el("span", { className: "tag-chip ok", text: `★ ${tl.icon}` })
-              : p.candidates.length ? Data.el("span", { className: "tag-chip", text: `후보 ${p.candidates.length}` })
-              : Data.el("span", { className: "tag-chip", text: "생성 전" }),
-            p.meta.modelOverride ? Data.el("span", { className: "tag-chip warn", text: p.modelInfo.label }) : null,
-          ),
-        ),
-      ));
-
-      // 패치 카드 드래그로 Z-Order 변경 + 레퍼런스 카드 드롭 연결
-      card.addEventListener("dragstart", (e) => {
-        if (!canReorder) return;
-        e.dataTransfer.setData("text/bmk-crop-z", p.id);
-        e.dataTransfer.effectAllowed = "move";
-      });
-      card.addEventListener("dragover", (e) => {
-        if (e.dataTransfer.types.includes("text/bmk-ref-file")) {
-          e.preventDefault();
-          card.classList.add("drag-over-ref");
-        } else if (e.dataTransfer.types.includes("text/bmk-crop-z")) {
-          e.preventDefault();
-          const r = card.getBoundingClientRect();
-          const topHalf = e.clientY < r.top + r.height / 2;
-          card.classList.toggle("drag-over-top", topHalf);
-          card.classList.toggle("drag-over-bottom", !topHalf);
-        }
-      });
-      card.addEventListener("dragleave", () => {
-        card.classList.remove("drag-over-ref", "drag-over-top", "drag-over-bottom");
-      });
-      card.addEventListener("drop", async (e) => {
-        const topHalf = card.classList.contains("drag-over-top");
-        card.classList.remove("drag-over-ref", "drag-over-top", "drag-over-bottom");
-        const refFile = e.dataTransfer.getData("text/bmk-ref-file");
-        if (refFile) {
-          e.preventDefault();
-          await linkRefFileToPatches([p], refFile);
-          return;
-        }
-        const dragCropId = e.dataTransfer.getData("text/bmk-crop-z");
-        if (dragCropId && dragCropId !== p.id) {
-          e.preventDefault();
-          // 위쪽 반에 놓으면 p 보다 위 레이어(after), 아래쪽 반에 놓으면 p 보다 아래 레이어(before)
-          await Store.moveCropZ(dragCropId, topHalf ? "after" : "before", p.id);
-        }
-      });
-
-      host.append(card);
-    }
-    $("patch-summary-line").textContent = `패치 ${list.length} · 선택 ${Store.selectedPatches().length} · ★ ${stars}`;
-  }
-
-  // ==================== 좌측: 레퍼런스 보관함 ====================
-  function renderLeftRefs() {
-    const sheets = Store.state.sheets || [];
-    const R = Store.state.R;
-    const primary = Store.primaryPatch();
-    const linkedSet = new Set((primary && primary.refCrop && primary.refCrop.files || []).map((f) => f.name));
-
-    $("btn-forge-ref").classList.toggle("hidden", !Api.can("forge_import"));
-
-    const sheetHost = $("sheet-thumb-list");
-    sheetHost.replaceChildren();
-    if (!sheets.length) {
-      sheetHost.append(Data.el("p", { className: "muted-text", text: "올린 시트가 없습니다." }));
-    } else {
-      for (const sh of sheets) {
-        const imgUrl = Api.sheetUrl(Store.state.root, sh, "preview");
-        const card = Data.el("div", {
-          className: "ref-card",
-          title: `${sh.name || sh.path} — 클릭해 시트 오려내기`,
-          onClick: () => {
-            if (window.DPV2Overlays) window.DPV2Overlays.openSheetCut(sh.path);
-          },
-        },
-        Data.el("div", { className: "ref-card-img" },
-          imgUrl ? Data.el("img", { src: imgUrl, alt: sh.name || "", loading: "lazy" }) : null,
-        ),
-        Data.el("div", { className: "ref-card-name", text: sh.name || sh.path }));
-        sheetHost.append(card);
-      }
-    }
-
-    // 연결 가능한 레퍼런스 풀 목록 집계
-    const seenFiles = new Map();
-    if (R) {
-      for (const f of (R.pool || [])) seenFiles.set(f.name, f);
-      for (const c of (R.crops || [])) {
-        for (const f of (c.files || []).concat(c.unlinked || [])) {
-          if (!f.missing && !seenFiles.has(f.name)) seenFiles.set(f.name, f);
-        }
-      }
-    }
-    const allRefs = [...seenFiles.values()];
-    $("badge-ref-count").textContent = String(allRefs.length + sheets.length);
-
-    const grid = $("ref-vault-grid");
-    grid.replaceChildren();
-    if (!allRefs.length) {
-      grid.append(Data.el("p", { className: "muted-text", text: "시트에서 부품을 오려내거나 파일을 올리면 여기에 표시됩니다." }));
-      return;
-    }
-
-    for (const ref of allRefs) {
-      const isLinked = linkedSet.has(ref.name);
-      const thumbUrl = ref.thumb_url ? Api.apiUrl(ref.thumb_url) : null;
-      const card = Data.el("div", {
-        className: "ref-card" + (isLinked ? " linked" : ""),
-        draggable: true,
-        title: `${ref.name} — 클릭해 선택 패치에 연결 · 드래그 가능`,
-        onClick: async () => {
-          const targets = Store.selectedPatches();
-          if (!targets.length) return Store.toast("먼저 연결할 패치를 선택해 주세요.", "warn");
-          await linkRefFileToPatches(targets, ref.name);
-        },
-      },
-      Data.el("div", { className: "ref-card-img" },
-        thumbUrl ? Data.el("img", { src: thumbUrl, alt: ref.name, loading: "lazy" }) : null,
-        isLinked ? Data.el("span", { className: "ref-card-badge", text: "연결됨" }) : null,
-      ),
-      Data.el("div", { className: "ref-card-name", text: ref.name }));
-
-      card.addEventListener("dragstart", (e) => {
-        e.dataTransfer.setData("text/bmk-ref-file", ref.name);
-      });
-      grid.append(card);
-    }
-  }
-
-  async function linkRefFileToPatches(patches, filename) {
     try {
-      for (const p of patches) {
-        const rev = Store.state.R ? Store.state.R.rev : null;
-        await Api.linkRef(Store.state.root, rev, { crop_id: p.id, op: "add", file: filename });
-        await Store.loadRefs(true);
+      for (const p of list) {
+        await Api.linkRef(Store.state.root, Store.state.R?.rev ?? null, {
+          op: "link", crop_id: p.id, file: fileName, role: "main",
+        });
       }
-      Store.toast(`"${filename}"을(를) ${patches.length}개 패치에 연결했습니다.`, "ok");
+      Store.toast(
+        list.length > 1
+          ? `"${fileName}"를 선택된 ${list.length}개 영역에 연결했습니다.`
+          : `"${fileName}"를 "${list[0].name}"에 연결했습니다.`,
+        "ok"
+      );
+      pulseCard("#ref-drop-slot");
       await Store.refreshAll(true);
     } catch (err) {
       Store.toast(`레퍼런스 연결 실패: ${err.message}`, "err");
     }
   }
 
-  // ==================== 우측: 유니티 복수 선택 일괄 수정 배너 ====================
-  function renderMultiBanner() {
-    const banner = $("multi-select-banner");
-    const sel = Store.selectedPatches();
-    if (sel.length < 2) {
-      banner.classList.add("hidden");
+  // ── 1. 좌측 동시 도크: 수정 영역 레이어 목록 ──
+  function renderPatchList() {
+    const listEl = $("patch-list");
+    if (!listEl) return;
+    const patches = Store.getPatches();
+    const selIds = Store.state.selectedIds;
+    const primary = Store.primaryPatch();
+    const multiMode = selIds.size > 1;
+    const baseImg = Canvas.getBaseImage();
+    const imgW = Canvas.view.imgW || (baseImg ? baseImg.naturalWidth : 1);
+    const imgH = Canvas.view.imgH || (baseImg ? baseImg.naturalHeight : 1);
+
+    const cntEl = $("layer-count");
+    if (cntEl) cntEl.textContent = String(patches.length);
+
+    const chkAll = $("chk-select-all");
+    if (chkAll) {
+      chkAll.checked = patches.length > 0 && patches.every((p) => p.selectedForRun);
+    }
+
+    const deselBtn = $("btn-deselect-patch");
+    if (deselBtn) deselBtn.disabled = selIds.size === 0;
+
+    listEl.innerHTML = "";
+    if (!patches.length) {
+      listEl.append(Data.el("li", { className: "vault-empty", text: "아직 수정 영역이 없습니다. 상단 [+ 추가] 또는 M 키로 그려보세요." }));
       return;
     }
-    banner.classList.remove("hidden");
-    banner.replaceChildren();
 
-    const purpCommon = Store.getCommonOrMixed(sel, (p) => p.meta.purpose);
-    const modelCommon = Store.getCommonOrMixed(sel, (p) => p.effectiveModel);
-    const aiCommon = Store.getCommonOrMixed(sel, (p) => p.meta.aiAuto);
+    patches.forEach((p, idx) => {
+      const isSel = selIds.has(p.id);
+      const isPrimary = !!(primary && primary.id === p.id);
+      const purp = Data.purposeInfo(p.meta.purpose);
 
-    const head = Data.el("div", { className: "multi-banner-head" },
-      Data.el("span", { className: "multi-banner-title", text: `다중 선택 · ${sel.length}개 패치 일괄 수정` }),
-      Data.el("button", {
-        type: "button", className: "mini-btn", text: "단일 선택으로",
-        onClick: () => {
-          const p = Store.primaryPatch();
-          if (p) Store.selectPatch(p.id);
+      const li = Data.el("li", {
+        className: "patch-item" + (isPrimary ? " selected" : "") + (multiMode && isSel ? " multi-selected" : ""),
+        draggable: "true",
+        dataset: { patchId: p.id },
+      });
+
+      // 생성 대상 체크박스
+      const chk = Data.el("input", {
+        type: "checkbox",
+        title: "생성 대상에 포함",
+        onClick: (e) => e.stopPropagation(),
+        onChange: (e) => Store.setPatchCheckedForRun(p.id, e.target.checked),
+      });
+      chk.checked = p.selectedForRun;
+
+      // 42x42 실시간 크롭 썸네일
+      const thumb = Data.el("div", { className: "patch-thumb" });
+      const tc = document.createElement("canvas");
+      tc.width = 84;
+      tc.height = 84;
+      if (baseImg && baseImg.naturalWidth && baseImg.naturalHeight) {
+        const [x1, y1, x2, y2] = p.rect;
+        const sx = (x1 / imgW) * baseImg.naturalWidth;
+        const sy = (y1 / imgH) * baseImg.naturalHeight;
+        const sw = Math.max(8, ((x2 - x1) / imgW) * baseImg.naturalWidth);
+        const sh = Math.max(8, ((y2 - y1) / imgH) * baseImg.naturalHeight);
+        try {
+          tc.getContext("2d").drawImage(baseImg, sx, sy, sw, sh, 0, 0, 84, 84);
+        } catch (_) {}
+      }
+      thumb.append(tc, Data.el("span", { className: "patch-idx-badge", text: String(idx + 1) }));
+      if (p.anyPicked) thumb.append(Data.el("span", { className: "patch-star-mini", text: "★" }));
+
+      // 정보 & 행 컨트롤
+      const info = Data.el("div", { className: "patch-info" });
+      const nameLine = Data.el("div", { className: "patch-name-line" },
+        Data.icon(purp.icon, 12),
+        Data.el("span", { className: "patch-name", text: p.name, title: p.name }),
+      );
+
+      const hasCands = p.candidates.length > 0;
+      const statusCls = (Store.state.S && Store.state.S.running)
+        ? "running"
+        : p.anyPicked ? "done" : hasCands ? "warn" : "idle";
+      const statusTxt = p.anyPicked
+        ? `★ ${p.candidates.length}장`
+        : hasCands ? `${p.candidates.length}장` : "대기";
+      const modelShort = p.modelInfo ? p.modelInfo.shortName : p.effectiveModel;
+
+      const metaEl = Data.el("div", { className: "patch-meta" },
+        Data.el("span", { className: `status-dot ${statusCls}` }),
+        Data.el("span", { text: `${statusTxt} · ${modelShort}` }),
+      );
+
+      const ctrls = Data.el("div", { className: "patch-row-ctrls", onClick: (e) => e.stopPropagation() });
+
+      const btnUp = Data.el("button", {
+        type: "button", className: "row-icon-btn", title: "위로 이동 (Z-순서)", disabled: idx === 0,
+        onClick: () => Store.moveCropZ(p.id, "step", "up"),
+      }, Data.icon("up", 12));
+      const btnDown = Data.el("button", {
+        type: "button", className: "row-icon-btn", title: "아래로 이동 (Z-순서)", disabled: idx === patches.length - 1,
+        onClick: () => Store.moveCropZ(p.id, "step", "down"),
+      }, Data.icon("down", 12));
+      const btnEye = Data.el("button", {
+        type: "button",
+        className: "row-icon-btn" + (p.meta.hidden ? " off" : ""),
+        title: p.meta.hidden ? "가이드 다시 표시" : "가이드 숨기기",
+        onClick: () => { p.meta.hidden = !p.meta.hidden; Store.emit("selection"); },
+      }, Data.icon(p.meta.hidden ? "eyeOff" : "eye", 12));
+      const btnLock = Data.el("button", {
+        type: "button",
+        className: "row-icon-btn" + (p.locked ? " locked" : ""),
+        title: p.locked ? "잠금 해제" : "위치 잠금",
+        onClick: () => Store.updateCrop(p.id, { locked: !p.locked }, p.locked ? `잠금 해제 (${p.name})` : `잠금 (${p.name})`),
+      }, Data.icon(p.locked ? "lock" : "unlock", 12));
+      const btnDel = Data.el("button", {
+        type: "button", className: "row-icon-btn", title: "영역 삭제",
+        onClick: async () => {
+          const ok = await Data.askDialogConfirm(`"${p.name}" 수정 영역을 삭제할까요?`, { okText: "삭제", cancelText: "취소" });
+          if (ok) await Store.deleteCrop(p.id);
         },
-      }),
-    );
+      }, Data.icon("x", 12));
 
-    const purpSel = Data.el("select", { "aria-label": "일괄 목적 변경" },
-      purpCommon.mixed ? Data.el("option", { value: "", text: "목적: 혼합됨" }) : null,
-      ...Data.PURPOSES.map((x) => Data.el("option", { value: x.id, text: `목적: ${x.label}` })),
-    );
-    purpSel.value = purpCommon.mixed ? "" : (purpCommon.value || "correct");
-    purpSel.addEventListener("change", () => {
-      if (!purpSel.value) return;
-      for (const p of sel) p.meta.purpose = purpSel.value;
-      applyBatchPersist(sel, { purpose: purpSel.value }, "목적 일괄 변경");
+      ctrls.append(btnUp, btnDown, btnEye, btnLock, btnDel);
+      info.append(nameLine, Data.el("div", { className: "patch-sub-row" }, metaEl, ctrls));
+      li.append(chk, thumb, info);
+
+      li.addEventListener("click", (e) => {
+        Store.selectPatch(p.id, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey });
+      });
+
+      // 드래그 Z-Order 재정렬 + 레퍼런스 카드 드롭 수용
+      li.addEventListener("dragstart", (e) => {
+        draggedPatchId = p.id;
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/dps-patch-id", p.id);
+      });
+      li.addEventListener("dragend", () => {
+        draggedPatchId = null;
+        document.querySelectorAll(".patch-item.drag-over-top").forEach((el) => el.classList.remove("drag-over-top"));
+      });
+      li.addEventListener("dragover", (e) => {
+        if (e.dataTransfer?.types?.includes("text/dps-ref-file")) {
+          e.preventDefault();
+          li.classList.add("drop-hover");
+        } else if (draggedPatchId && draggedPatchId !== p.id) {
+          e.preventDefault();
+          li.classList.add("drag-over-top");
+        }
+      });
+      li.addEventListener("dragleave", () => {
+        li.classList.remove("drop-hover", "drag-over-top");
+      });
+      li.addEventListener("drop", async (e) => {
+        li.classList.remove("drop-hover", "drag-over-top");
+        const refFile = e.dataTransfer?.getData("text/dps-ref-file");
+        if (refFile) {
+          e.preventDefault();
+          Store.selectPatch(p.id);
+          await linkRefToPatches(refFile, [p]);
+          return;
+        }
+        if (draggedPatchId && draggedPatchId !== p.id) {
+          e.preventDefault();
+          const moving = draggedPatchId;
+          draggedPatchId = null;
+          await Store.moveCropZ(moving, "after", p.id);
+        }
+      });
+
+      listEl.append(li);
     });
-
-    const modelBtn = Data.el("button", {
-      type: "button", className: "btn-secondary-sm",
-      text: modelCommon.mixed ? "모델: 혼합됨 (변경)" : `모델: ${Data.findModel(modelCommon.value)?.label || modelCommon.value}`,
-      onClick: (e) => openModelPopover(e.currentTarget, "batch"),
-    });
-
-    const aiBtn = Data.el("button", {
-      type: "button", className: "btn-secondary-sm",
-      text: aiCommon.mixed ? "AI 최적화: 혼합됨" : (aiCommon.value ? "AI 최적화: 켜짐" : "AI 최적화: 꺼짐"),
-      onClick: () => {
-        const next = aiCommon.mixed ? true : !aiCommon.value;
-        for (const p of sel) p.meta.aiAuto = next;
-        Store.emit("selection");
-        Store.toast(`${sel.length}개 패치 AI 자동 최적화를 ${next ? "켰습니다" : "껐습니다"}.`, "ok");
-      },
-    });
-
-    const assistBatchBtn = Data.el("button", {
-      type: "button", className: "btn-primary-sm",
-      disabled: Store.state.assistBusy,
-      text: Store.state.assistBusy ? "AI 작성 중…" : `AI 프롬프트 일괄 작성 (${Math.min(sel.length, MAX_ASSIST_BATCH)}건)`,
-      title: `계약 C1: 한 번의 클릭당 최대 ${MAX_ASSIST_BATCH}패치까지 순차 작성합니다`,
-      onClick: () => runAssistSequence(sel),
-    });
-
-    const lockAllBtn = Data.el("button", {
-      type: "button", className: "mini-btn", text: "일괄 잠금/해제",
-      onClick: async () => {
-        const anyUnlocked = sel.some((p) => !p.locked);
-        for (const p of sel) await Store.updateCrop(p.id, { locked: anyUnlocked }, null, true);
-        Store.toast(`${sel.length}개 패치를 ${anyUnlocked ? "잠갔습니다" : "잠금 해제했습니다"}.`, "ok");
-      },
-    });
-
-    const delAllBtn = Data.el("button", {
-      type: "button", className: "mini-btn danger-text", text: "선택 일괄 삭제",
-      onClick: async () => {
-        if (!(await Data.askDialogConfirm(`선택한 ${sel.length}개 패치를 모두 삭제할까요?`, { ok: "삭제", danger: true }))) return;
-        for (const p of sel) await Store.deleteCrop(p.id, true);
-        Store.toast(`${sel.length}개 패치를 삭제했습니다.`, "ok");
-      },
-    });
-
-    banner.append(
-      head,
-      Data.el("div", { className: "multi-grid" }, purpSel, modelBtn, aiBtn, assistBatchBtn),
-      Data.el("div", { className: "inline-row" }, lockAllBtn, delAllBtn),
-    );
   }
 
-  async function applyBatchPersist(patches, fields, label) {
-    Store.emit("selection");
-    if (Api.can("v2_crop_model")) {
-      try {
-        const seen = Store.state.L ? Store.state.L.rev : 0;
-        await Api.batchUpdateCrops(Store.state.root, seen, Object.assign({ crop_ids: patches.map((p) => p.id) }, fields));
-        await Store.refreshAll(true);
-      } catch (err) {
-        Store.toast(`${label} 서버 반영 실패: ${err.message}`, "err");
-        return;
+  // ── 2. 좌측 동시 도크: 레퍼런스 보관함 ──
+  function renderRefVault() {
+    const grid = $("ref-vault-grid");
+    if (!grid) return;
+    const pool = (Store.state.R && Array.isArray(Store.state.R.pool)) ? Store.state.R.pool : [];
+    const sheets = Array.isArray(Store.state.sheets) ? Store.state.sheets : [];
+
+    const cntEl = $("ref-count");
+    if (cntEl) cntEl.textContent = String(pool.length + sheets.length);
+
+    grid.innerHTML = "";
+    if (!pool.length && !sheets.length) {
+      grid.append(Data.el("div", { className: "vault-empty", text: "레퍼런스를 추가하거나 시트를 올려 오려내세요." }));
+      return;
+    }
+
+    for (const item of pool) {
+      const thumbUrl = Api.apiUrl(item.thumb_url || "");
+      const card = Data.el("div", {
+        className: "ref-card",
+        draggable: "true",
+        title: "수정 영역으로 끌어다 놓거나 + 버튼으로 바로 연결",
+      },
+        Data.el("span", { className: "ref-card-type", text: "레퍼런스" }),
+        Data.el("div", { className: "ref-card-img" }, thumbUrl ? Data.el("img", { src: thumbUrl, alt: item.name }) : null),
+        Data.el("div", { className: "ref-card-label", text: item.name }),
+        Data.el("button", {
+          type: "button", className: "ref-card-attach-btn", text: "+", title: "현재 선택 영역에 연결",
+          onClick: (e) => {
+            e.stopPropagation();
+            linkRefToPatches(item.name, Store.selectedPatches());
+          },
+        }),
+      );
+      card.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/dps-ref-file", item.name);
+        e.dataTransfer.effectAllowed = "copy";
+      });
+      grid.append(card);
+    }
+
+    for (const sh of sheets) {
+      const previewUrl = Api.sheetUrl(Store.state.root, sh, "preview");
+      const card = Data.el("div", {
+        className: "ref-card",
+        title: "클릭해 시트 오리기 · 4점 원근 열기",
+        onClick: () => window.DPV2Overlays && window.DPV2Overlays.openSheetOverlay(sh.path),
+      },
+        Data.el("span", { className: "ref-card-type", text: "원화 시트" }),
+        Data.el("div", { className: "ref-card-img" }, previewUrl ? Data.el("img", { src: previewUrl, alt: sh.name }) : null),
+        Data.el("div", { className: "ref-card-label", text: sh.name }),
+      );
+      grid.append(card);
+    }
+  }
+
+  // ── 3. 우측 3탭 컨텍스트 인스펙터 ──
+  function renderInspector() {
+    const patch = Store.primaryPatch();
+    const selList = Store.selectedPatches();
+    const isMulti = selList.length > 1;
+
+    // 탭 배지
+    const candCount = patch ? patch.candidates.length : 0;
+    const badge = $("tab-cand-badge");
+    if (badge) {
+      badge.textContent = String(candCount);
+      badge.classList.toggle("hidden", candCount === 0);
+    }
+
+    // ── TAB 1: 지시 · 모델 ──
+    const empty1 = $("instruct-empty");
+    const cont1 = $("instruct-content");
+    if (empty1) empty1.classList.toggle("hidden", !!patch);
+    if (cont1) cont1.classList.toggle("hidden", !patch);
+
+    if (patch) {
+      const msb = $("multi-select-banner");
+      const headCard = $("single-patch-head-card");
+      if (msb) msb.classList.toggle("hidden", !isMulti);
+      if (headCard) headCard.classList.toggle("hidden", isMulti);
+      if (isMulti) {
+        const msbTitle = $("msb-title");
+        if (msbTitle) msbTitle.textContent = `${selList.length}개 영역 동시 편집 중 (Shift/Ctrl)`;
+      } else {
+        const nameInp = $("inp-patch-name");
+        if (nameInp && document.activeElement !== nameInp) nameInp.value = patch.name;
+        const [x1, y1, x2, y2] = patch.rect;
+        const rw = x2 - x1, rh = y2 - y1;
+        const af = Data.computeAutoCropFrame(patch.rect, Canvas.view.imgW || 1024, Canvas.view.imgH || 1024);
+        const infoEl = $("crop-auto-info");
+        if (infoEl) {
+          infoEl.innerHTML = "";
+          infoEl.append(
+            Data.el("span", { text: `선택 ${rw}×${rh}px · AI 자동 크롭 ${af.w}×${af.h}px` }),
+            Data.el("span", { className: "help-tip", text: "?", title: "원본 훼손 없이 주변 맥락을 함께 보도록 128px 배수로 자동 계산됩니다." }),
+          );
+        }
+      }
+
+      // 5종 작업 목적 그리드
+      const pg = $("purpose-grid");
+      const commonPurp = Store.getCommonOrMixed(selList, (p) => p.meta.purpose);
+      if (pg) {
+        pg.innerHTML = "";
+        for (const pr of Data.PURPOSES) {
+          const btn = Data.el("button", {
+            type: "button",
+            className: "purpose-btn" + (!commonPurp.mixed && commonPurp.value === pr.id ? " on" : ""),
+            title: pr.hint,
+            onClick: () => {
+              for (const sp of selList) {
+                sp.meta.purpose = pr.id;
+                sp.meta.dirtySpec = true;
+              }
+              Store.emit("selection");
+              if (!isMulti && Api.can("v2_spec_edit")) Store.savePatchSpec(patch);
+            },
+          }, Data.icon(pr.icon, 14), Data.el("span", { text: pr.label }));
+          pg.append(btn);
+        }
+        if (isMulti && commonPurp.mixed) {
+          const mb = Data.el("span", { className: "mixed-badge", text: "목적 혼합됨 · 클릭 시 일괄 적용" });
+          mb.style.gridColumn = "1 / -1";
+          pg.append(mb);
+        }
+      }
+
+      // 목적별 모델 추천 배너
+      const curPurp = Data.purposeInfo(commonPurp.mixed ? patch.meta.purpose : (commonPurp.value || patch.meta.purpose));
+      const commonModel = Store.getCommonOrMixed(selList, (p) => p.effectiveModel);
+      const recBanner = $("purpose-model-rec");
+      if (recBanner) {
+        const recModelObj = Data.modelCatalog().find((m) => m.name === curPurp.recModel);
+        if (recModelObj && (commonModel.mixed || commonModel.value !== recModelObj.name)) {
+          recBanner.classList.remove("hidden");
+          recBanner.innerHTML = "";
+          recBanner.append(
+            Data.el("span", {}, Data.el("b", { text: curPurp.short }), " 추천: ", Data.el("b", { text: recModelObj.shortName })),
+            Data.el("button", {
+              type: "button", className: "mini-btn accent-outline",
+              text: isMulti ? `${selList.length}개 적용` : "이 영역에 적용",
+              onClick: () => applyModelSelection(recModelObj.name),
+            }),
+          );
+        } else {
+          recBanner.classList.add("hidden");
+        }
+      }
+
+      // 연결된 레퍼런스 목록
+      const refListEl = $("attached-refs-list");
+      const files = (patch.refCrop && Array.isArray(patch.refCrop.files)) ? patch.refCrop.files : [];
+      if (refListEl) {
+        refListEl.innerHTML = "";
+        if (!files.length) {
+          refListEl.append(Data.el("div", {
+            className: "attached-ref-empty",
+            text: "연결된 레퍼런스가 없습니다. 좌측 보관함 카드를 여기로 끌어다 놓거나 [시트 오리기]를 눌러주세요.",
+          }));
+        } else {
+          files.forEach((rf, i) => {
+            const thumb = Api.apiUrl(rf.thumb_url || "");
+            const row = Data.el("div", { className: "attached-ref-item" },
+              thumb ? Data.el("img", { src: thumb, alt: "" }) : null,
+              Data.el("div", { className: "attached-ref-meta" },
+                Data.el("strong", { text: rf.name }),
+                Data.el("small", { text: rf.role === "main" ? "대표 레퍼런스" : "보조 레퍼런스" }),
+              ),
+              Data.el("span", { className: "ref-role-badge", text: i === 0 ? "대표 ★" : `보조 ${i}` }),
+              Data.el("button", {
+                type: "button", className: "row-icon-btn", title: "연결 해제",
+                onClick: async () => {
+                  try {
+                    await Api.linkRef(Store.state.root, Store.state.R?.rev ?? null, {
+                      op: "unlink", crop_id: patch.id, file: rf.name,
+                    });
+                    Store.toast(`"${rf.name}" 연결을 해제했습니다.`);
+                    await Store.refreshAll(true);
+                  } catch (err) {
+                    Store.toast(`연결 해제 실패: ${err.message}`, "err");
+                  }
+                },
+              }, Data.icon("x", 12)),
+            );
+            refListEl.append(row);
+          });
+        }
+      }
+
+      // @원본 / @참조1..N 멘션 바
+      const mbar = $("mention-bar");
+      if (mbar) {
+        mbar.innerHTML = "";
+        const baseSrc = Store.state.S && Store.state.S.canvas ? Api.apiUrl(Store.state.S.canvas.base_url) : "";
+        mbar.append(Data.el("button", {
+          type: "button", className: "mention-chip",
+          onClick: () => insertMention(patch, "@원본"),
+        }, baseSrc ? Data.el("img", { src: baseSrc, alt: "" }) : null, Data.el("span", { text: "@원본" })));
+
+        files.forEach((rf, i) => {
+          const thumb = Api.apiUrl(rf.thumb_url || "");
+          mbar.append(Data.el("button", {
+            type: "button", className: "mention-chip",
+            onClick: () => insertMention(patch, `@참조${i + 1}`),
+          }, thumb ? Data.el("img", { src: thumb, alt: "" }) : null, Data.el("span", { text: `@참조${i + 1}` })));
+        });
+      }
+
+      // 지시문 · AI 자동 · AI 요약 · 원문 오버라이드
+      const chkAuto = $("chk-ai-auto");
+      if (chkAuto) chkAuto.checked = !!patch.meta.aiAuto;
+      const instEl = $("inp-instruction");
+      if (instEl) {
+        if (document.activeElement !== instEl) instEl.value = patch.meta.user_instruction_ko || "";
+        instEl.placeholder = curPurp.placeholder;
+      }
+
+      const aiDraftBtn = $("btn-ai-draft");
+      if (aiDraftBtn) {
+        aiDraftBtn.innerHTML = "";
+        aiDraftBtn.append(
+          Data.icon("sparkles", 14),
+          Store.state.assistBusy
+            ? "Forge AI 프롬프트 작성 중…"
+            : (patch.meta.body_en ? "AI 스마트 프롬프트 다시 작성" : "AI 스마트 프롬프트 미리 작성"),
+        );
+        aiDraftBtn.disabled = !!Store.state.assistBusy;
+      }
+
+      // D503 차단 상태 배너
+      const blockedEl = $("spec-blocked-note");
+      if (blockedEl) {
+        const showBlocked = patch.meta.specState === "blocked" && !patch.meta.body_en;
+        blockedEl.classList.toggle("hidden", !showBlocked);
+        if (showBlocked) {
+          blockedEl.textContent = patch.meta.specWhy || "지시문에 맞는 프롬프트가 아직 작성되지 않았습니다. [AI 스마트 프롬프트 미리 작성] 또는 생성 시 자동 작성됩니다.";
+        }
+      }
+
+      // AI 요약 박스
+      const aiBox = $("ai-summary-box");
+      const hasSummaryOrBody = !!(patch.meta.summary_ko || patch.meta.body_en || patch.meta.prompt_en);
+      if (aiBox) {
+        aiBox.classList.toggle("hidden", !hasSummaryOrBody);
+        if (hasSummaryOrBody) {
+          const tagEl = $("ai-skill-tag");
+          if (tagEl) {
+            tagEl.textContent = patch.meta.skill_ids.length
+              ? `Forge AI · ${patch.meta.skill_ids.join(", ")}`
+              : (patch.meta.promptSource === "manual" ? "직접 작성 본문" : "AI 프롬프트");
+          }
+          const tmEl = $("ai-target-model");
+          if (tmEl) tmEl.textContent = `${patch.modelInfo ? patch.modelInfo.shortName : patch.effectiveModel} 맞춤`;
+          const koEl = $("ai-summary-ko");
+          if (koEl) koEl.textContent = patch.meta.summary_ko || (patch.meta.promptSource === "manual" ? "직접 수정한 영문 요청 본문이 적용됩니다." : "작성된 프롬프트가 준비되었습니다.");
+          const rawEl = $("inp-raw-prompt");
+          if (rawEl && document.activeElement !== rawEl) rawEl.value = patch.meta.body_en || "";
+          const fullEl = $("box-full-prompt");
+          if (fullEl) {
+            fullEl.classList.toggle("hidden", !patch.meta.prompt_en);
+            fullEl.textContent = patch.meta.prompt_en || "";
+          }
+        }
+      }
+
+      // 모델 & 생성 옵션
+      const chkInherit = $("chk-inherit-model");
+      if (chkInherit) chkInherit.checked = selList.every((p) => !p.meta.modelOverride);
+
+      const mName = $("mdt-name"), mSub = $("mdt-sub");
+      if (mName && mSub) {
+        if (commonModel.mixed) {
+          mName.textContent = `혼합됨 (${new Set(selList.map((p) => p.effectiveModel)).size}종 모델)`;
+          mSub.textContent = "클릭해 선택된 모든 영역의 모델을 한 번에 통일할 수 있습니다";
+        } else {
+          const mi = patch.modelInfo || Data.findModel(patch.effectiveModel);
+          mName.textContent = mi ? mi.label : patch.effectiveModel;
+          mSub.textContent = mi ? `${mi.badge} · 최대 참조 ${mi.max_inputs}장` : "";
+        }
+      }
+
+      // 후보 장수 세그먼트
+      const commonCount = Store.getCommonOrMixed(selList, (p) => p.effectiveCount);
+      document.querySelectorAll("#seg-count button").forEach((b) => {
+        b.classList.toggle("on", !commonCount.mixed && Number(b.dataset.val) === commonCount.value);
+      });
+
+      // 생성 품질 세그먼트 (라이브 모델 카탈로그 기준 동적)
+      const qualHost = $("seg-quality");
+      if (qualHost) {
+        qualHost.innerHTML = "";
+        const mi = commonModel.mixed ? null : patch.modelInfo;
+        const quals = (mi && mi.qualities && mi.qualities.length) ? mi.qualities : [];
+        if (!quals.length) {
+          qualHost.append(Data.el("button", { type: "button", disabled: true, text: "자동" }));
+        } else {
+          const commonQ = Store.getCommonOrMixed(selList, (p) => p.effectiveQuality);
+          const pickList = quals.slice(0, 4);
+          for (const q of pickList) {
+            qualHost.append(Data.el("button", {
+              type: "button",
+              className: !commonQ.mixed && commonQ.value === q ? "on" : "",
+              text: q,
+              onClick: () => applyQualitySelection(q),
+            }));
+          }
+        }
+      }
+
+      // 모델 고유 동적 옵션 (Nano Banana image_size / thinking_level 등)
+      const extraHost = $("model-extra-opts");
+      if (extraHost) {
+        extraHost.innerHTML = "";
+        const mi = commonModel.mixed ? null : patch.modelInfo;
+        const optEntries = mi && mi.opts ? Object.entries(mi.opts) : [];
+        extraHost.classList.toggle("hidden", optEntries.length === 0);
+        for (const [optKey, choices] of optEntries) {
+          if (!Array.isArray(choices) || !choices.length) continue;
+          const label = optKey === "image_size" ? "출력 해상도" : optKey === "thinking_level" ? "추론 깊이" : optKey;
+          const prep = Store.projectPrepare();
+          const curVal = (patch.meta.opts && patch.meta.opts[optKey]) || prep.opts[optKey] || (mi.opt_defaults && mi.opt_defaults[optKey]) || choices[0];
+          const seg = Data.el("div", { className: "seg-group" });
+          for (const ch of choices) {
+            seg.append(Data.el("button", {
+              type: "button",
+              className: curVal === ch ? "on" : "",
+              text: optKey === "thinking_level" ? (Data.THINKING_LABELS[ch] || ch) : ch,
+              onClick: () => applyExtraOpt(optKey, ch),
+            }));
+          }
+          extraHost.append(Data.el("div", { className: "param-col" }, Data.el("label", { text: label }), seg));
+        }
+      }
+
+      // 전문가 설정 상태
+      const chkAutoCrop = $("adv-show-autocrop");
+      if (chkAutoCrop) chkAutoCrop.checked = !!Store.state.prefs.showAutoCrop;
+      const advComp = $("adv-complexity");
+      if (advComp) advComp.value = Store.projectPrepare().complexity || "high";
+      const advChanged = !!Store.state.prefs.showAutoCrop || (Store.projectPrepare().complexity !== "high");
+      const advDot = $("adv-changed-dot");
+      if (advDot) advDot.classList.toggle("hidden", !advChanged);
+      const advTxt = $("adv-summary-text");
+      if (advTxt) advTxt.textContent = advChanged ? "사용자 조정됨" : "기본값 적용 중";
+    }
+
+    // ── TAB 2: 후보 비교 ──
+    const hasCands = !!(patch && patch.candidates.length > 0);
+    const cmpEmpty = $("compare-empty"), cmpCont = $("compare-content");
+    if (cmpEmpty) cmpEmpty.classList.toggle("hidden", hasCands);
+    if (cmpCont) cmpCont.classList.toggle("hidden", !hasCands);
+
+    if (hasCands) {
+      const titleEl = $("compare-patch-title");
+      if (titleEl) titleEl.textContent = `${patch.name} 후보 (${patch.candidates.length}장)`;
+
+      // 멀티타깃 A/B/C 필 바
+      const tRow = $("target-pill-row");
+      if (tRow) {
+        tRow.innerHTML = "";
+        tRow.classList.toggle("hidden", patch.targets.length <= 1);
+        for (const tg of patch.targets) {
+          const isCur = patch.target && patch.target.key === tg.key;
+          tRow.append(Data.el("button", {
+            type: "button",
+            className: "target-pill" + (isCur ? " on" : ""),
+            text: `타깃 ${tg.tid}${tg.label ? ` · ${tg.label.slice(0, 12)}` : ""}`,
+            onClick: () => Store.selectTargetForCrop(patch.id, tg.key),
+          }));
+        }
+      }
+
+      const activeCand = Store.currentCandidate(patch);
+      const tl = Data.trafficLight(activeCand, patch.seam);
+      const tlEl = $("quality-traffic-light");
+      if (tlEl) tlEl.className = `traffic-banner ${tl.level === "none" ? "" : tl.level}`.trim();
+      const tlTitle = $("tl-title"), tlDesc = $("tl-desc"), tlFix = $("btn-tl-fix");
+      if (tlTitle) tlTitle.textContent = `${tl.icon} ${tl.label}`;
+      if (tlDesc) tlDesc.textContent = tl.detail;
+      if (tlFix) tlFix.classList.toggle("hidden", tl.level === "ok" || tl.level === "none");
+
+      // 후보 카드 그리드
+      const cgrid = $("cand-grid");
+      if (cgrid) {
+        cgrid.innerHTML = "";
+        patch.candidates.forEach((cand, idx) => {
+          const isPicked = !!(patch.pickedCand && patch.pickedCand.key === cand.key);
+          const isActive = !!(activeCand && activeCand.key === cand.key);
+          const thumbUrl = Api.apiUrl(cand.thumb_url || cand.big_url || cand.pick_url || "");
+          const cTl = Data.trafficLight(cand, patch.seam);
+
+          const card = Data.el("div", {
+            className: "cand-card" + (isPicked ? " picked" : "") + (isActive ? " active" : "") + (cand.rejected ? " rejected" : ""),
+            onClick: () => {
+              if (patch.target) Store.selectCandidate(patch.target.key, cand.key);
+            },
+            onDblclick: () => window.DPV2Overlays && window.DPV2Overlays.openCompareOverlay(cand.key),
+          },
+            Data.el("div", { className: "cand-thumb" },
+              thumbUrl ? Data.el("img", { src: thumbUrl, alt: `후보 ${idx + 1}` }) : null,
+              isPicked ? Data.el("span", { className: "cand-star-badge", text: "★ 적용 중" }) : null,
+              Data.el("span", { className: "cand-num-badge", text: `#${cand.n || idx + 1}` }),
+            ),
+            Data.el("div", { className: "cand-foot" },
+              Data.el("div", { className: "cand-foot-top" },
+                Data.el("span", { text: `${cTl.icon} ${cand.variant || `V${idx + 1}`}` }),
+                Data.el("span", { text: cand.took ? Data.formatElapsed(cand.took) : "" }),
+              ),
+              Data.el("div", { className: "cand-foot-btns" },
+                Data.el("button", {
+                  type: "button",
+                  className: "mini-btn" + (isPicked ? " accent-outline" : ""),
+                  text: isPicked ? "적용됨 ★" : "★ 채택",
+                  onClick: async (e) => {
+                    e.stopPropagation();
+                    if (!patch.target) return;
+                    try {
+                      await Api.pickCandidate(Store.state.root, {
+                        crop_id: patch.id, tid: patch.target.tid, key: cand.key,
+                        mode: isPicked ? "remove" : "set",
+                      });
+                      Store.selectCandidate(patch.target.key, cand.key);
+                      Store.toast(isPicked ? "채택을 해제했습니다." : `"${patch.name}"에 후보 #${cand.n || idx + 1}을 확정 적용했습니다 ★`, "ok");
+                      await Store.refreshAll(true);
+                    } catch (err) {
+                      Store.toast(`채택 실패: ${err.message}`, "err");
+                    }
+                  },
+                }),
+                Data.el("button", {
+                  type: "button", className: "mini-btn",
+                  text: cand.rejected ? "복원" : "제외",
+                  onClick: async (e) => {
+                    e.stopPropagation();
+                    try {
+                      await Api.rejectCandidate(Store.state.root, cand.key, !cand.rejected);
+                      await Store.refreshAll(true);
+                    } catch (err) {
+                      Store.toast(`상태 변경 실패: ${err.message}`, "err");
+                    }
+                  },
+                }),
+              ),
+            ),
+          );
+          cgrid.append(card);
+        });
+      }
+
+      // 클릭 점프 설정 요약 카드
+      const sj = $("used-settings-summary");
+      if (sj) {
+        sj.innerHTML = "";
+        const purp = Data.purposeInfo(patch.meta.purpose);
+        const files = (patch.refCrop && Array.isArray(patch.refCrop.files)) ? patch.refCrop.files : [];
+        const items = [
+          { label: "작업 목적", val: purp.label, target: "#purpose-card" },
+          { label: "사용 모델", val: patch.modelInfo ? patch.modelInfo.shortName : patch.effectiveModel, target: "#model-card" },
+          { label: "참고 레퍼런스", val: `${files.length}장 연결`, target: "#ref-drop-slot" },
+          { label: "수정 지시", val: patch.meta.user_instruction_ko || "(기본 템플릿)", target: "#prompt-card" },
+        ];
+        for (const it of items) {
+          sj.append(Data.el("button", {
+            type: "button", className: "jump-card",
+            onClick: () => {
+              setActiveTab("instruct");
+              setTimeout(() => {
+                const el = document.querySelector(it.target);
+                if (el) {
+                  el.scrollIntoView({ behavior: "smooth", block: "center" });
+                  pulseCard(it.target);
+                }
+              }, 30);
+            },
+          }, Data.el("small", { text: it.label }), Data.el("strong", { text: it.val })));
+        }
       }
     }
-    Store.toast(`${patches.length}개 패치에 ${label}을 적용했습니다.`, "ok");
+
+    // ── TAB 3: 후보정 (비파괴 스마트 필터) ──
+    const activeCand = Store.currentCandidate(patch);
+    const canRetouch = !!(patch && activeCand);
+    const rtEmpty = $("retouch-empty"), rtCont = $("retouch-content");
+    if (rtEmpty) rtEmpty.classList.toggle("hidden", canRetouch);
+    if (rtCont) rtCont.classList.toggle("hidden", !canRetouch);
+
+    if (canRetouch) {
+      const f = patch.meta.filters;
+      setFilterCardUI("brush", f.brushEnabled, f.brushEnabled ? "활성" : "꺼짐");
+      setFilterCardUI("edge", f.edgeEnabled, `${f.feather}px`);
+      setFilterCardUI("transform", f.transformEnabled, "");
+      setFilterCardUI("color", f.colorEnabled, `${f.opacity}%`);
+
+      const setVal = (id, v) => { const el = $(id); if (el) el.value = String(v); };
+      const setTxt = (id, t) => { const el = $(id); if (el) el.textContent = t; };
+      setVal("rt-feather", f.feather); setTxt("rt-feather-val", `${f.feather}px`);
+      setVal("rt-fade-top", f.fadeTop); setVal("rt-fade-bottom", f.fadeBottom);
+      setVal("rt-fade-left", f.fadeLeft); setVal("rt-fade-right", f.fadeRight);
+      setVal("rt-dx", f.dx); setVal("rt-dy", f.dy);
+      setVal("rt-scale", f.scale); setVal("rt-rot", f.rot);
+      setVal("rt-opacity", f.opacity); setTxt("rt-opacity-val", `${f.opacity}%`);
+      setVal("rt-bright", f.bright); setTxt("rt-bright-val", f.bright > 0 ? `+${f.bright}` : String(f.bright));
+      setVal("rt-sat", f.sat); setTxt("rt-sat-val", f.sat > 0 ? `+${f.sat}` : String(f.sat));
+
+      // Forge 후처리 버튼 게이트
+      const canPost = Api.can("v2_postprocess");
+      const upBtn = $("btn-tool-upscale"), bgBtn = $("btn-tool-bgremove");
+      if (upBtn) upBtn.disabled = !canPost;
+      if (bgBtn) bgBtn.disabled = !canPost;
+      setTxt("upscale-desc", canPost ? "Magnific Precision V2 업스케일 실행" : "Phase V2-B 연결 대기 중");
+      setTxt("bgremove-desc", canPost ? "배경 제거(RMBG) 누끼 실행" : "Phase V2-B 연결 대기 중");
+    }
   }
 
-  // 계약 §7.3 C1 · V2A D518/D520: 클릭 시에만 실행 · 먼저 POST /spec 으로 저장 후 POST /prompt/assist · 최대 8패치 순차 · 재시도 없음
-  async function runAssistSequence(patches, force = false) {
-    if (Store.state.assistBusy || !patches.length) return { ok: false, done: 0 };
-    const targets = patches.slice(0, MAX_ASSIST_BATCH);
-    if (patches.length > MAX_ASSIST_BATCH) {
-      Store.toast(`안정성을 위해 한 번에 최대 ${MAX_ASSIST_BATCH}개 패치만 작성합니다. 나머지는 다시 눌러 주세요.`, "warn");
+  function setFilterCardUI(key, enabled, metaText) {
+    const card = document.querySelector(`.filter-card[data-filter="${key}"]`);
+    if (!card) return;
+    card.classList.toggle("muted", !enabled);
+    const eye = card.querySelector(".eye-btn");
+    if (eye) {
+      eye.classList.toggle("on", enabled);
+      eye.innerHTML = "";
+      eye.append(Data.icon(enabled ? "eye" : "eyeOff", 13));
+    }
+    const meta = $(`fm-${key}`);
+    if (meta && metaText) meta.textContent = metaText;
+  }
+
+  // ── 4. 하단 고정 실행 도크 ──
+  function renderRunDock() {
+    const patches = Store.getPatches();
+    const targets = patches.filter((p) => p.selectedForRun);
+    const totalImgs = targets.reduce((s, p) => s + (p.effectiveCount || 4), 0);
+    const models = [...new Set(targets.map((p) => p.modelInfo ? p.modelInfo.shortName : p.effectiveModel))];
+    const running = !!(Store.state.S && Store.state.S.running);
+
+    const leftEl = $("dock-summary-left"), rightEl = $("dock-summary-right");
+    if (leftEl) {
+      leftEl.textContent = targets.length
+        ? `생성 대상 ${targets.length}개 · 예상 ${totalImgs}장`
+        : "생성할 영역을 왼쪽에서 체크하세요";
+    }
+    if (rightEl) rightEl.textContent = models.length ? models.join(", ") : "-";
+
+    const btnRun = $("btn-run-selected");
+    if (btnRun) {
+      btnRun.disabled = targets.length === 0 || running;
+      btnRun.textContent = running
+        ? "서버에서 생성 중…"
+        : targets.length ? `선택 영역 ${targets.length}개 생성 시작` : "생성할 영역을 체크하세요";
+    }
+
+    const progWrap = $("run-progress-wrap");
+    if (progWrap) {
+      progWrap.classList.toggle("hidden", !running);
+      if (running && Store.state.progress) {
+        const pr = Store.state.progress;
+        const pct = pr.total ? Math.round(((pr.done || 0) / pr.total) * 100) : 25;
+        const fill = $("run-progress-fill");
+        const txt = $("run-progress-text");
+        if (fill) fill.style.width = `${Math.max(8, pct)}%`;
+        if (txt) txt.textContent = pr.message || `생성 진행 중 (${pr.done || 0}/${pr.total || "?"})`;
+      }
+    }
+  }
+
+  // ── 5. 2열 검색형 모델 팝오버 (목업 100% 복원) ──
+  function openModelPopover(anchorEl) {
+    const pop = $("model-popover");
+    if (!pop) return;
+    if (!pop.classList.contains("hidden") && popoverAnchor === anchorEl) {
+      pop.classList.add("hidden");
+      return;
+    }
+    popoverAnchor = anchorEl;
+    pop.classList.remove("hidden");
+
+    const search = $("mp-search");
+    if (search) search.value = "";
+    renderModelPopoverList("");
+
+    const positionPopover = () => {
+      const rect = anchorEl.getBoundingClientRect();
+      const pr = pop.getBoundingClientRect();
+      const popW = pr.width || 600;
+      const popH = Math.min(pr.height || 430, window.innerHeight - 64);
+      let left = rect.right - popW;
+      if (left < 12) left = 12;
+      if (left + popW > window.innerWidth - 12) left = window.innerWidth - popW - 12;
+      let top = rect.bottom + 8;
+      if (top + popH > window.innerHeight - 14) {
+        top = rect.top - popH - 8;
+      }
+      if (top < 52) top = 52;
+      if (top + popH > window.innerHeight - 14) {
+        top = Math.max(52, window.innerHeight - popH - 14);
+      }
+      pop.style.left = `${Math.round(left)}px`;
+      pop.style.top = `${Math.round(top)}px`;
+    };
+    positionPopover();
+    requestAnimationFrame(positionPopover);
+    if (search) search.focus();
+  }
+
+  function renderModelPopoverList(query) {
+    const q = (query || "").trim().toLowerCase();
+    const listEl = $("mp-list");
+    if (!listEl) return;
+    const catalog = Data.modelCatalog();
+    const patch = Store.primaryPatch();
+    const curName = patch ? patch.effectiveModel : Store.projectPrepare().model;
+
+    const filtered = catalog.filter((m) =>
+      !q
+      || m.label.toLowerCase().includes(q)
+      || m.name.toLowerCase().includes(q)
+      || (m.badge || "").toLowerCase().includes(q)
+      || (m.guide && m.guide.when.toLowerCase().includes(q))
+    );
+
+    listEl.innerHTML = "";
+    for (const m of filtered) {
+      const btn = Data.el("button", {
+        type: "button",
+        className: "mp-item" + (m.name === curName ? " selected" : ""),
+        onMouseenter: () => renderModelGuide(m),
+        onClick: async () => {
+          $("model-popover").classList.add("hidden");
+          await applyModelSelection(m.name);
+        },
+      },
+        Data.el("div", {},
+          Data.el("span", { className: "mp-item-title", text: m.label }),
+          Data.el("span", { className: "mp-item-sub", text: `${m.family} · 최대 참조 ${m.max_inputs}장` }),
+        ),
+        Data.el("span", { className: "mp-badge", text: m.badge }),
+      );
+      listEl.append(btn);
+    }
+
+    renderModelGuide(filtered.find((m) => m.name === curName) || filtered[0] || catalog[0]);
+  }
+
+  function renderModelGuide(m) {
+    const box = $("mp-guide");
+    if (!box || !m) return;
+    const g = m.guide || {};
+    box.innerHTML = "";
+    box.append(
+      Data.el("h3", { text: m.label }),
+      Data.el("div", { className: "mp-guide-tags" },
+        Data.el("span", { className: "mp-guide-tag", text: m.family || m.kind }),
+        Data.el("span", { className: "mp-guide-tag", text: m.badge }),
+        Data.el("span", { className: "mp-guide-tag", text: `최대 참조 ${m.max_inputs}장` }),
+        Data.el("span", { className: "mp-guide-tag", text: `최대 ${m.max_n}장/회` }),
+      ),
+      Data.el("div", { className: "mp-guide-sec" },
+        Data.el("h4", { text: "어떤 작업에 고를까요?" }),
+        Data.el("p", { text: g.when || m.summary || "" }),
+      ),
+      Data.el("div", { className: "mp-guide-sec" },
+        Data.el("h4", { text: "강점" }),
+        Data.el("p", { text: g.strengths || (m.strengths || []).join(" · ") }),
+      ),
+      Data.el("div", { className: "mp-guide-sec" },
+        Data.el("h4", { text: "참고 사항" }),
+        Data.el("p", { text: g.caution || "목적에 맞는 레퍼런스를 연결하면 일관성이 높아집니다." }),
+      ),
+      Data.el("div", { className: "mp-guide-sec" },
+        Data.el("h4", { text: "실무 팁" }),
+        Data.el("p", { text: g.tip || "후보 비교 탭에서 4장 시안을 나란히 확인해 보세요." }),
+      ),
+    );
+  }
+
+  async function applyModelSelection(modelName) {
+    const selList = Store.selectedPatches();
+    const m = Data.findModel(modelName);
+    const prep = Store.projectPrepare();
+    const useProjectDefault = selList.length <= 1 && (!selList[0] || !selList[0].meta.modelOverride);
+
+    if (useProjectDefault) {
+      try {
+        const nextVals = Object.assign({}, prep, {
+          model: modelName,
+          quality: (m && m.default_quality) || prep.quality,
+          opts: Object.assign({}, m ? m.opt_defaults : {}),
+        });
+        await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? null, "prepare", nextVals);
+        Store.toast(`프로젝트 기본 모델을 ${m ? m.shortName : modelName}(으)로 변경했습니다.`, "ok");
+        await Store.refreshAll(true);
+      } catch (err) {
+        Store.toast(`모델 변경 실패: ${err.message}`, "err");
+      }
+    } else {
+      for (const p of selList) p.meta.modelOverride = modelName;
+      if (Api.can("v2_crop_model")) {
+        try {
+          await Api.batchUpdateCrops(Store.state.root, Store.state.L?.rev ?? null, {
+            ids: selList.map((p) => p.id), model: modelName,
+          });
+        } catch (_) {}
+      }
+      Store.emit("selection");
+      Store.toast(`${selList.length}개 영역의 모델을 ${m ? m.shortName : modelName}(으)로 설정했습니다.`, "ok");
+    }
+    pulseCard("#model-card");
+  }
+
+  async function applyQualitySelection(q) {
+    const selList = Store.selectedPatches();
+    const prep = Store.projectPrepare();
+    for (const p of selList) p.meta.quality = q;
+    try {
+      await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? null, "prepare", Object.assign({}, prep, { quality: q }));
+      await Store.refreshAll(true);
+    } catch (_) {
+      Store.emit("selection");
+    }
+  }
+
+  async function applyExtraOpt(key, val) {
+    const selList = Store.selectedPatches();
+    const prep = Store.projectPrepare();
+    for (const p of selList) p.meta.opts[key] = val;
+    const nextOpts = Object.assign({}, prep.opts, { [key]: val });
+    try {
+      await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? null, "prepare", Object.assign({}, prep, { opts: nextOpts }));
+      await Store.refreshAll(true);
+    } catch (_) {
+      Store.emit("selection");
+    }
+  }
+
+  function insertMention(patch, tag) {
+    const cur = patch.meta.user_instruction_ko || "";
+    const sep = cur && !cur.endsWith(" ") ? " " : "";
+    patch.meta.user_instruction_ko = `${cur}${sep}${tag} `;
+    patch.meta.dirtySpec = true;
+    Store.emit("selection");
+    const el = $("inp-instruction");
+    if (el) el.focus();
+  }
+
+  // ── 6. AI 스마트 프롬프트 작성 (계약 §3.4 · 최대 8패치 직렬 · 확인 창 없이 즉시 호출 D521) ──
+  async function runAssistForPatches(patches, force = true) {
+    const list = (patches || []).slice(0, 8);
+    if (!list.length) {
+      Store.toast("프롬프트를 작성할 영역을 먼저 선택해 주세요.");
+      return { ok: false, count: 0 };
+    }
+    if ((patches || []).length > 8) {
+      Store.toast("한 번에 최대 8개 영역까지만 AI 프롬프트를 작성합니다. 앞 8개부터 진행합니다.");
+    }
+    if (!Api.can("v2_forge_prompt")) {
+      Store.toast("Phase V2-A 백엔드 브릿지(prompt/assist) 연결 대기 중입니다.", "err");
+      return { ok: false, count: 0 };
     }
     Store.state.assistBusy = true;
     Store.emit("selection");
-    let done = 0;
-    let aborted = false;
+    let written = 0;
     try {
-      for (const p of targets) {
-        if (!p.meta.specLoaded && Api.can("v2_spec_edit")) {
-          await Store.loadSpec(p.id, true);
-        }
-        if (Api.can("v2_spec_edit") && (p.meta.dirtySpec || !p.meta.seen || p.meta.seen === "null")) {
-          await Store.savePatchSpec(p);
+      for (const p of list) {
+        // §3.4: 먼저 POST /spec 으로 최신 한국어 지시·목적 저장
+        const saved = await Store.savePatchSpec(p);
+        if (saved && saved.unsupported) {
+          Store.toast(saved.reason || "지시문 저장이 아직 연결되지 않았습니다.", "err");
+          return { ok: false, count: written };
         }
         const res = await Api.assistPrompt(Store.state.root, {
           crop_id: p.id,
           seen: p.meta.seen,
           crop_sig: p.meta.crop_sig,
-          force,
+          force: !!force,
         });
-        if (res.status === "unsupported") {
-          Store.toast(res.reason || "이 모델 또는 환경은 AI 프롬프트 작성을 지원하지 않습니다.", "warn");
-          aborted = true;
-          break;
+        if (res && res.ok) {
+          p.meta.seen = res.seen || p.meta.seen;
+          p.meta.body_en = res.body_en || p.meta.body_en;
+          p.meta.prompt_en = res.prompt_en || p.meta.prompt_en;
+          p.meta.summary_ko = res.summary_ko || p.meta.summary_ko;
+          p.meta.skill_ids = Array.isArray(res.skill_ids) ? res.skill_ids : [];
+          p.meta.specState = "body";
+          p.meta.specWhy = null;
+          p.meta.promptSource = "assist";
+          p.meta.promptInputHash = res.input_hash || p.meta.specInputHash;
+          written += 1;
+        } else {
+          Store.toast(`${p.name}: ${(res && res.reason) || "프롬프트 작성 실패"}`, "err");
         }
-        if (res.status !== "written") {
-          Store.toast(`${p.name}: AI 작성 실패(${res.reason || "알 수 없는 오류"}) — 남은 작업을 멈춥니다.`, "err");
-          aborted = true;
-          break;
-        }
-        p.meta.summary_ko = res.summary_ko || "";
-        p.meta.body_en = res.body_en || "";
-        p.meta.prompt_en = res.prompt_en || "";
-        p.meta.skill_ids = Array.isArray(res.skill_ids) ? res.skill_ids : [];
-        if ("seen" in res && res.seen !== undefined) p.meta.seen = res.seen;
-        if ("input_hash" in res && res.input_hash) {
-          p.meta.promptInputHash = res.input_hash;
-          p.meta.specInputHash = res.input_hash;
-        }
-        p.meta.specState = "body";
-        p.meta.specWhy = null;
-        p.meta.promptSource = "assist";
-        p.meta.cached = !!res.cached;
-        p.meta.forgeCalls = Number(res.forge_calls || 0);
-        p.meta.rawDirty = false;
-        done += 1;
-        Store.emit("selection");
       }
-      if (done > 0 && !aborted) Store.toast(`AI 프롬프트 ${done}건 작성 완료`, "ok");
-      return { ok: !aborted, done };
+      if (written > 0) {
+        pulseCard("#prompt-card");
+        Store.toast(`${written}개 영역의 AI 스마트 프롬프트를 작성했습니다.`, "ok");
+      }
+      return { ok: written > 0, count: written };
     } catch (err) {
-      Store.toast(`AI 작성 중단: ${err.message}`, "err");
-      return { ok: false, done };
+      Store.toast(`AI 프롬프트 작성 실패: ${err.message}`, "err");
+      return { ok: false, count: written };
     } finally {
       Store.state.assistBusy = false;
       Store.emit("selection");
     }
   }
 
-  // ==================== 우측 탭 1: 지시 · 레퍼런스 · 모델 ====================
-  function renderTabInstruct() {
-    const host = $("right-tab-instruct");
-    host.replaceChildren();
-    const p = Store.primaryPatch();
-    if (!p) {
-      host.append(Data.el("div", { className: "insp-empty", text: "수정할 영역을 선택하거나 새 패치 영역을 그려 주세요." }));
+  function runAssistForSelection() {
+    return runAssistForPatches(Store.selectedPatches(), true);
+  }
+
+  // ── 7. 선택 영역 생성 실행 (D519 미작성 패치 자동 assist 선행 → DPSubmit.submitPaid §3.6) ──
+  async function runSelectedGeneration(useSelectedOnly = false) {
+    const patches = Store.getPatches();
+    const targets = useSelectedOnly
+      ? Store.selectedPatches()
+      : patches.filter((p) => p.selectedForRun);
+    if (!targets.length) {
+      Store.toast("생성할 영역을 먼저 선택하거나 체크해 주세요.");
       return;
     }
 
-    // 1) 패치 이름 & 수정 목적 5종
-    const nameInput = Data.el("input", { type: "text", value: p.name, title: "Enter로 이름 저장" });
-    nameInput.addEventListener("keydown", async (e) => {
-      if (e.key !== "Enter" || e.isComposing) return;
-      e.preventDefault();
-      const val = nameInput.value.trim();
-      if (!val || val === p.name) return;
-      try {
-        await Store.updateCrop(p.id, { name: val }, `이름 변경 (${val})`);
-        Store.toast("패치 이름을 저장했습니다.", "ok");
-      } catch (err) {
-        Store.toast(err.message, "err");
-        nameInput.value = p.name;
+    // D519: 한국어 지시가 있으나 최신 프롬프트가 미작성(dirty/blocked)인 패치만 선행 자동 assist
+    const needAssist = targets.filter((p) =>
+      p.meta.aiAuto && (p.meta.user_instruction_ko || "").trim()
+      && (p.meta.dirtySpec || p.meta.specState === "blocked" || !p.meta.body_en)
+    );
+    if (needAssist.length && Api.can("v2_forge_prompt")) {
+      const ar = await runAssistForPatches(needAssist, false);
+      if (!ar.ok) return;
+    }
+
+    const only = targets.length < patches.length ? targets.map((p) => p.id).join(",") : undefined;
+    try {
+      const res = await Api.submitStage("run", { root: Store.state.root, only });
+      if (res && res.pendingIntegration) {
+        Store.toast(res.message, "accent");
+        return;
       }
+      if (res && res.ok) {
+        Store.toast("생성을 시작했습니다.", "ok");
+        await Store.refreshAll(true);
+      } else if (res && !res.cancelled) {
+        Store.toast(res.message || res.reason || "생성을 시작하지 못했습니다.", "err");
+      }
+    } catch (err) {
+      Store.toast(`생성 요청 실패: ${err.message}`, "err");
+    }
+  }
+
+  // ── 8. 좌/우 스플리터 & 패널 ⋮⋮ 드래그 도킹 ──
+  function setupSplitter(id, cssVar, minW, maxW, invert, defaultW) {
+    const sp = $(id);
+    if (!sp) return;
+    let active = false, startX = 0, startW = defaultW;
+    sp.addEventListener("pointerdown", (e) => {
+      active = true;
+      startX = e.clientX;
+      startW = parseInt(getComputedStyle(document.documentElement).getPropertyValue(cssVar), 10) || defaultW;
+      sp.classList.add("dragging");
+      sp.setPointerCapture(e.pointerId);
     });
-
-    const purposeRow = Data.el("div", { className: "purpose-row" },
-      ...Data.PURPOSES.map((purp) => Data.el("button", {
-        type: "button",
-        className: "purpose-btn" + (p.meta.purpose === purp.id ? " active" : ""),
-        title: purp.desc,
-        onClick: () => {
-          p.meta.purpose = purp.id;
-          p.meta.dirtySpec = true;
-          Store.emit("selection");
-        },
-      }, Data.icon(purp.icon, 15), Data.el("span", { text: purp.label }))),
-    );
-
-    const cardBasic = Data.el("div", { className: "insp-card" },
-      Data.el("div", { className: "insp-card-head" },
-        Data.el("h3", { className: "insp-title", text: "패치 이름 · 수정 목적" }),
-        Data.el("span", { className: "tag-chip", text: `${p.rect[2] - p.rect[0]}×${p.rect[3] - p.rect[1]}` }),
-      ),
-      nameInput,
-      purposeRow,
-      Data.el("p", { className: "muted-text", text: Data.purposeInfo(p.meta.purpose).desc }),
-    );
-
-    // 2) 한국어 한 줄 지시 + @참조 멘션 바 + AI 스마트 작성 (§3.1–§3.4 · D503 · D521)
-    const refFiles = (p.refCrop && p.refCrop.files || []).filter((f) => !f.missing);
-    const dirArea = Data.el("textarea", {
-      className: "direction-textarea",
-      placeholder: "예: @참조1 의 금속 브로치 질감으로 교체하고 기존 그림자 방향 유지",
+    sp.addEventListener("pointermove", (e) => {
+      if (!active) return;
+      const dx = invert ? startX - e.clientX : e.clientX - startX;
+      const next = Math.max(minW, Math.min(maxW, startW + dx));
+      document.documentElement.style.setProperty(cssVar, `${next}px`);
     });
-    dirArea.value = p.meta.user_instruction_ko || "";
-    dirArea.addEventListener("input", () => {
-      p.meta.user_instruction_ko = dirArea.value;
-      p.meta.dirtySpec = true;
+    sp.addEventListener("pointerup", () => {
+      active = false;
+      sp.classList.remove("dragging");
     });
+    sp.addEventListener("dblclick", () => {
+      document.documentElement.style.setProperty(cssVar, `${defaultW}px`);
+    });
+  }
 
-    const insertMention = (token) => {
-      const start = dirArea.selectionStart ?? dirArea.value.length;
-      const end = dirArea.selectionEnd ?? dirArea.value.length;
-      dirArea.value = dirArea.value.slice(0, start) + token + " " + dirArea.value.slice(end);
-      p.meta.user_instruction_ko = dirArea.value;
-      p.meta.dirtySpec = true;
-      dirArea.focus();
-    };
+  function setupDockDrag() {
+    let draggedDockId = null;
+    document.querySelectorAll("[data-drag-panel]").forEach((bar) => {
+      bar.addEventListener("dragstart", (e) => {
+        draggedDockId = bar.dataset.dragPanel;
+        e.dataTransfer.effectAllowed = "move";
+      });
+      bar.addEventListener("dragend", () => {
+        draggedDockId = null;
+        document.querySelectorAll(".dock-drop-highlight").forEach((el) => el.classList.remove("dock-drop-highlight"));
+      });
+    });
+    document.querySelectorAll("[data-panel-id]").forEach((dock) => {
+      dock.addEventListener("dragover", (e) => {
+        if (draggedDockId && dock.dataset.panelId !== draggedDockId) {
+          e.preventDefault();
+          dock.classList.add("dock-drop-highlight");
+        }
+      });
+      dock.addEventListener("dragleave", () => dock.classList.remove("dock-drop-highlight"));
+      dock.addEventListener("drop", (e) => {
+        dock.classList.remove("dock-drop-highlight");
+        if (!draggedDockId || dock.dataset.panelId === draggedDockId) return;
+        e.preventDefault();
+        const nextPreset = draggedDockId === "layers"
+          ? (Store.state.prefs.layoutPreset === "right-stack" ? "standard" : "right-stack")
+          : (Store.state.prefs.layoutPreset === "left-stack" ? "standard" : "left-stack");
+        Store.savePrefs({ layoutPreset: nextPreset });
+        const lp = Data.LAYOUT_PRESETS.find((x) => x.id === nextPreset);
+        Store.toast(`패널 배치: ${lp ? lp.name : nextPreset}`);
+      });
+    });
+    document.querySelectorAll("[data-dock-action]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const nextPreset = btn.dataset.dockAction === "move-right"
+          ? (Store.state.prefs.layoutPreset === "right-stack" ? "standard" : "right-stack")
+          : (Store.state.prefs.layoutPreset === "left-stack" ? "standard" : "left-stack");
+        Store.savePrefs({ layoutPreset: nextPreset });
+        const lp = Data.LAYOUT_PRESETS.find((x) => x.id === nextPreset);
+        Store.toast(`패널 배치: ${lp ? lp.name : nextPreset}`);
+      });
+    });
+  }
 
-    const mentionBar = Data.el("div", { className: "mention-bar" },
-      Data.el("button", { type: "button", className: "mention-chip", text: "@원본", onClick: () => insertMention("@원본") }),
-      ...refFiles.map((rf, i) => {
-        const thumb = rf.thumb_url ? Api.apiUrl(rf.thumb_url) : null;
-        return Data.el("button", {
-          type: "button", className: "mention-chip",
-          title: `${rf.name} 멘션 삽입`,
-          onClick: () => insertMention(`@참조${i + 1}`),
-        },
-        thumb ? Data.el("img", { src: thumb, alt: "" }) : null,
-        Data.el("span", { text: `@참조${i + 1}` }));
-      }),
-    );
+  function bindEvents() {
+    setupSplitter("splitter-left", "--left-w", 230, 420, false, 278);
+    setupSplitter("splitter-right", "--right-w", 300, 500, true, 368);
+    setupDockDrag();
 
-    const aiChk = Data.el("input", { type: "checkbox", checked: p.meta.aiAuto });
-    aiChk.addEventListener("change", () => {
-      p.meta.aiAuto = aiChk.checked;
-      p.meta.dirtySpec = true;
+    // 좌측 도크 버튼
+    const btnDesel = $("btn-deselect-patch");
+    if (btnDesel) btnDesel.addEventListener("click", () => Store.clearSelection());
+    const btnAddRect = $("btn-add-rect");
+    if (btnAddRect) btnAddRect.addEventListener("click", () => {
+      Canvas.setTool("rect");
+      Store.toast("캔버스에서 수정할 부위를 드래그해 영역을 추가하세요.");
+    });
+    const chkAll = $("chk-select-all");
+    if (chkAll) chkAll.addEventListener("change", (e) => Store.setAllCheckedForRun(e.target.checked));
+
+    const btnRefUp = $("btn-ref-upload");
+    if (btnRefUp) btnRefUp.addEventListener("click", () => $("hidden-file-ref").click());
+    const btnRefForge = $("btn-ref-forge");
+    if (btnRefForge) btnRefForge.addEventListener("click", () => window.DPV2Overlays && window.DPV2Overlays.openForgeImportForRef());
+    const btnSheet = $("btn-open-sheet-cut");
+    if (btnSheet) btnSheet.addEventListener("click", () => window.DPV2Overlays && window.DPV2Overlays.openSheetOverlay());
+
+    // 우측 탭 전환
+    document.querySelectorAll(".itab").forEach((b) => b.addEventListener("click", () => setActiveTab(b.dataset.tab)));
+    const btnEmptyRect = $("btn-empty-rect");
+    if (btnEmptyRect) btnEmptyRect.addEventListener("click", () => Canvas.setTool("rect"));
+    const btnCmpGoto = $("btn-compare-goto-instruct");
+    if (btnCmpGoto) btnCmpGoto.addEventListener("click", () => setActiveTab("instruct"));
+    const btnRtGoto = $("btn-retouch-goto-compare");
+    if (btnRtGoto) btnRtGoto.addEventListener("click", () => setActiveTab("compare"));
+
+    // 다중 선택 일괄 액션
+    const btnClearMulti = $("btn-clear-multi");
+    if (btnClearMulti) btnClearMulti.addEventListener("click", () => {
+      const p = Store.primaryPatch();
+      if (p) Store.selectPatch(p.id);
+    });
+    const btnMultiVis = $("btn-multi-vis");
+    if (btnMultiVis) btnMultiVis.addEventListener("click", () => {
+      const list = Store.selectedPatches();
+      const nextHidden = list.every((p) => !p.meta.hidden);
+      list.forEach((p) => { p.meta.hidden = nextHidden; });
       Store.emit("selection");
     });
-
-    const rawArea = Data.el("textarea", {
-      className: "raw-prompt-area",
-      placeholder: "영문 본문 직접 입력(raw_prompt_override · 틀과 @imageN 순서·보존 문장은 서버가 자동 유지)",
+    const btnMultiLock = $("btn-multi-lock");
+    if (btnMultiLock) btnMultiLock.addEventListener("click", async () => {
+      const list = Store.selectedPatches();
+      const nextLock = !list.every((p) => p.locked);
+      for (const p of list) await Store.updateCrop(p.id, { locked: nextLock });
+      Store.toast(`${list.length}개 영역을 일괄 ${nextLock ? "잠금" : "잠금 해제"}했습니다.`);
     });
-    rawArea.value = p.meta.body_en || "";
-    rawArea.addEventListener("input", () => {
-      p.meta.body_en = rawArea.value;
+    const btnMultiDel = $("btn-multi-del");
+    if (btnMultiDel) btnMultiDel.addEventListener("click", async () => {
+      const list = Store.selectedPatches();
+      if (!list.length) return;
+      const ok = await Data.askDialogConfirm(`선택된 ${list.length}개 수정 영역을 모두 삭제할까요?`, { okText: "삭제", cancelText: "취소" });
+      if (!ok) return;
+      for (const p of list) await Store.deleteCrop(p.id);
+    });
+
+    // TAB 1 바인딩
+    const nameInp = $("inp-patch-name");
+    if (nameInp) nameInp.addEventListener("change", (e) => {
+      const p = Store.primaryPatch();
+      const val = e.target.value.trim();
+      if (p && val && val !== p.name) Store.updateCrop(p.id, { name: val }, `이름 변경 (${val})`);
+    });
+
+    const slotCut = $("btn-slot-cut");
+    if (slotCut) slotCut.addEventListener("click", () => window.DPV2Overlays && window.DPV2Overlays.openSheetOverlay());
+    const slotForge = $("btn-slot-forge");
+    if (slotForge) slotForge.addEventListener("click", () => window.DPV2Overlays && window.DPV2Overlays.openForgeImportForRef());
+
+    const refDropSlot = $("ref-drop-slot");
+    if (refDropSlot) {
+      refDropSlot.addEventListener("dragover", (e) => {
+        if (e.dataTransfer?.types?.includes("text/dps-ref-file")) {
+          e.preventDefault();
+          refDropSlot.classList.add("pulse-flash");
+        }
+      });
+      refDropSlot.addEventListener("dragleave", () => refDropSlot.classList.remove("pulse-flash"));
+      refDropSlot.addEventListener("drop", async (e) => {
+        refDropSlot.classList.remove("pulse-flash");
+        const refFile = e.dataTransfer?.getData("text/dps-ref-file");
+        if (refFile) {
+          e.preventDefault();
+          await linkRefToPatches(refFile, Store.selectedPatches());
+        }
+      });
+    }
+
+    const chkAuto = $("chk-ai-auto");
+    if (chkAuto) chkAuto.addEventListener("change", (e) => {
+      for (const p of Store.selectedPatches()) { p.meta.aiAuto = e.target.checked; p.meta.dirtySpec = true; }
+      const p = Store.primaryPatch();
+      if (p && Api.can("v2_spec_edit")) Store.savePatchSpec(p);
+    });
+
+    const instEl = $("inp-instruction");
+    if (instEl) instEl.addEventListener("input", (e) => {
+      const p = Store.primaryPatch();
+      if (!p) return;
+      p.meta.user_instruction_ko = e.target.value;
       p.meta.dirtySpec = true;
+      const fb = $("fb-instruction");
+      if (fb && document.activeElement !== fb) fb.value = e.target.value;
+    });
+
+    const rawEl = $("inp-raw-prompt");
+    if (rawEl) rawEl.addEventListener("input", (e) => {
+      const p = Store.primaryPatch();
+      if (!p) return;
+      p.meta.body_en = e.target.value;
       p.meta.rawDirty = true;
     });
 
-    const fullPreview = p.meta.prompt_en
-      ? Data.el("pre", { className: "muted-text selectable-text", style: "white-space:pre-wrap;margin:4px 0 0;font-size:11px;", text: p.meta.prompt_en })
-      : null;
-
-    const aiBox = Data.el("div", { className: "ai-box" },
-      Data.el("div", { className: "insp-card-head" },
-        Data.el("label", { className: "check-row" }, aiChk, Data.el("span", { text: "AI 프롬프트 자동 최적화" })),
-        Data.el("button", {
-          type: "button", className: "mini-btn accent-outline",
-          disabled: Store.state.assistBusy,
-          title: "경량 LLM 호출로 영문 프롬프트를 작성합니다 (클릭 시에만 실행 · 별도 확인 상자 없음)",
-          onClick: () => runAssistSequence([p], !!p.meta.body_en && !p.meta.dirtySpec),
-        }, Data.icon("sparkles", 13), Data.el("span", { text: Store.state.assistBusy ? "작성 중…" : "AI 작성" })),
-      ),
-      Data.el("p", { className: "muted-text", text: "클릭 시 경량 LLM 호출로 영문 본문을 작성합니다(동일 입력은 캐시 재사용)." }),
-      p.meta.specState === "blocked" && p.meta.specWhy
-        ? Data.el("span", { className: "tag-chip warn", text: `주의: ${p.meta.specWhy}` }) : null,
-      p.meta.summary_ko ? Data.el("p", { className: "ai-summary-ko selectable-text", text: p.meta.summary_ko }) : null,
-      p.meta.skill_ids && p.meta.skill_ids.length
-        ? Data.el("div", { className: "inline-row" },
-          ...p.meta.skill_ids.map((s) => Data.el("span", { className: "tag-chip accent", text: s })),
-          p.meta.cached ? Data.el("span", { className: "tag-chip ok", text: "캐시 재사용" }) : null)
-        : null,
-      Data.el("details", {},
-        Data.el("summary", { className: "muted-text", text: "영문 본문 직접 편집 · 전체 프롬프트 보기" }),
-        rawArea,
-        fullPreview,
-      ),
-    );
-
-    const saveSpecBtn = Data.el("button", {
-      type: "button", className: "btn-secondary-sm full-w", text: "이 패치 지시문 저장",
-      onClick: async () => {
-        try {
-          const res = await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
-          if (res && res.unsupported) {
-            Store.toast(res.reason || "지시문 저장은 아직 연결되지 않았습니다.", "warn");
-            return;
-          }
-          Store.toast("지시문을 저장했습니다.", "ok");
-          await Store.refreshAll(true);
-        } catch (err) {
-          Store.toast(`지시문 저장 실패: ${err.message}`, "err");
-        }
-      },
+    const btnSaveSpec = $("btn-save-spec");
+    if (btnSaveSpec) btnSaveSpec.addEventListener("click", async () => {
+      const p = Store.primaryPatch();
+      if (!p) return;
+      const res = await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
+      if (res && res.unsupported) Store.toast(res.reason, "err");
+      else if (res && res.ok) Store.toast("지시문을 저장했습니다.", "ok");
     });
 
-    const cardInstruct = Data.el("div", { className: "insp-card" },
-      Data.el("div", { className: "insp-card-head" },
-        Data.el("h3", { className: "insp-title", text: "수정 지시 & AI 프롬프트" }),
-        Data.el("button", {
-          type: "button", className: "mini-btn", text: "레퍼런스 추가",
-          onClick: () => switchLeftTab("refs"),
-        }),
-      ),
-      mentionBar,
-      dirArea,
-      aiBox,
-      saveSpecBtn,
-    );
+    const btnAiDraft = $("btn-ai-draft");
+    if (btnAiDraft) btnAiDraft.addEventListener("click", () => runAssistForSelection());
 
-    // 3) 연결된 레퍼런스 요약
-    const cardRefs = Data.el("div", { className: "insp-card" },
-      Data.el("div", { className: "insp-card-head" },
-        Data.el("h3", { className: "insp-title", text: `연결된 레퍼런스 (${refFiles.length})` }),
-        Data.el("button", {
-          type: "button", className: "mini-btn accent-outline",
-          onClick: () => { if (window.DPV2Overlays) window.DPV2Overlays.openSheetCut(); },
-        }, Data.icon("scissors", 13), Data.el("span", { text: "시트 오리기" })),
-      ),
-      refFiles.length ? Data.el("div", { className: "inline-row" },
-        ...refFiles.map((rf) => Data.el("div", { className: "selected-file-chip" },
-          Data.el("span", { className: "file-chip-name", text: `${rf.role === "main" ? "★ " : ""}${rf.name}` }),
-          Data.el("button", {
-            type: "button", className: "icon-btn-sm", title: "연결 끊기", text: "×",
-            onClick: async () => {
-              const rev = Store.state.R ? Store.state.R.rev : null;
-              await Api.linkRef(Store.state.root, rev, { crop_id: p.id, op: "remove", file: rf.name });
-              await Store.refreshAll(true);
-            },
-          }),
-        )),
-      ) : Data.el("p", { className: "muted-text", text: "연결된 레퍼런스가 없습니다. 좌측 [레퍼런스] 탭에서 클릭해 연결하세요." }),
-    );
+    const btnPresets = $("btn-prompt-presets");
+    if (btnPresets) btnPresets.addEventListener("click", () => window.DPV2Overlays && window.DPV2Overlays.openPresetsModal());
 
-    // 4) 생성 모델 & 옵션 카드 (라이브 DPEnv.caps.models 동적 옵션)
-    const mInfo = p.modelInfo || Data.modelCatalog()[0];
-    const prep = Store.projectPrepare();
-    const isInherited = !p.meta.modelOverride;
-
-    const inheritChk = Data.el("input", { type: "checkbox", checked: isInherited });
-    inheritChk.addEventListener("change", () => {
-      p.meta.modelOverride = inheritChk.checked ? "" : prep.model;
+    const chkInherit = $("chk-inherit-model");
+    if (chkInherit) chkInherit.addEventListener("change", (e) => {
+      for (const p of Store.selectedPatches()) {
+        p.meta.modelOverride = e.target.checked ? "" : p.effectiveModel;
+      }
       Store.emit("selection");
     });
 
-    const modelRow = Data.el("div", {
-      className: "model-card-row",
-      onClick: (e) => openModelPopover(e.currentTarget, isInherited ? "project" : "single"),
-    },
-    Data.el("div", { className: "model-card-info" },
-      Data.el("div", { className: "model-card-name", text: mInfo ? mInfo.label : p.effectiveModel }),
-      Data.el("div", { className: "model-card-sub", text: mInfo ? `${mInfo.badge} · ${mInfo.summary}` : "" }),
-    ),
-    Data.el("span", { className: "mini-btn", text: "변경 ▾" }));
+    const btnModel = $("btn-model-dropdown");
+    if (btnModel) btnModel.addEventListener("click", (e) => openModelPopover(e.currentTarget));
+    const mpSearch = $("mp-search");
+    if (mpSearch) mpSearch.addEventListener("input", (e) => renderModelPopoverList(e.target.value));
 
-    const optsGrid = Data.el("div", { className: "opts-grid" });
-    if (mInfo && mInfo.qualities.length) {
-      const qSel = Data.el("select", {},
-        ...mInfo.qualities.map((q) => Data.el("option", { value: q, text: q })),
-      );
-      qSel.value = mInfo.qualities.includes(p.effectiveQuality) ? p.effectiveQuality : mInfo.default_quality;
-      qSel.addEventListener("change", () => updateModelOption(p, isInherited, { quality: qSel.value }));
-      optsGrid.append(Data.el("label", { className: "opt-field" }, Data.el("span", { text: "품질" }), qSel));
-    }
-
-    const nSel = Data.el("select", {},
-      ...[1, 2, 3, 4, 6, 8].filter((n) => n <= (mInfo ? mInfo.max_n : 8)).map((n) => Data.el("option", { value: String(n), text: `${n}장` })),
-    );
-    nSel.value = String(Math.min(p.effectiveCount, mInfo ? mInfo.max_n : 8));
-    nSel.addEventListener("change", () => updateModelOption(p, isInherited, { n: Number(nSel.value) }));
-    optsGrid.append(Data.el("label", { className: "opt-field" }, Data.el("span", { text: "후보 장 수" }), nSel));
-
-    if (mInfo && mInfo.opts && Array.isArray(mInfo.opts.image_size)) {
-      const sSel = Data.el("select", {},
-        ...mInfo.opts.image_size.map((v) => Data.el("option", { value: v, text: v })),
-      );
-      sSel.value = (p.meta.opts.image_size || prep.opts.image_size || mInfo.opt_defaults.image_size || "2K");
-      sSel.addEventListener("change", () => updateModelOption(p, isInherited, { opts: { image_size: sSel.value } }));
-      optsGrid.append(Data.el("label", { className: "opt-field" }, Data.el("span", { text: "해상도 단계" }), sSel));
-    }
-    if (mInfo && mInfo.opts && Array.isArray(mInfo.opts.thinking_level)) {
-      const tSel = Data.el("select", {},
-        ...mInfo.opts.thinking_level.map((v) => Data.el("option", { value: v, text: Data.THINKING_LABELS[v] || v })),
-      );
-      tSel.value = (p.meta.opts.thinking_level || prep.opts.thinking_level || mInfo.opt_defaults.thinking_level || "medium");
-      tSel.addEventListener("change", () => updateModelOption(p, isInherited, { opts: { thinking_level: tSel.value } }));
-      optsGrid.append(Data.el("label", { className: "opt-field" }, Data.el("span", { text: "추론 깊이" }), tSel));
-    }
-
-    const cardModel = Data.el("div", { className: "insp-card" },
-      Data.el("div", { className: "insp-card-head" },
-        Data.el("h3", { className: "insp-title", text: "생성 모델 · 옵션" }),
-        Data.el("label", { className: "check-row" }, inheritChk, Data.el("span", { text: "프로젝트 기본 따름" })),
-      ),
-      modelRow,
-      optsGrid,
-    );
-
-    host.append(cardBasic, cardInstruct, cardRefs, cardModel);
-  }
-
-  async function updateModelOption(patch, isProjectDefault, changes) {
-    if (isProjectDefault && Store.state.P) {
-      const curPrep = Object.assign({}, Store.state.P.values.prepare, changes);
-      if (changes.opts) curPrep.opts = Object.assign({}, (Store.state.P.values.prepare && Store.state.P.values.prepare.opts) || {}, changes.opts);
-      try {
-        await Api.savePipelineSettings(Store.state.root, Store.state.P.rev, "prepare", curPrep);
-        await Store.refreshAll(true);
-        Store.toast("프로젝트 기본 생성 설정을 저장했습니다.", "ok");
-      } catch (err) {
-        Store.toast(`설정 저장 실패: ${err.message}`, "err");
-      }
-      return;
-    }
-    if (changes.model) patch.meta.modelOverride = changes.model;
-    if (changes.quality) patch.meta.quality = changes.quality;
-    if (changes.n) patch.meta.count = changes.n;
-    if (changes.opts) Object.assign(patch.meta.opts, changes.opts);
-    Store.emit("selection");
-    if (Api.can("v2_crop_model")) {
-      applyBatchPersist([patch], changes, "패치 모델 설정");
-    }
-  }
-
-  // ==================== 우측 탭 2: 후보 비교 · 신호등 품질 ====================
-  function renderTabReview() {
-    const host = $("right-tab-review");
-    host.replaceChildren();
-    const p = Store.primaryPatch();
-    const totalCands = Store.getPatches().reduce((acc, x) => acc + (x.targets || []).reduce((s, tg) => s + (tg.candidates || []).length, 0), 0);
-    $("badge-cand-count").textContent = String(totalCands);
-
-    if (!p) {
-      host.append(Data.el("div", { className: "insp-empty", text: "후보를 비교할 패치를 선택해 주세요." }));
-      return;
-    }
-
-    // 다중 타깃(A·B·C) 선택 바 (기존 v1 복수 타깃 크롭 100% 호환)
-    if (p.targets && p.targets.length > 1) {
-      const tgBar = Data.el("div", { className: "insp-card" },
-        Data.el("h3", { className: "insp-title", text: `크롭 안 타깃 (${p.targets.length}개)` }),
-        Data.el("div", { className: "target-pill-bar" },
-          ...p.targets.map((tg) => Data.el("button", {
-            type: "button",
-            className: "target-pill" + (p.target && p.target.key === tg.key ? " active" : ""),
-            text: `${tg.tid}${tg.label ? " · " + tg.label : ""}${tg.pick_keys && tg.pick_keys.length ? " ★" : ""}`,
-            onClick: () => Store.selectTargetForCrop(p.id, tg.key),
-          })),
-        ),
-      );
-      host.append(tgBar);
-    }
-
-    if (!p.candidates.length) {
-      host.append(Data.el("div", { className: "insp-empty", text: "아직 생성된 후보가 없습니다. 하단 [생성하기]로 후보를 만들어 보세요." }));
-      return;
-    }
-
-    const cand = Store.currentCandidate(p);
-    const tl = Data.trafficLight(cand, p.seam);
-
-    const previewBanner = cand && !cand.picked
-      ? Data.el("div", {
-        className: "cand-preview-banner",
-        text: `캔버스에 후보 c${String(cand.n).padStart(2, "0")} 실시간 겹침 미리보기 중 — [★ 이 후보 채택]으로 확정`,
-      }) : null;
-
-    const trafficCard = Data.el("div", { className: `traffic-card ${tl.level}` },
-      Data.el("span", { className: "traffic-icon", text: tl.icon }),
-      Data.el("div", { className: "traffic-body" },
-        Data.el("div", { className: "traffic-label", text: tl.label }),
-        Data.el("div", { className: "traffic-detail", text: tl.detail }),
-      ),
-    );
-
-    const actionRow = Data.el("div", { className: "inline-row" },
-      Data.el("button", {
-        type: "button", className: "btn-primary-sm",
-        onClick: () => pickCurrentCandidate(p, cand),
-      }, Data.icon("star", 13), Data.el("span", { text: cand && cand.picked ? "채택 해제" : "이 후보 채택" })),
-      Data.el("button", {
-        type: "button", className: "btn-secondary-sm",
-        onClick: () => { if (window.DPV2Overlays) window.DPV2Overlays.openComparer(); },
-      }, Data.icon("expand", 13), Data.el("span", { text: "크게 비교" })),
-      Data.el("button", {
-        type: "button", className: "mini-btn",
-        onClick: () => rejectCurrentCandidate(cand),
-      }, Data.icon("xCircle", 13), Data.el("span", { text: cand && cand.rejected ? "제외 해제" : "제외" })),
-      Data.el("button", {
-        type: "button", className: "mini-btn accent-outline",
-        onClick: () => requestReroll(p, cand),
-      }, Data.icon("refresh", 13), Data.el("span", { text: "다시 생성 +1" })),
-    );
-
-    const grid = Data.el("div", { className: "cand-grid" });
-    for (const c of p.candidates) {
-      const cls = ["cand-tile"];
-      if (cand && cand.key === c.key) cls.push("selected");
-      if (c.picked) cls.push("picked");
-      if (c.rejected) cls.push("rejected");
-      const thumb = c.thumb_url ? Api.apiUrl(c.thumb_url) : null;
-      const tile = Data.el("div", {
-        className: cls.join(" "),
-        onClick: () => Store.selectCandidate(p.target.key, c.key),
-        onDblclick: () => pickCurrentCandidate(p, c),
-      },
-      Data.el("div", { className: "cand-thumb" },
-        thumb ? Data.el("img", { src: thumb, alt: `c${c.n}`, loading: "lazy" }) : null,
-        Data.el("div", { className: "cand-badges" },
-          c.picked ? Data.el("span", { className: "cand-b star", text: "★" }) : null,
-          c.gates && c.gates.fails && c.gates.fails.length ? Data.el("span", { className: "cand-b bad", text: "주의" }) : null,
-          c.rejected ? Data.el("span", { className: "cand-b", text: "제외" }) : null,
-        ),
-      ),
-      Data.el("div", { className: "cand-meta" },
-        Data.el("span", { text: `c${String(c.n).padStart(2, "0")} · ${c.variant || c.origin || ""}` }),
-        Data.el("span", { text: Data.formatElapsed(c.took) }),
-      ));
-      grid.append(tile);
-    }
-
-    const techDetails = cand ? Data.el("details", { className: "insp-card" },
-      Data.el("summary", { className: "muted-text", text: "상세 분석 수치 보기" }),
-      Data.el("p", {
-        className: "muted-text",
-        text: [
-          cand.model ? `모델: ${cand.model}` : "",
-          cand.gates ? `배경 변화 MAD ${cand.gates.outside_mad ?? "-"} · >24 ${cand.gates.outside_frac_gt24 ?? "-"}` : "",
-          cand.reg && cand.reg.applied ? `위치 맞춤 ${Number(cand.reg.disp || 0).toFixed(1)}px` : "",
-          cand.done ? `완료: ${cand.done}` : "",
-        ].filter(Boolean).join(" · ") || "추가 지표 없음",
-      }),
-    ) : null;
-
-    host.append(
-      Data.el("div", { className: "insp-card" }, trafficCard, previewBanner, actionRow),
-      grid,
-      techDetails,
-    );
-  }
-
-  async function pickCurrentCandidate(patch, cand) {
-    if (!patch || !patch.target || !cand) return;
-    try {
-      const mode = cand.picked ? "remove" : "set";
-      await Api.pickCandidate(Store.state.root, {
-        crop_id: patch.id, tid: patch.target.tid, key: cand.key, mode,
-      });
-      Store.toast(mode === "set" ? `후보 c${String(cand.n).padStart(2, "0")}을(를) ★ 채택했습니다.` : "★ 채택을 해제했습니다.", "ok");
-      await Store.refreshAll(true);
-    } catch (err) {
-      Store.toast(`채택 실패: ${err.message}`, "err");
-    }
-  }
-
-  async function rejectCurrentCandidate(cand) {
-    if (!cand) return;
-    try {
-      await Api.rejectCandidate(Store.state.root, cand.key, !cand.rejected);
-      await Store.refreshAll(true);
-    } catch (err) {
-      Store.toast(`제외 처리 실패: ${err.message}`, "err");
-    }
-  }
-
-  async function requestReroll(patch, cand) {
-    const cells = (patch.target && patch.target.cells) || [];
-    const cell = (cand && cells.find((x) => x.cell_key === cand.cell_key)) || cells[0];
-    if (!cell) return Store.toast("먼저 무료 반영 후 다시 생성을 요청할 수 있습니다.", "warn");
-    const ok = await Data.askDialogConfirm(
-      `이 패치의 조건(${cell.variant || cell.cell_key.slice(0, 8)})으로 후보를 +1건 추가 생성 예약할까요?`,
-      { ok: "다시 생성 예약" },
-    );
-    if (!ok) return;
-    try {
-      await Api.rerollCell(Store.state.root, { cell_key: cell.cell_key, count: 1 });
-      Store.toast("다시 생성 +1건이 예약되었습니다.", "ok");
-      await Store.refreshAll(true);
-    } catch (err) {
-      Store.toast(`다시 생성 예약 실패: ${err.message}`, "err");
-    }
-  }
-
-  // ==================== 우측 탭 3: 비파괴 후보정 · 마스크 · 변형 ====================
-  function renderTabRetouch() {
-    const host = $("right-tab-retouch");
-    host.replaceChildren();
-    const p = Store.primaryPatch();
-    if (!p || !p.pickedCand) {
-      host.append(Data.el("div", { className: "insp-empty", text: "② 후보 비교 탭에서 ★ 후보를 하나 채택하면 경계 마스크 손질과 후보정을 할 수 있습니다." }));
-      return;
-    }
-
-    const mk = Store.state.mask && Store.state.mask.key === p.pickedCand.key ? Store.state.mask : null;
-
-    // 1) 마스크 브러시 · 경계 페이드 카드
-    const maskCard = Data.el("div", { className: "insp-card" },
-      Data.el("div", { className: "insp-card-head" },
-        Data.el("h3", { className: "insp-title", text: "마스크 경계 손질 (PSD 그룹 마스크)" }),
-        mk && mk.dirty ? Data.el("span", { className: "tag-chip warn", text: "미저장 변경" }) : null,
-      ),
-    );
-
-    if (!mk) {
-      maskCard.append(
-        Data.el("p", { className: "muted-text", text: "★ 채택 후보의 마스크를 불러와 브러시·지우개·경계 페이드로 자연스럽게 다듬습니다." }),
-        Data.el("button", {
-          type: "button", className: "btn-primary-sm full-w", text: "마스크 편집 시작",
-          onClick: async () => {
-            await Store.openMaskSession(p.pickedCand.key);
-            if (window.DPV2Canvas) window.DPV2Canvas.setTool("eraser");
-          },
-        }),
-      );
-    } else {
-      const fadeEdge = (side) => {
-        const width = 64;
-        for (let y = 0; y < mk.h; y++) {
-          for (let x = 0; x < mk.w; x++) {
-            const d = side === "top" ? y : side === "bottom" ? (mk.h - 1 - y) : side === "left" ? x : (mk.w - 1 - x);
-            if (d >= width) continue;
-            const t = Math.max(0, Math.min(1, (d + 0.5) / width));
-            const s = t * t * (3 - 2 * t);
-            mk.m[y * mk.w + x] *= s;
-          }
+    document.querySelectorAll("#seg-count button").forEach((b) => {
+      b.addEventListener("click", async () => {
+        const val = Number(b.dataset.val);
+        for (const p of Store.selectedPatches()) p.meta.count = val;
+        const prep = Store.projectPrepare();
+        try {
+          await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? null, "prepare", Object.assign({}, prep, { n: val }));
+          await Store.refreshAll(true);
+        } catch (_) {
+          Store.emit("selection");
         }
-        mk.dirty = true;
-        mk.ops.push(`경계 페이드 ${side}`);
-        Store.emit("mask");
-      };
+      });
+    });
 
-      maskCard.append(
-        Data.el("div", { className: "inline-row" },
-          Data.el("button", {
-            type: "button", className: "mini-btn" + (Store.state.tool === "brush" ? " on" : ""),
-            onClick: () => window.DPV2Canvas && window.DPV2Canvas.setTool("brush"),
-          }, Data.icon("brush", 13), Data.el("span", { text: "브러시 (B)" })),
-          Data.el("button", {
-            type: "button", className: "mini-btn" + (Store.state.tool === "eraser" ? " on" : ""),
-            onClick: () => window.DPV2Canvas && window.DPV2Canvas.setTool("eraser"),
-          }, Data.icon("eraser", 13), Data.el("span", { text: "지우개 (E)" })),
-          Data.el("button", {
-            type: "button", className: "mini-btn",
-            onClick: () => { mk.m.set(mk.base); mk.dirty = true; mk.ops.push("초기화"); Store.emit("mask"); },
-          }, Data.icon("refresh", 13), Data.el("span", { text: "복원" })),
-        ),
-        Data.el("div", { className: "inline-row" },
-          Data.el("span", { className: "muted-text", text: "가장자리 페이드:" }),
-          ...[["top", "위"], ["bottom", "아래"], ["left", "왼"], ["right", "오른"]].map(([s, lbl]) =>
-            Data.el("button", { type: "button", className: "mini-btn", text: lbl, onClick: () => fadeEdge(s) })),
-        ),
-        Data.el("div", { className: "inline-row" },
-          Data.el("button", {
-            type: "button", className: "btn-primary-sm", disabled: !mk.dirty,
-            onClick: () => Store.saveMaskSession(),
-          }, Data.icon("check", 13), Data.el("span", { text: "마스크 저장" })),
-          Data.el("button", {
-            type: "button", className: "mini-btn",
-            onClick: async () => {
-              await Api.editMask(Store.state.root, { key: mk.key, seen: mk.file, op: "undo" });
-              await Store.openMaskSession(mk.key);
-              Store.toast("이전 마스크 판으로 되돌렸습니다.", "ok");
-            },
-          }, Data.icon("undo", 13), Data.el("span", { text: "서버 이전 판" })),
-        ),
-      );
-    }
+    const chkAutoCrop = $("adv-show-autocrop");
+    if (chkAutoCrop) chkAutoCrop.addEventListener("change", (e) => Store.savePrefs({ showAutoCrop: e.target.checked }));
+    const advComp = $("adv-complexity");
+    if (advComp) advComp.addEventListener("change", async (e) => {
+      const prep = Store.projectPrepare();
+      try {
+        await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? null, "prepare", Object.assign({}, prep, { complexity: e.target.value }));
+        await Store.refreshAll(true);
+      } catch (_) {}
+    });
 
-    // 2) 패치 미세 위치 · 회전 · 크기 보정 (/mask/adjust)
-    const adj = (mk && mk.info && mk.info.adjust) || { dx: 0, dy: 0, rot: p.meta.rotDeg || 0, sx: 1, sy: 1 };
-    const dxIn = Data.el("input", { type: "number", step: "1", value: String(adj.dx || 0) });
-    const dyIn = Data.el("input", { type: "number", step: "1", value: String(adj.dy || 0) });
-    const rotIn = Data.el("input", { type: "number", step: "0.5", value: String(adj.rot || 0) });
-    const scaleIn = Data.el("input", { type: "number", step: "0.01", min: "0.1", max: "4", value: String(adj.sx || 1) });
+    // TAB 2 비교 버튼
+    const btnFullCmp = $("btn-open-fullscreen-compare");
+    if (btnFullCmp) btnFullCmp.addEventListener("click", () => window.DPV2Overlays && window.DPV2Overlays.openCompareOverlay());
+    const btnTlFix = $("btn-tl-fix");
+    if (btnTlFix) btnTlFix.addEventListener("click", () => {
+      setActiveTab("retouch");
+      const p = Store.primaryPatch();
+      if (p) {
+        p.meta.filters.edgeEnabled = true;
+        p.meta.filters.feather = Math.max(18, p.meta.filters.feather);
+        Store.emit("filters");
+      }
+    });
+    const btnReroll = $("btn-reroll-more");
+    if (btnReroll) btnReroll.addEventListener("click", async () => {
+      const p = Store.primaryPatch();
+      if (!p || !p.target) return;
+      try {
+        const res = await Api.submitStage("reroll", { root: Store.state.root, crop_id: p.id, tid: p.target.tid });
+        if (res && res.pendingIntegration) Store.toast(res.message, "accent");
+        else if (res && res.ok) { Store.toast("추가 후보 생성을 시작했습니다.", "ok"); await Store.refreshAll(true); }
+      } catch (err) {
+        Store.toast(`재생성 실패: ${err.message}`, "err");
+      }
+    });
+    const btnGotoRt = $("btn-goto-retouch");
+    if (btnGotoRt) btnGotoRt.addEventListener("click", () => setActiveTab("retouch"));
 
-    const xformCard = Data.el("div", { className: "insp-card" },
-      Data.el("h3", { className: "insp-title", text: "위치 · 회전 · 배율 정합" }),
-      Data.el("div", { className: "opts-grid" },
-        Data.el("label", { className: "opt-field" }, Data.el("span", { text: "X 이동 (px)" }), dxIn),
-        Data.el("label", { className: "opt-field" }, Data.el("span", { text: "Y 이동 (px)" }), dyIn),
-        Data.el("label", { className: "opt-field" }, Data.el("span", { text: "회전 (°)" }), rotIn),
-        Data.el("label", { className: "opt-field" }, Data.el("span", { text: "배율" }), scaleIn),
-      ),
-      Data.el("button", {
-        type: "button", className: "btn-secondary-sm full-w", text: "변형 보정 서버에 저장",
-        onClick: async () => {
-          try {
-            const seen = (mk && mk.info && mk.info.adjust && mk.info.adjust.at) || "";
-            const sc = Math.max(0.1, Math.min(4, Number(scaleIn.value) || 1));
-            await Api.adjustMask(Store.state.root, {
-              key: p.pickedCand.key, op: "set", seen,
-              dx: Number(dxIn.value) || 0, dy: Number(dyIn.value) || 0,
-              rot: Number(rotIn.value) || 0, sx: sc, sy: sc,
-            });
-            p.meta.rotDeg = Number(rotIn.value) || 0;
-            Store.toast("패치 변형 보정을 저장했습니다.", "ok");
-            await Store.refreshAll(true);
-          } catch (err) {
-            Store.toast(`변형 저장 실패: ${err.message}`, "err");
-          }
-        },
-      }),
-    );
+    // TAB 3 후보정 스마트 필터 바인딩
+    document.querySelectorAll("[data-toggle-filter]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const p = Store.primaryPatch();
+        if (!p) return;
+        const map = { brush: "brushEnabled", edge: "edgeEnabled", transform: "transformEnabled", color: "colorEnabled" };
+        const k = map[btn.dataset.toggleFilter];
+        p.meta.filters[k] = !p.meta.filters[k];
+        Store.emit("filters");
+        renderInspector();
+      });
+    });
 
-    // 3) Forge 연동 AI 후보정 도구 (V2-C 계약: caps.v2_postprocess 게이트 + DPSubmit 위임)
-    const postReady = Api.can("v2_postprocess");
-    const postTools = [
-      ["upscale", "AI 업스케일 (2×)", "채택 패치 해상도·선명도 향상"],
-      ["bg_remove", "배경 제거 (누끼)", "패치 객체만 깔끔하게 분리"],
-      ["layer_split", "레이어 분리", "전경·배경 요소별 후편집 분리"],
-    ];
-    const postCard = Data.el("div", { className: "insp-card" },
-      Data.el("div", { className: "insp-card-head" },
-        Data.el("h3", { className: "insp-title", text: "Forge AI 후보정 도구" }),
-        Data.el("span", { className: "tag-chip", text: postReady ? "사용 가능" : "Phase V2-C 예정" }),
-      ),
-      ...postTools.map(([op, title, desc]) => Data.el("div", { className: "post-tool-card" },
-        Data.el("div", {},
-          Data.el("strong", { text: title }),
-          Data.el("p", { className: "muted-text", text: desc }),
-        ),
-        Data.el("button", {
-          type: "button", className: "mini-btn accent-outline",
-          disabled: !postReady,
-          text: "실행",
-          onClick: async () => {
-            const res = await Api.submitStage("postprocess", { root: Store.state.root, crop_id: p.id, key: p.pickedCand.key, op });
-            if (res && res.pendingIntegration) await Data.showDialogNotice(res.message);
-          },
-        }),
-      )),
-    );
+    document.querySelectorAll("[data-rt-tool]").forEach((b) => {
+      b.addEventListener("click", () => Canvas.setTool(b.dataset.rtTool));
+    });
+    const btnResetMask = $("btn-rt-reset-mask");
+    if (btnResetMask) btnResetMask.addEventListener("click", () => {
+      const ms = Store.state.mask;
+      if (!ms) return;
+      ms.m.set(ms.base);
+      ms.dirty = true;
+      Store.emit("mask");
+      Store.toast("브러시 마스크를 초기 상태로 되돌렸습니다.");
+    });
+    const btnSaveMask = $("btn-rt-save-mask");
+    if (btnSaveMask) btnSaveMask.addEventListener("click", () => Store.saveMaskSession());
 
-    host.append(maskCard, xformCard, postCard);
-  }
+    const rtBrushSz = $("rt-brush-size");
+    if (rtBrushSz) rtBrushSz.addEventListener("input", (e) => {
+      const v = Number(e.target.value);
+      $("rt-brush-size-val").textContent = `${v}px`;
+      if (Store.state.mask) Store.state.mask.brushSize = v;
+      const hud = $("hud-brush-size");
+      if (hud) { hud.value = String(v); $("hud-brush-size-val").textContent = `${v}px`; }
+    });
 
-  // ==================== 우측 하단 고정 실행 독 (D4·D5 준수) ====================
-  function renderRunDock() {
-    const S = Store.state.S;
-    const plan = Store.state.plan;
-    const sumEl = $("run-dock-summary");
-    const applyBtn = $("btn-apply-free");
-    const runBtn = $("btn-run-generate");
+    const bindFilter = (id, key, suffix = "") => {
+      const el = $(id);
+      if (!el) return;
+      el.addEventListener("input", (e) => {
+        const p = Store.primaryPatch();
+        if (!p) return;
+        p.meta.filters[key] = Number(e.target.value);
+        const valEl = $(`${id}-val`);
+        if (valEl) {
+          const n = p.meta.filters[key];
+          valEl.textContent = (key === "bright" || key === "sat") && n > 0 ? `+${n}${suffix}` : `${n}${suffix}`;
+        }
+        if (key === "feather") { const m = $("fm-edge"); if (m) m.textContent = `${p.meta.filters[key]}px`; }
+        if (key === "opacity") { const m = $("fm-color"); if (m) m.textContent = `${p.meta.filters[key]}%`; }
+        Store.emit("filters");
+      });
+    };
+    bindFilter("rt-feather", "feather", "px");
+    bindFilter("rt-fade-top", "fadeTop");
+    bindFilter("rt-fade-bottom", "fadeBottom");
+    bindFilter("rt-fade-left", "fadeLeft");
+    bindFilter("rt-fade-right", "fadeRight");
+    bindFilter("rt-dx", "dx");
+    bindFilter("rt-dy", "dy");
+    bindFilter("rt-scale", "scale");
+    bindFilter("rt-rot", "rot");
+    bindFilter("rt-opacity", "opacity", "%");
+    bindFilter("rt-bright", "bright");
+    bindFilter("rt-sat", "sat");
 
-    const needApply = !!(S && (!S.canvas || (S.crops || []).some((c) => c.layout_status === "changed" || c.layout_status === "removed") || (S.layout_added || []).length));
-    applyBtn.classList.toggle("hidden", !needApply);
+    const btnResetTf = $("btn-rt-reset-tf");
+    if (btnResetTf) btnResetTf.addEventListener("click", () => {
+      const p = Store.primaryPatch();
+      if (!p) return;
+      p.meta.filters.dx = 0; p.meta.filters.dy = 0; p.meta.filters.scale = 100; p.meta.filters.rot = 0;
+      Store.emit("filters");
+      renderInspector();
+    });
+    const btnApplyTf = $("btn-rt-apply-tf");
+    if (btnApplyTf) btnApplyTf.addEventListener("click", async () => {
+      const p = Store.primaryPatch();
+      const cand = Store.currentCandidate(p);
+      if (!p || !cand) return;
+      const f = p.meta.filters;
+      try {
+        await Api.adjustMask(Store.state.root, {
+          key: cand.key, crop_id: p.id, dx: f.dx, dy: f.dy, scale: f.scale / 100, rot: f.rot,
+          feather: f.feather, fade_top: f.fadeTop, fade_bottom: f.fadeBottom, fade_left: f.fadeLeft, fade_right: f.fadeRight,
+        });
+        Store.toast("후보정 변형을 서버에 적용했습니다.", "ok");
+        await Store.refreshAll(true);
+      } catch (err) {
+        Store.toast(`변형 적용 실패: ${err.message}`, "err");
+      }
+    });
 
-    const runNeed = plan && plan.run && typeof plan.run.need === "number" ? plan.run.need : null;
-    const selCount = Store.selectedPatches().length;
-    if (S && S.running) {
-      sumEl.textContent = "현재 서버에서 이미지 생성이 진행 중입니다…";
-      runBtn.disabled = true;
-      runBtn.textContent = "생성 진행 중…";
-    } else if (runNeed !== null) {
-      sumEl.textContent = `선택 ${selCount}개 패치 · 생성 필요 ${runNeed}건` + (needApply ? " · 무료 반영 필요" : "");
-      runBtn.disabled = false;
-      runBtn.textContent = runNeed > 0 ? `생성 승인 (${runNeed}건)` : "선택 패치 생성하기";
-    } else {
-      sumEl.textContent = `선택 ${selCount}개 패치` + (needApply ? " · 변경된 영역 반영 필요" : " · 준비됨");
-      runBtn.disabled = false;
-      runBtn.textContent = "선택 패치 생성하기";
-    }
-  }
+    // 실행 도크 버튼
+    const btnRun = $("btn-run-selected");
+    if (btnRun) btnRun.addEventListener("click", () => runSelectedGeneration(false));
+    const btnApplyFree = $("btn-apply-free");
+    if (btnApplyFree) btnApplyFree.addEventListener("click", async () => {
+      try {
+        const res = await Api.submitStage("apply", { root: Store.state.root });
+        if (res && res.pendingIntegration) Store.toast(res.message, "accent");
+        else if (res && res.ok) { Store.toast("합성 반영을 실행했습니다.", "ok"); await Store.refreshAll(true); }
+      } catch (err) {
+        Store.toast(`합성 적용 실패: ${err.message}`, "err");
+      }
+    });
+    const btnCancel = $("btn-cancel-run");
+    if (btnCancel) btnCancel.addEventListener("click", async () => {
+      try {
+        await Api.drainRun(Store.state.root);
+        Store.toast("진행 중인 생성 중단을 요청했습니다.");
+        await Store.refreshAll(true);
+      } catch (err) {
+        Store.toast(`중단 요청 실패: ${err.message}`, "err");
+      }
+    });
 
-  // ==================== 검색형 모델 가이드 팝오버 ====================
-  function wireModelPopover() {
-    const pop = $("model-popover");
-    const search = $("mp-search");
-    $("btn-close-mp").addEventListener("click", () => pop.classList.add("hidden"));
-    search.addEventListener("input", () => renderModelPopoverList(search.value));
-    document.addEventListener("pointerdown", (e) => {
-      if (!pop.classList.contains("hidden") && !pop.contains(e.target) && !e.target.closest(".model-card-row")) {
+    // 팝오버 바깥 클릭 닫기
+    document.addEventListener("click", (e) => {
+      const pop = $("model-popover");
+      if (pop && !pop.classList.contains("hidden") && !pop.contains(e.target)
+          && !e.target.closest("#btn-model-dropdown") && !e.target.closest("#fb-model-btn")) {
         pop.classList.add("hidden");
       }
     });
-  }
 
-  function openModelPopover(anchorEl, mode) {
-    modelPopoverMode = mode;
-    const pop = $("model-popover");
-    const r = anchorEl.getBoundingClientRect();
-    pop.classList.remove("hidden");
-    const left = Math.max(12, Math.min(window.innerWidth - 386, r.left - 20));
-    const top = Math.max(56, Math.min(window.innerHeight - 440, r.bottom + 6));
-    pop.style.left = `${left}px`;
-    pop.style.top = `${top}px`;
-    $("mp-search").value = "";
-    renderModelPopoverList("");
-    $("mp-search").focus();
-  }
-
-  function renderModelPopoverList(query) {
-    const listHost = $("mp-list");
-    listHost.replaceChildren();
-    const q = String(query || "").trim().toLowerCase();
-    const p = Store.primaryPatch();
-    const currentName = p ? p.effectiveModel : Store.projectPrepare().model;
-
-    const models = Data.modelCatalog().filter((m) => {
-      if (!q) return true;
-      return `${m.label} ${m.name} ${m.badge} ${m.summary} ${(m.strengths || []).join(" ")}`.toLowerCase().includes(q);
-    });
-
-    for (const m of models) {
-      const item = Data.el("button", {
-        type: "button",
-        className: "mp-item" + (m.name === currentName ? " active" : ""),
-        onClick: async () => {
-          $("model-popover").classList.add("hidden");
-          if (modelPopoverMode === "batch") {
-            const sel = Store.selectedPatches();
-            for (const x of sel) x.meta.modelOverride = m.name;
-            await applyBatchPersist(sel, { model: m.name }, `모델(${m.label}) 일괄 변경`);
-          } else if (modelPopoverMode === "project") {
-            await updateModelOption(p, true, { model: m.name, quality: m.default_quality });
-          } else if (p) {
-            await updateModelOption(p, false, { model: m.name, quality: m.default_quality });
-          }
-        },
-      },
-      Data.el("div", { className: "mp-item-top" },
-        Data.el("span", { className: "mp-item-name", text: m.label }),
-        Data.el("span", { className: "tag-chip accent", text: m.badge }),
-      ),
-      Data.el("div", { className: "mp-item-desc", text: m.summary }),
-      Data.el("div", { className: "mp-tags" },
-        Data.el("span", { className: "tag-chip", text: `속도: ${m.speed}` }),
-        Data.el("span", { className: "tag-chip", text: `최대 ${m.max_n}장` }),
-        m.ratios && m.ratios.length ? Data.el("span", { className: "tag-chip warn", text: "비율 맞춤 지원" }) : null,
-      ));
-      listHost.append(item);
-    }
-  }
-
-  // ==================== 이벤트 연결 ====================
-  function switchLeftTab(tab) {
-    Store.state.leftTab = tab;
-    document.querySelectorAll(".left-dock .dock-tab").forEach((b) => b.classList.toggle("active", b.dataset.leftTab === tab));
-    $("left-panel-patches").classList.toggle("hidden", tab !== "patches");
-    $("left-panel-refs").classList.toggle("hidden", tab !== "refs");
-  }
-
-  function switchRightTab(tab) {
-    Store.state.rightTab = tab;
-    document.querySelectorAll(".right-dock .dock-tab").forEach((b) => b.classList.toggle("active", b.dataset.rightTab === tab));
-    $("right-tab-instruct").classList.toggle("hidden", tab !== "instruct");
-    $("right-tab-review").classList.toggle("hidden", tab !== "review");
-    $("right-tab-retouch").classList.toggle("hidden", tab !== "retouch");
-    Store.emit("selection");
-  }
-
-  function wireLeftDock() {
-    document.querySelectorAll(".left-dock .dock-tab").forEach((b) => {
-      b.addEventListener("click", () => switchLeftTab(b.dataset.leftTab));
-    });
-    $("btn-add-patch").addEventListener("click", () => {
-      if (window.DPV2Canvas) window.DPV2Canvas.setTool("rect");
-      Store.toast("캔버스에서 원하는 영역을 드래그해 새 패치를 만드세요.", "ok");
-    });
-    $("btn-add-full-patch").addEventListener("click", async () => {
-      const sz = window.DPV2Canvas ? window.DPV2Canvas.getCanvasSize() : [1024, 1024];
-      try {
-        await Store.addCrop([0, 0, sz[0], sz[1]]);
-        Store.toast("전체 화면 영역 패치를 추가했습니다.", "ok");
-      } catch (err) {
-        Store.toast(`전체 화면 패치 추가 실패: ${err.message}`, "err");
-      }
-    });
-    $("btn-select-all-patches").addEventListener("click", () => Store.selectAllPatches());
-    $("btn-open-sheet-cut").addEventListener("click", () => {
-      if (window.DPV2Overlays) window.DPV2Overlays.openSheetCut();
-    });
-    $("btn-upload-ref").addEventListener("click", () => $("input-upload-ref").click());
-    $("input-upload-ref").addEventListener("change", async (e) => {
-      const files = [...(e.target.files || [])];
-      e.target.value = "";
-      for (const f of files) {
-        try {
-          await Api.uploadSheet(Store.state.root, f, Store.state.R && Store.state.R.rev);
-          Store.toast(`레퍼런스 시트 "${f.name}" 올리기 완료`, "ok");
-        } catch (err) {
-          Store.toast(`${f.name} 올리기 실패: ${err.message}`, "err");
-        }
-      }
-      await Store.refreshAll(true);
-    });
-    $("btn-forge-ref").addEventListener("click", () => {
-      if (!window.DPForgeImport) return;
-      window.DPForgeImport.open({
-        root: Store.state.root,
-        into: "refs",
-        onDone: async () => {
-          Store.toast("Forge 자료를 레퍼런스 보관함에 가져왔습니다.", "ok");
-          await Store.refreshAll(true);
-        },
-      });
-    });
-  }
-
-  function wireRightTabsAndDock() {
-    document.querySelectorAll(".right-dock .dock-tab").forEach((b) => {
-      b.addEventListener("click", () => switchRightTab(b.dataset.rightTab));
-    });
-
-    const handleFreeApply = async () => {
-      const res = await Api.submitStage("apply", { root: Store.state.root });
-      if (res && res.pendingIntegration) {
-        await Data.showDialogNotice(res.message);
-      } else {
-        Store.toast("무료 반영 요청을 보냈습니다.", "ok");
-        await Store.refreshAll(true);
-      }
-    };
-    $("btn-apply-free").addEventListener("click", handleFreeApply);
-    $("btn-canvas-apply-first").addEventListener("click", handleFreeApply);
-
-    $("btn-run-generate").addEventListener("click", async () => {
-      const sel = Store.selectedPatches();
-      const selIds = sel.map((p) => p.id);
-      // D519: 지시가 바뀐 패치만 먼저 저장·자동 작성(상한 8패치 · 동시 1 · 실패 시 중단) 후 DPSubmit 승인 상자로 이동
-      if (Api.can("v2_spec_edit")) {
-        try {
-          for (const p of sel) {
-            if (!p.meta.specLoaded) await Store.loadSpec(p.id, true);
-            if (p.meta.dirtySpec) await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
-          }
-        } catch (err) {
-          Store.toast(`지시문 저장 실패: ${err.message}`, "err");
-          return;
-        }
-      }
-      if (Api.can("v2_forge_prompt")) {
-        const stale = sel.filter((p) => {
-          const m = p.meta;
-          if (!m.aiAuto) return false;
-          const needsBody = !!(m.user_instruction_ko && m.user_instruction_ko.trim()) || ["remove", "vary", "detail"].includes(m.purpose);
-          if (!needsBody) return false;
-          return m.specState === "blocked" || !m.body_en || (m.specInputHash && m.promptInputHash !== m.specInputHash);
-        });
-        if (stale.length) {
-          const assistRes = await runAssistSequence(stale, false);
-          if (!assistRes.ok) return;
-        }
-      }
-      const res = await Api.submitStage("run", {
-        root: Store.state.root,
-        only: selIds.join(","),
-      });
-      if (res && res.pendingIntegration) {
-        await Data.showDialogNotice(res.message);
-      } else if (res && res.ok === false && res.reason !== "cancelled") {
-        Store.toast(res.error || "생성 요청을 완료하지 못했습니다.", "err");
-      } else {
-        await Store.refreshAll(true);
+    Store.subscribe((reason) => {
+      if (reason === "state" || reason === "selection" || reason === "base-image-loaded") {
+        renderPatchList();
+        renderRefVault();
+        renderInspector();
+        renderRunDock();
+      } else if (reason === "prefs") {
+        renderInspector();
       }
     });
   }
 
-  return { init, renderAll, switchLeftTab, switchRightTab };
+  return {
+    setActiveTab,
+    renderPatchList,
+    renderRefVault,
+    renderInspector,
+    renderRunDock,
+    openModelPopover,
+    linkRefToPatches,
+    runAssistForSelection,
+    runSelectedGeneration,
+    bindEvents,
+  };
 })();

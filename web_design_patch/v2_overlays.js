@@ -1,913 +1,1173 @@
-// BMK Design Patch Studio v2 — 프로젝트 홈 · 새 프로젝트 · 시트 오려내기/4점 원근 · 풀스크린 비교기 · 히스토리 · 설정 · 패널 드래그 도킹.
+// BMK Design Patch Studio v2 — 50/50 시트 오리기 & 4점 원근 · 풀스크린 비교 · 히스토리 · 설정/PSD/단축키/프로젝트 홈.
 "use strict";
 
 window.DPV2Overlays = (() => {
   const Data = window.DPV2Data;
   const Api = window.DPV2Api;
   const Store = window.DPV2Store;
+  const Canvas = window.DPV2Canvas;
 
-  function $(id) { return document.getElementById(id); }
+  const $ = (id) => document.getElementById(id);
 
-  function init() {
-    wireNewProjectModal();
-    wireSheetCutOverlay();
-    wireComparerOverlay();
-    wireHistoryDrawer();
-    wireSettingsModal();
-    wireExportModal();
-    wirePanelDragDocking();
-
-    Store.subscribe((reason) => {
-      if (reason === "history") renderHistoryDrawer();
-      if (reason === "prefs") renderSettingsSelections();
-    });
-  }
-
-  // ==================== 1. 프로젝트 홈 & 새 프로젝트 모달 ====================
-  async function mountProjectsHome() {
-    $("projects-view").classList.remove("hidden");
-    $("studio-view").classList.add("hidden");
-    if (window.DPEnv && window.DPEnv.account && window.DPEnv.account.name) {
-      $("home-account").textContent = window.DPEnv.account.name;
-      $("home-account").classList.remove("hidden");
+  // ── 공용 모달 헬퍼 ──
+  function openModal({ title, bodyNodes = [], actions = [] }) {
+    const bd = $("modal-backdrop");
+    if (!bd) return;
+    $("modal-title").textContent = title || "";
+    const body = $("modal-body");
+    body.innerHTML = "";
+    for (const n of bodyNodes) if (n) body.append(n);
+    const foot = $("modal-foot");
+    foot.innerHTML = "";
+    for (const a of actions) {
+      foot.append(Data.el("button", {
+        type: "button",
+        className: a.cls || "btn-secondary",
+        text: a.label,
+        onClick: a.onClick,
+      }));
     }
-    $("btn-home-v1").onclick = () => location.assign(Data.buildSwitchUrl(false));
-    $("btn-home-settings").onclick = openSettings;
-    $("btn-home-new").onclick = openNewProjectModal;
-    $("btn-home-reload").onclick = loadProjectsGrid;
-    $("home-search").oninput = renderProjectsGrid;
-    await loadProjectsGrid();
+    bd.classList.remove("hidden");
   }
 
-  async function loadProjectsGrid() {
-    $("home-status").textContent = "프로젝트를 불러오는 중…";
-    try {
-      const res = await Api.listProjects();
-      Store.state.projects = Array.isArray(res.projects) ? res.projects : [];
-      renderProjectsGrid();
-    } catch (err) {
-      $("home-status").textContent = `불러오기 실패: ${err.message}`;
-    }
+  function closeModal() {
+    const bd = $("modal-backdrop");
+    if (bd) bd.classList.add("hidden");
   }
 
-  function renderProjectsGrid() {
-    const grid = $("home-grid");
-    grid.replaceChildren();
-    const q = ($("home-search").value || "").trim().toLowerCase();
-    const rows = Store.state.projects.filter((r) => !q || String(r.name || "").toLowerCase().includes(q));
-    $("home-status").textContent = rows.length ? `${rows.length}개 프로젝트` : (q ? "검색 결과가 없습니다." : "아직 프로젝트가 없습니다. [+ 새 프로젝트]로 원화를 불러오세요.");
-
-    for (const r of rows) {
-      const thumbUrl = r.thumb_url ? Api.apiUrl(r.thumb_url) : null;
-      const thumbBox = Data.el("div", { className: "proj-card-thumb" },
-        thumbUrl ? Data.el("img", { src: thumbUrl, alt: `${r.name} 미리보기`, loading: "lazy" })
-          : Data.el("span", { text: r.before_import ? "가져오기 전" : "미리보기 없음" }),
-      );
-
-      const openBtn = Data.el("button", {
-        type: "button", className: "btn-primary full-w",
-        disabled: !r.openable,
-        text: r.openable ? "스튜디오 열기" : "열 수 없음",
-        onClick: async () => {
-          openBtn.disabled = true;
-          openBtn.textContent = "여는 중…";
-          try {
-            const res = await Api.openProject(r.id);
-            if (!res.ok || !res.key) throw new Error(res.error || "프로젝트를 열지 못했습니다");
-            const url = new URL(location.href);
-            url.searchParams.set("root", res.key);
-            url.searchParams.set("ui", "v2");
-            location.assign(url.pathname + url.search);
-          } catch (err) {
-            openBtn.disabled = false;
-            openBtn.textContent = "스튜디오 열기";
-            Store.toast(err.message, "err");
-          }
-        },
-      });
-
-      const card = Data.el("article", { className: "proj-card" },
-        thumbBox,
-        Data.el("div", { className: "proj-card-body" },
-          Data.el("h2", { className: "proj-card-title", text: r.name, title: r.name }),
-          Data.el("div", { className: "proj-card-meta" },
-            Data.el("span", { text: `패치 ${r.crops ?? 0}` }),
-            Data.el("span", { text: `★ ${r.stars ?? 0}` }),
-            Data.el("span", { text: `후보 ${r.candidates ?? 0}` }),
-          ),
-          Data.el("p", { className: "muted-text", text: r.openable ? (r.modified ? `수정 ${r.modified}` : "") : (r.error || "오류") }),
-        ),
-        Data.el("div", { className: "proj-card-foot" }, openBtn),
-      );
-      grid.append(card);
-    }
-  }
-
-  let npTargetFile = null;
-  let npRefFiles = [];
-
-  function openNewProjectModal() {
-    npTargetFile = null;
-    npRefFiles = [];
-    $("np-name").value = "";
-    $("np-name-err").textContent = "";
-    $("np-path-input").value = "";
-    $("np-status").textContent = "";
-    $("np-path-wrap").classList.toggle("hidden", !Api.can("path_input"));
-    $("btn-np-forge").classList.toggle("hidden", !Api.can("forge_import"));
-    syncNewProjectUI();
-    $("new-project-modal").classList.remove("hidden");
-    $("np-name").focus();
-  }
-
-  function syncNewProjectUI() {
-    const nameErr = Data.validateProjectName($("np-name").value);
-    $("np-name-err").textContent = $("np-name").value ? nameErr : "";
-    $("np-target-preview").classList.toggle("hidden", !npTargetFile);
-    if (npTargetFile) $("np-target-filename").textContent = npTargetFile.name;
-
-    const listHost = $("np-refs-list");
-    listHost.replaceChildren();
-    npRefFiles.forEach((f, idx) => {
-      listHost.append(Data.el("div", { className: "selected-file-chip" },
-        Data.el("span", { className: "file-chip-name", text: f.name }),
-        Data.el("button", {
-          type: "button", className: "icon-btn-sm", text: "×", title: "제거",
-          onClick: () => { npRefFiles.splice(idx, 1); syncNewProjectUI(); },
-        }),
-      ));
-    });
-
-    const hasSource = !!npTargetFile || !!$("np-path-input").value.trim();
-    $("btn-np-forge").disabled = !!nameErr;
-    $("btn-submit-new-project").disabled = !!nameErr || !hasSource;
-  }
-
-  function wireNewProjectModal() {
-    const close = () => $("new-project-modal").classList.add("hidden");
-    $("btn-close-new-project").addEventListener("click", close);
-    $("btn-cancel-new-project").addEventListener("click", close);
-    $("np-name").addEventListener("input", syncNewProjectUI);
-    $("np-path-input").addEventListener("input", syncNewProjectUI);
-
-    const tDrop = $("np-target-drop");
-    tDrop.addEventListener("click", () => $("np-target-file").click());
-    tDrop.addEventListener("dragover", (e) => { e.preventDefault(); tDrop.classList.add("drag-over"); });
-    tDrop.addEventListener("dragleave", () => tDrop.classList.remove("drag-over"));
-    tDrop.addEventListener("drop", (e) => {
-      e.preventDefault();
-      tDrop.classList.remove("drag-over");
-      const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-      if (file) {
-        npTargetFile = file;
-        if (!$("np-name").value.trim()) $("np-name").value = file.name.replace(/\.[^.]+$/, "").replace(/[^\p{L}\p{N}_.-]+/gu, "_");
-        syncNewProjectUI();
-      }
-    });
-    $("np-target-file").addEventListener("change", (e) => {
-      const file = e.target.files && e.target.files[0];
-      e.target.value = "";
-      if (file) {
-        npTargetFile = file;
-        if (!$("np-name").value.trim()) $("np-name").value = file.name.replace(/\.[^.]+$/, "").replace(/[^\p{L}\p{N}_.-]+/gu, "_");
-        syncNewProjectUI();
-      }
-    });
-    $("btn-np-remove-target").addEventListener("click", () => { npTargetFile = null; syncNewProjectUI(); });
-
-    const rDrop = $("np-refs-drop");
-    rDrop.addEventListener("click", () => $("np-refs-files").click());
-    rDrop.addEventListener("dragover", (e) => { e.preventDefault(); rDrop.classList.add("drag-over"); });
-    rDrop.addEventListener("dragleave", () => rDrop.classList.remove("drag-over"));
-    rDrop.addEventListener("drop", (e) => {
-      e.preventDefault();
-      rDrop.classList.remove("drag-over");
-      for (const f of (e.dataTransfer && e.dataTransfer.files) || []) npRefFiles.push(f);
-      syncNewProjectUI();
-    });
-    $("np-refs-files").addEventListener("change", (e) => {
-      for (const f of (e.target.files || [])) npRefFiles.push(f);
-      e.target.value = "";
-      syncNewProjectUI();
-    });
-
-    $("btn-np-forge").addEventListener("click", () => {
-      const name = $("np-name").value.trim();
-      if (Data.validateProjectName(name) || !window.DPForgeImport) return;
-      window.DPForgeImport.open({
-        into: "target",
-        name,
-        onDone: (res) => finishNewProject(res),
-      });
-    });
-
-    $("btn-submit-new-project").addEventListener("click", async () => {
-      const name = $("np-name").value.trim();
-      if (Data.validateProjectName(name)) return;
-      $("btn-submit-new-project").disabled = true;
-      $("np-status").textContent = "프로젝트를 만드는 중…";
-      try {
-        const res = npTargetFile
-          ? await Api.createProjectFile(name, npTargetFile)
-          : await Api.createProjectPath(name, $("np-path-input").value.trim().replace(/^(["'])(.*)\1$/, "$2"));
-        if (npRefFiles.length && res.key) {
-          $("np-status").textContent = `레퍼런스 시트 ${npRefFiles.length}장 올리는 중…`;
-          for (const rf of npRefFiles) {
-            try { await Api.uploadSheet(res.key, rf, null); } catch (_) {}
-          }
-        }
-        finishNewProject(res);
-      } catch (err) {
-        $("np-status").textContent = err.message;
-        syncNewProjectUI();
-      }
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = (err) => reject(err);
+      img.src = src;
     });
   }
 
-  function finishNewProject(res) {
-    if (!res || !/^[0-9a-f]{12}$/.test(res.key || "")) return Store.toast("프로젝트 생성 결과를 확인하지 못했습니다.", "err");
-    const url = new URL(location.href);
-    url.searchParams.set("root", res.key);
-    url.searchParams.set("ui", "v2");
-    location.assign(url.pathname + url.search);
-  }
-
-  // ==================== 2. 레퍼런스 시트 오려내기 & 4점 원근 (피드백 #4: 1:1/최대화/휠줌/오버스크롤) ====================
-  const shState = {
-    sheet: null,
-    imgW: 1024, imgH: 1024,
-    cam: { z: 1, tx: 0, ty: 0 },
-    mode: "rect", // rect | poly
-    rect: null,
-    poly: [],
-    cutResult: null,
-    cutImg: null,
-    rotate: 0,
-    scale: 1,
-    flipH: false,
-    corners: [[0, 0], [1, 0], [1, 1], [0, 1]],
+  // ==================== 1. 50/50 분할 레퍼런스 시트 오리기 & 4점 원근 (버그 1 영구 해결) ====================
+  const sheetState = {
+    open: false,
+    sheetPath: "",
+    sheetImg: null,
+    cutRect: { x: 0.18, y: 0.16, w: 0.36, h: 0.42 }, // 정규화 0~1
+    quad: [
+      { x: 0.16, y: 0.16 },
+      { x: 0.84, y: 0.16 },
+      { x: 0.84, y: 0.84 },
+      { x: 0.16, y: 0.84 },
+    ],
+    flipX: false,
+    alpha: 0.65,
+    zoom: 1,
+    panX: 0,
+    panY: 0,
+    maximized: false,
     drag: null,
-    perspDrag: null,
+    lastCutReq: null,
   };
 
-  function openSheetCut(sheetPath = null) {
-    $("sheet-overlay").classList.remove("hidden");
-    $("btn-sheet-forge").classList.toggle("hidden", !Api.can("forge_import"));
-    populateSheetSelectors(sheetPath);
-    if (shState.sheet) loadSheetImage(shState.sheet);
-  }
-
-  function populateSheetSelectors(preferPath) {
-    const sel = $("sheet-select");
-    sel.replaceChildren();
-    const sheets = Store.state.sheets || [];
-    for (const s of sheets) {
-      sel.append(Data.el("option", { value: s.path, text: s.name || s.path }));
-    }
-    const target = sheets.find((s) => s.path === preferPath) || sheets[0] || null;
-    shState.sheet = target;
-    if (target) sel.value = target.path;
-    $("sheet-empty").classList.toggle("hidden", !!target);
-
-    const cropSel = $("cut-target-crop");
-    cropSel.replaceChildren();
-    const patches = Store.getPatches();
-    for (const p of patches) cropSel.append(Data.el("option", { value: p.id, text: `${p.index}. ${p.name}` }));
-    const cur = Store.primaryPatch();
-    if (cur) cropSel.value = cur.id;
-  }
-
-  function loadSheetImage(sh) {
-    const url = Api.sheetUrl(Store.state.root, sh, "preview");
-    const img = $("sheet-img");
-    img.onload = () => {
-      shState.imgW = (sh.size && sh.size[0]) || img.naturalWidth || 1024;
-      shState.imgH = (sh.size && sh.size[1]) || img.naturalHeight || 1024;
-      img.style.width = `${shState.imgW}px`;
-      img.style.height = `${shState.imgH}px`;
-      $("sheet-stage").style.width = `${shState.imgW}px`;
-      $("sheet-stage").style.height = `${shState.imgH}px`;
-      $("sheet-svg").setAttribute("viewBox", `0 0 ${shState.imgW} ${shState.imgH}`);
-      fitSheetView();
-    };
-    if (url) img.src = url;
-    shState.rect = null;
-    shState.poly = [];
-    shState.cutResult = null;
-    $("btn-sheet-cut-run").disabled = true;
-    $("btn-cut-save").disabled = true;
-    renderSheetSvg();
+  function defaultQuad() {
+    return [
+      { x: 0.16, y: 0.16 },
+      { x: 0.84, y: 0.16 },
+      { x: 0.84, y: 0.84 },
+      { x: 0.16, y: 0.84 },
+    ];
   }
 
   function applySheetTransform() {
-    $("sheet-stage").style.transform = `translate(${shState.cam.tx}px, ${shState.cam.ty}px) scale(${shState.cam.z})`;
-    $("sheet-zoom-val").textContent = `${Math.round(shState.cam.z * 100)}%`;
-    renderSheetSvg();
+    const tf = $("sheet-source-transform");
+    const val = $("sheet-zoom-val");
+    if (tf) tf.style.transform = `translate(${Math.round(sheetState.panX)}px, ${Math.round(sheetState.panY)}px) scale(${sheetState.zoom})`;
+    if (val) val.textContent = `${Math.round(sheetState.zoom * 100)}%`;
   }
 
-  function fitSheetView() {
-    const wrap = $("sheet-canvas-wrap");
-    if (!wrap.clientWidth || !wrap.clientHeight) return;
-    const pad = 40;
-    shState.cam.z = Math.max(0.15, Math.min(2, Math.min((wrap.clientWidth - pad * 2) / shState.imgW, (wrap.clientHeight - pad * 2) / shState.imgH)));
-    shState.cam.tx = (wrap.clientWidth - shState.imgW * shState.cam.z) / 2;
-    shState.cam.ty = (wrap.clientHeight - shState.imgH * shState.cam.z) / 2;
+  function fitSheetToView() {
+    const img = sheetState.sheetImg;
+    const wrap = $("sheet-source-wrap");
+    if (!img || !wrap) return;
+    const vw = wrap.clientWidth || 560;
+    const vh = wrap.clientHeight || 560;
+    const pad = 44;
+    const s = Math.min((vw - pad) / img.naturalWidth, (vh - pad) / img.naturalHeight, 1.0);
+    sheetState.zoom = Math.max(0.15, s);
+    sheetState.panX = Math.round((vw - img.naturalWidth * sheetState.zoom) / 2);
+    sheetState.panY = Math.round((vh - img.naturalHeight * sheetState.zoom) / 2);
     applySheetTransform();
   }
 
-  function zoomSheet(nextZ, cx = null, cy = null) {
-    const wrap = $("sheet-canvas-wrap");
-    const r = wrap.getBoundingClientRect();
-    const ax = cx !== null ? cx - r.left : r.width / 2;
-    const ay = cy !== null ? cy - r.top : r.height / 2;
-    const sx = (ax - shState.cam.tx) / shState.cam.z;
-    const sy = (ay - shState.cam.ty) / shState.cam.z;
-    shState.cam.z = Math.max(0.15, Math.min(6, nextZ));
-    shState.cam.tx = ax - sx * shState.cam.z;
-    shState.cam.ty = ay - sy * shState.cam.z;
+  function setSheetZoomAt(nextZoom, anchorX = null, anchorY = null) {
+    const img = sheetState.sheetImg;
+    const wrap = $("sheet-source-wrap");
+    if (!img || !wrap) return;
+    const vw = wrap.clientWidth || 560;
+    const vh = wrap.clientHeight || 560;
+    const ax = anchorX ?? vw / 2;
+    const ay = anchorY ?? vh / 2;
+    const clamped = Math.max(0.15, Math.min(6.0, nextZoom));
+    sheetState.panX = ax - ((ax - sheetState.panX) / sheetState.zoom) * clamped;
+    sheetState.panY = ay - ((ay - sheetState.panY) / sheetState.zoom) * clamped;
+    sheetState.zoom = clamped;
     applySheetTransform();
+    drawSheetSource();
   }
 
-  function sheetPt(clientX, clientY) {
-    const r = $("sheet-canvas-wrap").getBoundingClientRect();
-    return [(clientX - r.left - shState.cam.tx) / shState.cam.z, (clientY - r.top - shState.cam.ty) / shState.cam.z];
-  }
-
-  function renderSheetSvg() {
-    const sSvg = $("sheet-svg");
-    sSvg.replaceChildren();
-    const invZ = 1 / Math.max(0.1, shState.cam.z);
-    const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#dfe104";
-    if (shState.rect) {
-      const [x0, y0, x1, y1] = shState.rect;
-      sSvg.append(Data.svgEl("rect", {
-        x: x0, y: y0, width: Math.max(1, x1 - x0), height: Math.max(1, y1 - y0),
-        fill: "none", stroke: accent, "stroke-width": 2.2 * invZ,
-      }));
-    }
-    if (shState.poly.length) {
-      const pts = shState.poly.map((p) => p.join(",")).join(" ");
-      sSvg.append(Data.svgEl("polygon", { points: pts, fill: "rgba(223,225,4,0.12)", stroke: accent, "stroke-width": 2 * invZ }));
-      for (const [px, py] of shState.poly) {
-        sSvg.append(Data.svgEl("circle", { cx: px, cy: py, r: 4.5 * invZ, fill: accent, stroke: "#000", "stroke-width": 1 * invZ }));
-      }
-    }
-  }
-
-  function drawCutPreview() {
-    const cv = $("cut-preview-canvas");
-    const ctx = cv.getContext("2d");
-    const empty = $("cut-preview-empty");
-    if (!shState.cutImg) {
-      cv.width = 1; cv.height = 1;
-      empty.classList.remove("hidden");
-      $("cut-persp-svg").replaceChildren();
+  function drawSheetSource() {
+    const cv = $("sheet-source-canvas");
+    const emptyEl = $("sheet-source-empty");
+    const img = sheetState.sheetImg;
+    if (!cv) return;
+    if (!img) {
+      cv.width = 0; cv.height = 0;
+      if (emptyEl) emptyEl.classList.remove("hidden");
       return;
     }
-    empty.classList.add("hidden");
-    const size = 260;
-    cv.width = size; cv.height = size;
-    ctx.clearRect(0, 0, size, size);
+    if (emptyEl) emptyEl.classList.add("hidden");
+    if (cv.width !== img.naturalWidth || cv.height !== img.naturalHeight) {
+      cv.width = img.naturalWidth;
+      cv.height = img.naturalHeight;
+    }
+    const ctx = cv.getContext("2d");
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.drawImage(img, 0, 0);
+
+    const r = sheetState.cutRect;
+    const rx = r.x * cv.width, ry = r.y * cv.height;
+    const rw = r.w * cv.width, rh = r.h * cv.height;
+
+    ctx.fillStyle = "rgba(0, 0, 0, 0.52)";
+    ctx.fillRect(0, 0, cv.width, ry);
+    ctx.fillRect(0, ry + rh, cv.width, cv.height - (ry + rh));
+    ctx.fillRect(0, ry, rx, rh);
+    ctx.fillRect(rx + rw, ry, cv.width - (rx + rw), rh);
+
+    ctx.strokeStyle = Store.activeAccentHex();
+    ctx.lineWidth = Math.max(2, 2.2 / Math.max(0.2, sheetState.zoom));
+    ctx.strokeRect(rx, ry, rw, rh);
+
+    const szEl = $("sheet-cut-size");
+    if (szEl) {
+      szEl.textContent = `선택 영역: ${Math.round(r.w * img.naturalWidth)} × ${Math.round(r.h * img.naturalHeight)} px`;
+    }
+  }
+
+  function drawTexturedTriangle(ctx, img, u0, v0, u1, v1, u2, v2, x0, y0, x1, y1, x2, y2) {
     ctx.save();
-    ctx.translate(size / 2, size / 2);
-    ctx.rotate((-shState.rotate * Math.PI) / 180);
-    if (shState.flipH) ctx.scale(-1, 1);
-    const fit = Math.min((size - 32) / shState.cutImg.width, (size - 32) / shState.cutImg.height) * shState.scale;
-    const dw = shState.cutImg.width * fit, dh = shState.cutImg.height * fit;
-    ctx.drawImage(shState.cutImg, -dw / 2, -dh / 2, dw, dh);
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.closePath();
+    ctx.clip();
+
+    const denom = u0 * (v1 - v2) + u1 * (v2 - v0) + u2 * (v0 - v1);
+    if (Math.abs(denom) > 0.0001) {
+      const m11 = (x0 * (v1 - v2) + x1 * (v2 - v0) + x2 * (v0 - v1)) / denom;
+      const m12 = (x0 * (u2 - u1) + x1 * (u0 - u2) + x2 * (u1 - u0)) / denom;
+      const m13 = (x0 * (u1 * v2 - u2 * v1) + x1 * (u2 * v0 - u0 * v2) + x2 * (u0 * v1 - u1 * v0)) / denom;
+      const m21 = (y0 * (v1 - v2) + y1 * (v2 - v0) + y2 * (v0 - v1)) / denom;
+      const m22 = (y0 * (u2 - u1) + y1 * (u0 - u2) + y2 * (u1 - u0)) / denom;
+      const m23 = (y0 * (u1 * v2 - u2 * v1) + y1 * (u2 * v0 - u0 * v2) + y2 * (u0 * v1 - u1 * v0)) / denom;
+      ctx.transform(m11, m21, m12, m22, m13, m23);
+      ctx.drawImage(img, 0, 0);
+    }
+    ctx.restore();
+  }
+
+  function drawSheetWarp() {
+    const cv = $("sheet-warp-canvas");
+    const emptyEl = $("sheet-warp-empty");
+    if (!cv) return;
+    const w = 480, h = 480;
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    const ctx = cv.getContext("2d");
+    ctx.fillStyle = "#0c0c10";
+    ctx.fillRect(0, 0, w, h);
+
+    const img = sheetState.sheetImg;
+    if (!img) {
+      if (emptyEl) emptyEl.classList.remove("hidden");
+      return;
+    }
+    if (emptyEl) emptyEl.classList.add("hidden");
+
+    // 1) 배경: 대상 패치 원화 크롭
+    const cropSel = $("sheet-target-crop");
+    const patch = (cropSel && Store.getPatch(cropSel.value)) || Store.primaryPatch() || Store.getPatches()[0];
+    const baseImg = Canvas.getBaseImage();
+    if (patch && baseImg && baseImg.naturalWidth && baseImg.naturalHeight) {
+      const imgW = Canvas.view.imgW || baseImg.naturalWidth;
+      const imgH = Canvas.view.imgH || baseImg.naturalHeight;
+      const [x1, y1, x2, y2] = patch.rect;
+      const sx = (x1 / imgW) * baseImg.naturalWidth;
+      const sy = (y1 / imgH) * baseImg.naturalHeight;
+      const sw = Math.max(8, ((x2 - x1) / imgW) * baseImg.naturalWidth);
+      const sh = Math.max(8, ((y2 - y1) / imgH) * baseImg.naturalHeight);
+      ctx.drawImage(baseImg, sx, sy, sw, sh, 24, 24, w - 48, h - 48);
+    }
+
+    // 2) 오려낸 시트 조각을 4점 사각형에 2삼각형 아핀 투영
+    const r = sheetState.cutRect;
+    const sx = r.x * img.naturalWidth;
+    const sy = r.y * img.naturalHeight;
+    const sw = Math.max(12, r.w * img.naturalWidth);
+    const sh = Math.max(12, r.h * img.naturalHeight);
+
+    const cutC = document.createElement("canvas");
+    cutC.width = 256;
+    cutC.height = 256;
+    const cctx = cutC.getContext("2d");
+    if (sheetState.flipX) {
+      cctx.translate(256, 0);
+      cctx.scale(-1, 1);
+    }
+    cctx.drawImage(img, sx, sy, sw, sh, 0, 0, 256, 256);
+
+    const q = sheetState.quad.map((pt) => ({ x: pt.x * w, y: pt.y * h }));
+    ctx.save();
+    ctx.globalAlpha = sheetState.alpha;
+    drawTexturedTriangle(ctx, cutC, 0, 0, 256, 0, 256, 256, q[0].x, q[0].y, q[1].x, q[1].y, q[2].x, q[2].y);
+    drawTexturedTriangle(ctx, cutC, 0, 0, 256, 256, 0, 256, q[0].x, q[0].y, q[2].x, q[2].y, q[3].x, q[3].y);
     ctx.restore();
 
-    // 4점 원근 꼭짓점 핸들 오버레이
-    const pSvg = $("cut-persp-svg");
-    pSvg.replaceChildren();
-    pSvg.setAttribute("viewBox", "0 0 100 100");
-    const pts = shState.corners.map(([u, v]) => [15 + u * 70, 15 + v * 70]);
-    pSvg.append(Data.svgEl("polygon", {
-      points: pts.map((p) => p.join(",")).join(" "),
-      fill: "none", stroke: "#dfe104", "stroke-width": "1.2", "stroke-dasharray": "3 2",
-    }));
-    pts.forEach(([px, py], i) => {
-      pSvg.append(Data.svgEl("circle", {
-        cx: px, cy: py, r: 4, fill: "#dfe104", stroke: "#09090b", "stroke-width": "1.2",
-        style: "cursor:move", "data-persp-idx": i,
-      }));
+    // 3) 4점 와이어프레임 & 드래그 꼭짓점 핸들 (1~4)
+    const accent = Store.activeAccentHex();
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(q[0].x, q[0].y);
+    ctx.lineTo(q[1].x, q[1].y);
+    ctx.lineTo(q[2].x, q[2].y);
+    ctx.lineTo(q[3].x, q[3].y);
+    ctx.closePath();
+    ctx.stroke();
+
+    q.forEach((pt, idx) => {
+      ctx.fillStyle = accent;
+      ctx.strokeStyle = "#09090b";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#09090b";
+      ctx.font = "bold 10px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(idx + 1), pt.x, pt.y + 0.5);
     });
-    $("cut-size-readout").textContent = `${Math.round(shState.cutImg.width * shState.scale)}×${Math.round(shState.cutImg.height * shState.scale)}px`;
   }
 
-  function wireSheetCutOverlay() {
-    $("btn-close-sheet").addEventListener("click", () => $("sheet-overlay").classList.add("hidden"));
-    $("sheet-select").addEventListener("change", (e) => {
-      const sh = (Store.state.sheets || []).find((s) => s.path === e.target.value);
-      if (sh) { shState.sheet = sh; loadSheetImage(sh); }
-    });
-    $("btn-sheet-mode-rect").addEventListener("click", () => {
-      shState.mode = "rect"; shState.poly = [];
-      $("btn-sheet-mode-rect").classList.add("on"); $("btn-sheet-mode-poly").classList.remove("on");
-      renderSheetSvg();
-    });
-    $("btn-sheet-mode-poly").addEventListener("click", () => {
-      shState.mode = "poly"; shState.rect = null;
-      $("btn-sheet-mode-poly").classList.add("on"); $("btn-sheet-mode-rect").classList.remove("on");
-      renderSheetSvg();
-    });
-    $("btn-sheet-zoom-out").addEventListener("click", () => zoomSheet(shState.cam.z / 1.25));
-    $("btn-sheet-zoom-in").addEventListener("click", () => zoomSheet(shState.cam.z * 1.25));
-    $("btn-sheet-zoom-100").addEventListener("click", () => zoomSheet(1));
-    $("btn-sheet-zoom-fit").addEventListener("click", fitSheetView);
-    $("btn-sheet-maximize").addEventListener("click", () => {
-      const body = $("sheet-body");
-      const max = body.classList.toggle("maximized");
-      $("btn-sheet-maximize").classList.toggle("on", max);
-      setTimeout(fitSheetView, 30);
-    });
-    $("btn-sheet-upload").addEventListener("click", () => $("input-sheet-upload").click());
-    $("input-sheet-upload").addEventListener("change", async (e) => {
-      const file = e.target.files && e.target.files[0];
-      e.target.value = "";
-      if (!file) return;
-      try {
-        await Api.uploadSheet(Store.state.root, file, Store.state.R && Store.state.R.rev);
-        await Store.loadRefs(true);
-        populateSheetSelectors();
-        if (shState.sheet) loadSheetImage(shState.sheet);
-        Store.toast(`시트 "${file.name}" 올리기 완료`, "ok");
-      } catch (err) {
-        Store.toast(err.message, "err");
+  async function loadSelectedSheet(sheetPath) {
+    const sheets = Store.state.sheets || [];
+    const sh = sheets.find((s) => s.path === sheetPath) || sheets[0] || null;
+    if (!sh) {
+      sheetState.sheetPath = "";
+      sheetState.sheetImg = null;
+      drawSheetSource();
+      drawSheetWarp();
+      return;
+    }
+    sheetState.sheetPath = sh.path;
+    const sel = $("sheet-select");
+    if (sel) sel.value = sh.path;
+    try {
+      const url = Api.sheetUrl(Store.state.root, sh, "preview");
+      sheetState.sheetImg = await loadImage(url);
+      fitSheetToView();
+      drawSheetSource();
+      drawSheetWarp();
+    } catch (err) {
+      Store.toast(`시트 이미지를 불러오지 못했습니다: ${err.message}`, "err");
+    }
+  }
+
+  async function openSheetOverlay(preferredPath = "") {
+    const ov = $("sheet-overlay");
+    if (!ov) return;
+    sheetState.open = true;
+    sheetState.maximized = false;
+    $("sheet-split-body").classList.remove("maximized");
+    $("btn-sheet-max").textContent = "⤢ 최대화";
+    ov.classList.remove("hidden");
+
+    await Store.loadRefs(true);
+
+    // 시트 드롭다운 채우기
+    const shSel = $("sheet-select");
+    if (shSel) {
+      shSel.innerHTML = "";
+      if (!Store.state.sheets.length) {
+        shSel.append(Data.el("option", { value: "", text: "(시트 없음 · 업로드 필요)" }));
+      } else {
+        for (const s of Store.state.sheets) {
+          shSel.append(Data.el("option", { value: s.path, text: s.name || s.path }));
+        }
       }
+    }
+
+    // 대상 패치 드롭다운 채우기
+    const cropSel = $("sheet-target-crop");
+    if (cropSel) {
+      cropSel.innerHTML = "";
+      const patches = Store.getPatches();
+      const prim = Store.primaryPatch();
+      for (const p of patches) {
+        const opt = Data.el("option", { value: p.id, text: `${p.index}. ${p.name}` });
+        if (prim && prim.id === p.id) opt.selected = true;
+        cropSel.append(opt);
+      }
+    }
+
+    await loadSelectedSheet(preferredPath || sheetState.sheetPath);
+    requestAnimationFrame(() => {
+      fitSheetToView();
+      drawSheetSource();
+      drawSheetWarp();
     });
-    $("btn-sheet-forge").addEventListener("click", () => {
-      if (!window.DPForgeImport) return;
-      window.DPForgeImport.open({
-        root: Store.state.root, into: "refs",
-        onDone: async () => { await Store.loadRefs(true); populateSheetSelectors(); },
+  }
+
+  function closeSheetOverlay() {
+    sheetState.open = false;
+    const ov = $("sheet-overlay");
+    if (ov) ov.classList.add("hidden");
+  }
+
+  async function saveSheetCut(attachToCrop) {
+    const img = sheetState.sheetImg;
+    if (!img || !sheetState.sheetPath) {
+      Store.toast("먼저 시트 이미지를 업로드해 주세요.");
+      return;
+    }
+    const r = sheetState.cutRect;
+    const rectPx = [
+      Math.round(r.x * img.naturalWidth),
+      Math.round(r.y * img.naturalHeight),
+      Math.round((r.x + r.w) * img.naturalWidth),
+      Math.round((r.y + r.h) * img.naturalHeight),
+    ];
+    const cropSel = $("sheet-target-crop");
+    const roleSel = $("sheet-role-select");
+    const cropId = attachToCrop && cropSel ? cropSel.value : "";
+    const role = roleSel ? roleSel.value : "main";
+
+    try {
+      const cutRes = await Api.cutRef(Store.state.root, {
+        sheet: sheetState.sheetPath,
+        rect: rectPx,
+        quad: sheetState.quad,
+        flip_x: sheetState.flipX,
       });
-    });
-
-    // 시트 휠 줌 & 오버스크롤 패닝 + 영역 선택
-    const wrap = $("sheet-canvas-wrap");
-    wrap.addEventListener("wheel", (e) => {
-      e.preventDefault();
-      zoomSheet(shState.cam.z * Math.exp(-e.deltaY * 0.0014), e.clientX, e.clientY);
-    }, { passive: false });
-
-    wrap.addEventListener("pointerdown", (e) => {
-      if (!shState.sheet) return;
-      if (e.button === 1 || e.altKey || e.shiftKey) {
-        e.preventDefault();
-        shState.drag = { kind: "pan", sx: e.clientX, sy: e.clientY, tx0: shState.cam.tx, ty0: shState.cam.ty, pid: e.pointerId };
-        wrap.setPointerCapture(e.pointerId);
-        return;
-      }
-      if (e.button !== 0) return;
-      const pt = sheetPt(e.clientX, e.clientY);
-      const clamped = [Math.max(0, Math.min(shState.imgW, pt[0])), Math.max(0, Math.min(shState.imgH, pt[1]))];
-      if (shState.mode === "poly") {
-        shState.poly.push(clamped.map((v) => Math.round(v)));
-        $("btn-sheet-cut-run").disabled = shState.poly.length < 3;
-        renderSheetSvg();
-        return;
-      }
-      shState.drag = { kind: "rect", start: clamped, pid: e.pointerId };
-      wrap.setPointerCapture(e.pointerId);
-    });
-
-    wrap.addEventListener("pointermove", (e) => {
-      if (!shState.drag || shState.drag.pid !== e.pointerId) return;
-      if (shState.drag.kind === "pan") {
-        shState.cam.tx = shState.drag.tx0 + (e.clientX - shState.drag.sx);
-        shState.cam.ty = shState.drag.ty0 + (e.clientY - shState.drag.sy);
-        applySheetTransform();
-        return;
-      }
-      const pt = sheetPt(e.clientX, e.clientY);
-      const x0 = Math.max(0, Math.min(shState.drag.start[0], pt[0]));
-      const y0 = Math.max(0, Math.min(shState.drag.start[1], pt[1]));
-      const x1 = Math.min(shState.imgW, Math.max(shState.drag.start[0], pt[0]));
-      const y1 = Math.min(shState.imgH, Math.max(shState.drag.start[1], pt[1]));
-      shState.rect = [Math.round(x0), Math.round(y0), Math.round(x1), Math.round(y1)];
-      $("btn-sheet-cut-run").disabled = (x1 - x0 < 16 || y1 - y0 < 16);
-      renderSheetSvg();
-    });
-    wrap.addEventListener("pointerup", () => { shState.drag = null; });
-
-    // 오려내기 실행 (/refs/cut)
-    $("btn-sheet-cut-run").addEventListener("click", async () => {
-      if (!shState.sheet) return;
-      try {
-        let body;
-        if (shState.mode === "poly" && shState.poly.length >= 3) {
-          const xs = shState.poly.map((p) => p[0]), ys = shState.poly.map((p) => p[1]);
-          body = { sheet: shState.sheet.path, method: "poly", rect: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], poly: shState.poly };
-        } else if (shState.rect) {
-          body = { sheet: shState.sheet.path, method: "rect", rect: shState.rect };
-        } else return;
-        const res = await Api.cutRef(Store.state.root, body);
-        shState.cutResult = Object.assign({ req: res.req }, res.result || res);
-        const img = new Image();
-        img.onload = () => {
-          shState.cutImg = img;
-          shState.corners = [[0, 0], [1, 0], [1, 1], [0, 1]];
-          $("btn-cut-save").disabled = false;
-          drawCutPreview();
-        };
-        img.src = Api.apiUrl(shState.cutResult.preview_url);
-        Store.toast("영역을 오려냈습니다. 각도·원근을 조정한 뒤 저장하세요.", "ok");
-      } catch (err) {
-        Store.toast(`오려내기 실패: ${err.message}`, "err");
-      }
-    });
-
-    // 4점 원근 핸들 드래그
-    const pSvg = $("cut-persp-svg");
-    pSvg.addEventListener("pointerdown", (e) => {
-      const idx = e.target && e.target.getAttribute ? e.target.getAttribute("data-persp-idx") : null;
-      if (idx === null) return;
-      e.preventDefault();
-      shState.perspDrag = { idx: Number(idx), pid: e.pointerId };
-      pSvg.setPointerCapture(e.pointerId);
-    });
-    pSvg.addEventListener("pointermove", (e) => {
-      if (!shState.perspDrag || shState.perspDrag.pid !== e.pointerId) return;
-      const r = pSvg.getBoundingClientRect();
-      const u = ((e.clientX - r.left) / r.width * 100 - 15) / 70;
-      const v = ((e.clientY - r.top) / r.height * 100 - 15) / 70;
-      shState.corners[shState.perspDrag.idx] = [
-        Math.round(Math.max(-0.5, Math.min(1.5, u)) * 1000) / 1000,
-        Math.round(Math.max(-0.5, Math.min(1.5, v)) * 1000) / 1000,
-      ];
-      drawCutPreview();
-    });
-    pSvg.addEventListener("pointerup", () => { shState.perspDrag = null; });
-
-    $("btn-persp-reset").addEventListener("click", () => {
-      shState.corners = [[0, 0], [1, 0], [1, 1], [0, 1]];
-      drawCutPreview();
-    });
-    $("cut-rotate").addEventListener("input", (e) => {
-      shState.rotate = Number(e.target.value);
-      $("cut-rotate-val").textContent = `${shState.rotate}°`;
-      drawCutPreview();
-    });
-    $("cut-scale").addEventListener("input", (e) => {
-      shState.scale = Number(e.target.value) / 100;
-      $("cut-scale-val").textContent = `${e.target.value}%`;
-      drawCutPreview();
-    });
-    $("btn-cut-flip").addEventListener("click", () => {
-      shState.flipH = !shState.flipH;
-      $("btn-cut-flip").classList.toggle("on", shState.flipH);
-      drawCutPreview();
-    });
-    $("cut-role").addEventListener("change", (e) => {
-      $("cut-desc-wrap").classList.toggle("hidden", e.target.value !== "aux");
-    });
-
-    $("btn-cut-save").addEventListener("click", async () => {
-      if (!shState.cutResult || !shState.cutResult.req) return;
-      const cropId = $("cut-target-crop").value;
-      const role = $("cut-role").value;
-      const desc = $("cut-desc").value.trim();
-      const identity = shState.corners.every((pt, i) => pt[0] === [[0, 0], [1, 0], [1, 1], [0, 1]][i][0] && pt[1] === [[0, 0], [1, 0], [1, 1], [0, 1]][i][1]);
-      const transform = { rotate: shState.rotate, flip_h: shState.flipH, scale: shState.scale };
-      if (!identity) transform.corners = shState.corners;
-      const body = { req: shState.cutResult.req, crop_id: cropId, role, transform };
-      if (role === "aux") body.desc = desc || "보조1";
-      try {
-        const rev = Store.state.R ? Store.state.R.rev : null;
-        const r = await Api.saveRef(Store.state.root, rev, body);
-        Store.toast(`레퍼런스 저장 완료: ${r.file || "연결됨"}`, "ok");
-        await Store.refreshAll(true);
-        $("sheet-overlay").classList.add("hidden");
-      } catch (err) {
-        Store.toast(`레퍼런스 저장 실패: ${err.message}`, "err");
-      }
-    });
+      await Api.saveRef(Store.state.root, Store.state.R?.rev ?? null, {
+        req: cutRes && cutRes.req ? cutRes.req : undefined,
+        sheet: sheetState.sheetPath,
+        rect: rectPx,
+        quad: sheetState.quad,
+        flip_x: sheetState.flipX,
+        crop_id: cropId || undefined,
+        role,
+      });
+      closeSheetOverlay();
+      Store.toast(cropId ? "시트 컷을 저장하고 선택한 영역에 연결했습니다." : "시트 컷을 레퍼런스 보관함에 저장했습니다.", "ok");
+      await Store.refreshAll(true);
+    } catch (err) {
+      Store.toast(`시트 컷 저장 실패: ${err.message}`, "err");
+    }
   }
 
-  // ==================== 3. 풀스크린 후보 Before/After 비교기 (피드백 #7: 넓은 46px + 박스 전체 드래그) ====================
-  const coState = { open: false, ratio: 0.5, blinkBefore: false, zoom: 1, dragging: false };
+  // ==================== 2. 풀스크린 정밀 비교 (46px 확장 디바이더) ====================
+  const cmpState = {
+    open: false,
+    candKey: "",
+    split: 0.5,
+    blinkOrig: false,
+    zoom: 1,
+    dragging: false,
+  };
 
-  function openComparer() {
-    const p = Store.primaryPatch();
-    if (!p || !p.candidates.length) return Store.toast("비교할 후보가 없습니다.", "warn");
-    coState.open = true;
-    coState.ratio = 0.5;
-    coState.blinkBefore = false;
-    coState.zoom = 1;
+  async function openCompareOverlay(candKey = "") {
+    const patch = Store.primaryPatch();
+    if (!patch || !patch.candidates.length) {
+      Store.toast("비교할 생성 후보가 아직 없습니다.");
+      return;
+    }
+    const cur = Store.currentCandidate(patch);
+    cmpState.open = true;
+    cmpState.candKey = candKey || (cur && cur.key) || patch.candidates[0].key;
+    cmpState.split = 0.5;
+    cmpState.blinkOrig = false;
+    cmpState.zoom = 1;
     $("compare-overlay").classList.remove("hidden");
-    renderComparer();
+    await renderCompareOverlay();
   }
 
-  function closeComparer() {
-    coState.open = false;
+  function closeCompareOverlay() {
+    cmpState.open = false;
     $("compare-overlay").classList.add("hidden");
   }
 
-  function renderComparer() {
-    if (!coState.open) return;
-    const p = Store.primaryPatch();
-    if (!p) return closeComparer();
-    const cand = Store.currentCandidate(p);
-    if (!cand) return closeComparer();
-
-    $("co-title").textContent = `${p.name} — 후보 c${String(cand.n).padStart(2, "0")}`;
-    $("co-badge").textContent = cand.picked ? "★ 채택됨" : (cand.rejected ? "제외됨" : (cand.variant || ""));
-    $("btn-co-star").textContent = cand.picked ? "★ 채택 해제 (Space)" : "★ 이 후보 채택 (Space)";
-    $("btn-co-reject").textContent = cand.rejected ? "제외 해제 (X)" : "제외 (X)";
-    $("btn-co-blink").classList.toggle("on", coState.blinkBefore);
-    $("co-zoom-val").textContent = `${Math.round(coState.zoom * 100)}%`;
-
-    const beforeUrl = p.target && p.target.before_url ? Api.apiUrl(p.target.before_url) : "";
-    const afterUrl = (cand.big_url || cand.thumb_url) ? Api.apiUrl(cand.big_url || cand.thumb_url) : "";
-    if (beforeUrl) $("co-img-before").src = beforeUrl;
-    if (afterUrl) $("co-img-after").src = afterUrl;
-
-    const box = $("co-compare-box");
-    box.style.transform = `scale(${coState.zoom})`;
-    updateComparerSplit();
-
-    const rail = $("co-rail");
-    rail.replaceChildren();
-    p.candidates.forEach((c, idx) => {
-      const url = c.thumb_url ? Api.apiUrl(c.thumb_url) : "";
-      rail.append(Data.el("button", {
-        type: "button",
-        className: "co-rail-item" + (c.key === cand.key ? " active" : ""),
-        title: `후보 ${idx + 1} (${c.picked ? "★" : ""})`,
-        onClick: () => { Store.selectCandidate(p.target.key, c.key); renderComparer(); },
-      },
-      url ? Data.el("img", { src: url, alt: `c${c.n}` }) : null,
-      Data.el("span", { className: "co-rail-idx", text: `${idx + 1}${c.picked ? " ★" : ""}` })));
-    });
-  }
-
-  function updateComparerSplit() {
-    const pct = coState.blinkBefore ? 100 : Math.round(coState.ratio * 1000) / 10;
-    $("co-before-clip").style.clipPath = `inset(0 ${100 - pct}% 0 0)`;
-    $("co-divider").style.left = `${pct}%`;
-    $("co-divider").classList.toggle("hidden", coState.blinkBefore);
-  }
-
-  function wireComparerOverlay() {
-    $("btn-close-compare").addEventListener("click", closeComparer);
-    $("btn-co-blink").addEventListener("click", () => {
-      coState.blinkBefore = !coState.blinkBefore;
-      renderComparer();
-    });
-    $("btn-co-zoom-fit").addEventListener("click", () => { coState.zoom = 1; renderComparer(); });
-    $("btn-co-zoom-100").addEventListener("click", () => { coState.zoom = 1.5; renderComparer(); });
-
-    const box = $("co-compare-box");
-    const updateFromClientX = (clientX) => {
-      const r = box.getBoundingClientRect();
-      coState.blinkBefore = false;
-      coState.ratio = Math.max(0.01, Math.min(0.99, (clientX - r.left) / Math.max(1, r.width)));
-      updateComparerSplit();
-    };
-    box.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
-      coState.dragging = true;
-      box.setPointerCapture(e.pointerId);
-      updateFromClientX(e.clientX);
-    });
-    box.addEventListener("pointermove", (e) => {
-      if (!coState.dragging) return;
-      updateFromClientX(e.clientX);
-    });
-    box.addEventListener("pointerup", () => { coState.dragging = false; });
-
-    $("co-stage").addEventListener("wheel", (e) => {
-      e.preventDefault();
-      coState.zoom = Math.max(0.5, Math.min(4, coState.zoom * Math.exp(-e.deltaY * 0.0012)));
-      renderComparer();
-    }, { passive: false });
-
-    $("btn-co-star").addEventListener("click", async () => {
-      const p = Store.primaryPatch();
-      const cand = Store.currentCandidate(p);
-      if (!p || !cand) return;
-      await Api.pickCandidate(Store.state.root, { crop_id: p.id, tid: p.target.tid, key: cand.key, mode: cand.picked ? "remove" : "set" });
-      await Store.refreshAll(true);
-      renderComparer();
-    });
-    $("btn-co-reject").addEventListener("click", async () => {
-      const p = Store.primaryPatch();
-      const cand = Store.currentCandidate(p);
-      if (!cand) return;
-      await Api.rejectCandidate(Store.state.root, cand.key, !cand.rejected);
-      await Store.refreshAll(true);
-      renderComparer();
-    });
-  }
-
-  function handleComparerKey(e) {
-    if (!coState.open) return false;
-    if (e.key === "Escape") { closeComparer(); return true; }
-    if (e.key === "Tab") { e.preventDefault(); coState.blinkBefore = !coState.blinkBefore; renderComparer(); return true; }
-    if (e.code === "Space") { e.preventDefault(); $("btn-co-star").click(); return true; }
-    if (e.code === "KeyX") { e.preventDefault(); $("btn-co-reject").click(); return true; }
-    if (/^[1-9]$/.test(e.key)) {
-      const p = Store.primaryPatch();
-      const idx = Number(e.key) - 1;
-      if (p && p.candidates[idx]) {
-        Store.selectCandidate(p.target.key, p.candidates[idx].key);
-        renderComparer();
-        return true;
-      }
+  function updateCompareDivider() {
+    const pct = cmpState.blinkOrig ? 100 : Math.round(cmpState.split * 1000) / 10;
+    const clip = $("co-before-clip");
+    const div = $("co-divider");
+    if (clip) clip.style.clipPath = `inset(0 ${100 - pct}% 0 0)`;
+    if (div) {
+      div.style.left = `${pct}%`;
+      div.classList.toggle("hidden", cmpState.blinkOrig);
     }
-    return false;
   }
 
-  // ==================== 4. 포토샵식 히스토리 드로어 (피드백 #6) ====================
+  async function renderCompareOverlay() {
+    const patch = Store.primaryPatch();
+    if (!patch || !cmpState.open) return;
+    const cand = patch.candidates.find((c) => c.key === cmpState.candKey) || patch.candidates[0];
+    if (!cand) return;
+    cmpState.candKey = cand.key;
+
+    $("co-title").textContent = `${patch.name} — 후보 #${cand.n || 1} 정밀 비교`;
+    $("co-label-after").textContent = `후보 #${cand.n || 1} (${cand.variant || "V1"})`;
+    $("co-zoom-reset").textContent = `${Math.round(cmpState.zoom * 100)}%`;
+
+    const beforeRel = (patch.target && patch.target.before_url) || (Store.state.S && Store.state.S.canvas && Store.state.S.canvas.base_url);
+    const afterRel = cand.big_url || cand.pick_url || cand.thumb_url;
+    const boxSize = Math.min(720, window.innerHeight - 160, window.innerWidth - 220);
+
+    try {
+      const [bImg, aImg] = await Promise.all([
+        loadImage(Api.apiUrl(beforeRel)),
+        loadImage(Api.apiUrl(afterRel)),
+      ]);
+      const aspect = (aImg.naturalWidth || 1) / Math.max(1, aImg.naturalHeight || 1);
+      const cw = aspect >= 1 ? boxSize : Math.round(boxSize * aspect);
+      const ch = aspect >= 1 ? Math.round(boxSize / aspect) : boxSize;
+
+      const cBefore = $("co-canvas-before"), cAfter = $("co-canvas-after");
+      cBefore.width = cw; cBefore.height = ch;
+      cAfter.width = cw; cAfter.height = ch;
+      cBefore.getContext("2d").drawImage(bImg, 0, 0, cw, ch);
+      cAfter.getContext("2d").drawImage(cmpState.blinkOrig ? bImg : aImg, 0, 0, cw, ch);
+
+      const cbox = $("co-compare-box");
+      cbox.style.width = `${cw}px`;
+      cbox.style.height = `${ch}px`;
+      cbox.style.transform = `scale(${cmpState.zoom})`;
+      updateCompareDivider();
+    } catch (_) {}
+
+    // 우측 후보 썸네일 레일
+    const rail = $("co-rail");
+    if (rail) {
+      rail.innerHTML = "";
+      patch.candidates.forEach((c, idx) => {
+        const picked = !!(patch.pickedCand && patch.pickedCand.key === c.key);
+        const thumb = Api.apiUrl(c.thumb_url || c.big_url || "");
+        rail.append(Data.el("button", {
+          type: "button",
+          className: "co-rail-item" + (c.key === cand.key ? " on" : ""),
+          onClick: () => { cmpState.candKey = c.key; renderCompareOverlay(); },
+        },
+          thumb ? Data.el("img", { src: thumb, alt: "" }) : null,
+          Data.el("span", { text: `${idx + 1}. ${picked ? "★ " : ""}${c.variant || `후보 ${idx + 1}`}` }),
+        ));
+      });
+    }
+  }
+
+  // ==================== 3. 히스토리 드로어 ====================
+  function renderHistoryDrawer() {
+    const list = $("history-list");
+    if (!list) return;
+    list.innerHTML = "";
+    const hist = Store.state.history;
+    if (!hist.length) {
+      list.append(Data.el("li", { className: "vault-empty", text: "아직 기록된 편집 이력이 없습니다." }));
+      return;
+    }
+    hist.forEach((h, idx) => {
+      const cls = "history-item" + (idx === Store.state.histIndex ? " current" : idx > Store.state.histIndex ? " future" : "");
+      list.append(Data.el("li", {
+        className: cls,
+        onClick: () => Store.jumpHistory(idx),
+      },
+        Data.el("span", { className: "history-step-num", text: `#${idx + 1}` }),
+        Data.el("span", { className: "history-label", text: h.label }),
+        Data.el("span", { className: "history-time", text: h.time }),
+      ));
+    });
+  }
+
   function toggleHistoryDrawer() {
-    const d = $("history-drawer");
-    d.classList.toggle("hidden");
-    $("btn-history").classList.toggle("on", !d.classList.contains("hidden"));
+    const dr = $("history-drawer");
+    if (!dr) return;
+    dr.classList.toggle("hidden");
+    const btn = $("btn-history-panel");
+    if (btn) btn.classList.toggle("on", !dr.classList.contains("hidden"));
     renderHistoryDrawer();
   }
 
-  function renderHistoryDrawer() {
-    const list = $("history-list");
-    list.replaceChildren();
-    if (!Store.state.history.length) {
-      list.append(Data.el("p", { className: "muted-text", text: "아직 기록된 편집 작업이 없습니다." }));
-      return;
-    }
-    Store.state.history.forEach((h, idx) => {
-      const cls = ["hist-item"];
-      if (idx === Store.state.histIndex) cls.push("current");
-      else if (idx > Store.state.histIndex) cls.push("future");
-      list.append(Data.el("button", {
-        type: "button", className: cls.join(" "),
-        onClick: () => Store.jumpHistory(idx),
-      },
-      Data.el("span", { text: `${idx + 1}. ${h.label}` }),
-      Data.el("span", { className: "hist-time", text: h.time })));
-    });
-  }
+  // ==================== 4. 환경설정 모달 (6테마 × 7포인트컬러 + UI 크기 + 4배치 + 바깥어둡게) ====================
+  function openSettingsModal() {
+    const body = [];
+    const curMode = Store.activeTheme().mode;
 
-  function wireHistoryDrawer() {
-    $("btn-history").addEventListener("click", toggleHistoryDrawer);
-    $("btn-close-history").addEventListener("click", toggleHistoryDrawer);
-    $("btn-hist-undo").addEventListener("click", () => Store.undoHistory());
-    $("btn-hist-redo").addEventListener("click", () => Store.redoHistory());
-  }
-
-  // ==================== 5. 작업공간 · Forge 6종 테마 · UI 스케일 · 배치 프리셋 (피드백 #1, #2, #5) ====================
-  function openSettings() {
-    renderSettingsSelections();
-    $("settings-modal").classList.remove("hidden");
-  }
-
-  function renderSettingsSelections() {
-    const tGrid = $("settings-theme-grid");
-    tGrid.replaceChildren();
+    // 1. 6종 배경 테마
+    const themeSec = Data.el("div", { className: "settings-section" },
+      Data.el("h4", {}, "테마 ", Data.el("small", { style: "font-weight:400;color:var(--dim);", text: "Forge 6종 호환 (다크 3 · 라이트 3)" })),
+    );
+    const themeGrid = Data.el("div", { className: "theme-grid-6" });
     for (const t of Data.THEMES) {
-      tGrid.append(Data.el("button", {
+      const btn = Data.el("button", {
         type: "button",
-        className: "theme-card" + (Store.state.prefs.themeId === t.id ? " active" : ""),
-        onClick: () => Store.savePrefs({ themeId: t.id }),
+        className: "theme-card-btn" + (Store.state.prefs.themeId === t.id ? " on" : ""),
+        onClick: () => { Store.savePrefs({ themeId: t.id }); openSettingsModal(); },
       },
-      Data.el("div", { className: "theme-swatch-bar" },
-        Data.el("span", { style: `background:${t.vars["--bg"]}` }),
-        Data.el("span", { style: `background:${t.vars["--panel"]}` }),
-        Data.el("span", { style: `background:${t.vars["--panel3"]}` }),
-      ),
-      Data.el("span", { className: "theme-card-name", text: `${t.name} (${t.mode === "dark" ? "다크" : "라이트"})` }),
-      Data.el("span", { className: "theme-card-desc", text: t.desc })));
+        Data.el("div", {
+          className: "theme-swatch",
+          style: `background:${t.vars["--bg"]};border-color:${t.vars["--line"]};color:${t.vars["--text"]};`,
+        },
+          Data.el("span", { text: "Aa" }),
+          Data.el("span", { style: `margin-left:auto;width:10px;height:10px;background:${t.vars["--panel2"]};border:1px solid ${t.vars["--line2"]};` }),
+        ),
+        Data.el("span", { style: "font-size:11.5px;font-weight:600;" }, t.name, " ", Data.el("small", { style: "color:var(--muted);", text: `(${t.mode === "dark" ? "다크" : "라이트"})` })),
+      );
+      themeGrid.append(btn);
     }
+    themeSec.append(themeGrid);
+    body.push(themeSec);
 
-    const pRow = $("settings-point-row");
-    pRow.replaceChildren();
-    for (const pc of Data.POINT_COLORS) {
-      pRow.append(Data.el("button", {
+    // 2. 7종 포인트 컬러
+    const ptSec = Data.el("div", { className: "settings-section" },
+      Data.el("h4", {}, "포인트 컬러 ", Data.el("small", { style: "font-weight:400;color:var(--dim);", text: "선택 영역 · 실행 버튼 강조색" })),
+    );
+    const ptRow = Data.el("div", { className: "point-colors-row" });
+    for (const pt of Data.POINT_COLORS) {
+      ptRow.append(Data.el("button", {
         type: "button",
-        className: "point-btn" + (Store.state.prefs.pointColor === pc.id ? " active" : ""),
-        title: pc.name,
-        style: `background:${pc.hex}`,
-        onClick: () => Store.savePrefs({ pointColor: pc.id }),
+        className: "point-btn" + (Store.state.prefs.pointColor === pt.id ? " on" : ""),
+        onClick: () => { Store.savePrefs({ pointColor: pt.id }); openSettingsModal(); },
+      }, Data.el("span", { className: "point-dot", style: `background:${pt[curMode] || pt.hex};` }), Data.el("span", { text: pt.name })));
+    }
+    ptSec.append(ptRow);
+    body.push(ptSec);
+
+    // 3. UI 크기 스케일
+    const scaleVal = Data.el("span", { style: "color:var(--accent);", text: `${Store.state.prefs.uiScale}%` });
+    const scaleRange = Data.el("input", {
+      type: "range", min: "85", max: "140", step: "5", value: String(Store.state.prefs.uiScale),
+      onInput: (e) => {
+        const v = Number(e.target.value);
+        scaleVal.textContent = `${v}%`;
+        Store.savePrefs({ uiScale: v });
+      },
+    });
+    const scaleRow = Data.el("div", { className: "scale-row" }, scaleRange);
+    for (const v of [90, 100, 115, 130]) {
+      scaleRow.append(Data.el("button", {
+        type: "button",
+        className: "mini-btn" + (Store.state.prefs.uiScale === v ? " accent-outline" : ""),
+        text: `${v}%`,
+        onClick: () => { Store.savePrefs({ uiScale: v }); openSettingsModal(); },
       }));
     }
+    body.push(Data.el("div", { className: "settings-section" },
+      Data.el("h4", {}, "UI 글씨 · 버튼 크기 ", scaleVal),
+      scaleRow,
+      Data.el("small", { style: "color:var(--muted);font-size:11px;", text: "메뉴와 버튼만 조절되며 중앙 원화 캔버스 해상도는 그대로 유지됩니다." }),
+    ));
 
-    $("chk-forge-theme-sync").checked = !!Store.state.prefs.forgeThemeSync;
-    $("input-ui-scale").value = String(Store.state.prefs.uiScale || 100);
-    $("val-ui-scale").textContent = `${Store.state.prefs.uiScale || 100}%`;
-
-    const lGrid = $("settings-layout-grid");
-    lGrid.replaceChildren();
+    // 4. 패널 배치 프리셋
+    const layGrid = Data.el("div", { className: "layout-grid-2" });
     for (const lp of Data.LAYOUT_PRESETS) {
-      lGrid.append(Data.el("button", {
+      layGrid.append(Data.el("button", {
         type: "button",
-        className: "layout-card" + (Store.state.prefs.layoutPreset === lp.id ? " active" : ""),
-        onClick: () => Store.savePrefs({ layoutPreset: lp.id }),
-      },
-      Data.el("strong", { text: lp.name }),
-      Data.el("span", { className: "muted-text", text: lp.desc })));
+        className: "preset-card" + (Store.state.prefs.layoutPreset === lp.id ? " on" : ""),
+        onClick: () => { Store.savePrefs({ layoutPreset: lp.id }); openSettingsModal(); },
+      }, Data.el("strong", { text: lp.name }), Data.el("small", { text: lp.desc })));
     }
-  }
+    body.push(Data.el("div", { className: "settings-section" },
+      Data.el("h4", {}, "패널 배치 프리셋 ", Data.el("small", { style: "font-weight:400;color:var(--dim);", text: "상단 ⋮⋮ 바 드래그 이동 가능" })),
+      layGrid,
+    ));
 
-  function wireSettingsModal() {
-    const close = () => $("settings-modal").classList.add("hidden");
-    $("btn-settings").addEventListener("click", openSettings);
-    $("btn-close-settings").addEventListener("click", close);
-    $("btn-done-settings").addEventListener("click", close);
-    $("chk-forge-theme-sync").addEventListener("change", (e) => Store.savePrefs({ forgeThemeSync: e.target.checked }));
-    $("input-ui-scale").addEventListener("input", (e) => {
-      const v = Number(e.target.value);
-      $("val-ui-scale").textContent = `${v}%`;
-      Store.savePrefs({ uiScale: v });
+    // 5. Forge 테마 연동
+    const syncChk = Data.el("input", {
+      type: "checkbox",
+      onChange: (e) => Store.savePrefs({ forgeThemeSync: e.target.checked }),
     });
-    $("btn-ui-scale-reset").addEventListener("click", () => Store.savePrefs({ uiScale: 100 }));
+    syncChk.checked = !!Store.state.prefs.forgeThemeSync;
+    body.push(Data.el("div", { className: "settings-section" },
+      Data.el("label", { className: "chk-inline" }, syncChk, Data.el("span", { text: "Forge 부모 창 테마 변경 시 자동으로 함께 전환" })),
+    ));
+
+    openModal({
+      title: "환경설정 — 테마 · 포인트 컬러 · UI 크기 · 패널 배치",
+      bodyNodes: body,
+      actions: [
+        {
+          label: "기본값 초기화", cls: "btn-secondary",
+          onClick: () => {
+            Store.savePrefs({ themeId: "graphite", pointColor: "lime", uiScale: 100, layoutPreset: "standard", focusDimAlpha: 36, forgeThemeSync: true });
+            openSettingsModal();
+          },
+        },
+        { label: "완료", cls: "btn-primary", onClick: closeModal },
+      ],
+    });
   }
 
-  // ==================== 6. PSD 내보내기 미리보기 모달 ====================
+  // ==================== 5. PSD 내보내기 · 프리셋 · 단축키 모달 ====================
   function openExportModal() {
-    const body = $("export-modal-body");
-    body.replaceChildren();
     const patches = Store.getPatches();
-    const picked = patches.filter((p) => p.pickedCand);
-    const missing = patches.filter((p) => !p.pickedCand);
-    const S = Store.state.S;
-
-    body.append(
-      Data.el("p", { text: `전체 패치 ${patches.length}개 중 ★ 채택 ${picked.length}개가 마스크·스마트오브젝트 그룹 레이어로 PSD에 포함됩니다.` }),
-      missing.length ? Data.el("p", { className: "muted-text", text: `미채택 패치 ${missing.length}개(${missing.map((m) => m.name).join(", ")})는 내보내기에서 건너뜁니다.` }) : null,
-      Data.el("div", { className: "insp-card" },
-        Data.el("strong", { text: "출력 PSD 레이어 구성 미리보기" }),
-        Data.el("div", { className: "muted-text", text: "📁 Base_Original (원본 잠금 레이어)" }),
-        ...picked.map((p) => Data.el("div", { className: "muted-text", text: `  └ 📁 ${p.name} [그룹 마스크 + 후보 c${String(p.pickedCand.n).padStart(2, "0")}]` })),
-      ),
-      S && S.export_last ? Data.el("p", { className: "muted-text", text: `마지막 Export: rev ${S.export_last.rev ?? "?"} · ${S.export_last.time || ""}` }) : null,
+    const picked = patches.filter((p) => p.anyPicked);
+    const tree = Data.el("div", { className: "psd-tree" },
+      Data.el("div", { className: "psd-row" }, Data.el("strong", { text: "03.수정" }), Data.el("span", { className: "psd-tag", text: `${picked.length}개 확정 패치 · 크롭 밖 무변형` })),
+    );
+    picked.forEach((p, idx) => {
+      tree.append(Data.el("div", { className: "psd-row indent-1" },
+        `${String(idx + 1).padStart(2, "0")}_${p.name}`,
+        Data.el("span", { className: "psd-tag star", text: "그룹 마스크 · Smart Object" }),
+      ));
+    });
+    tree.append(
+      Data.el("div", { className: "psd-row" }, Data.el("strong", { text: "02.영역가이드" }), Data.el("span", { className: "psd-tag", text: "숨김 · 재편집용" })),
+      Data.el("div", { className: "psd-row" }, Data.el("strong", { text: "00.원본_Base" }), Data.el("span", { className: "psd-tag", text: "원본 100% 보존" })),
     );
 
-    const dl = $("btn-export-download");
-    const canDownload = Api.can("export_download") && S && S.export_last;
-    dl.classList.toggle("hidden", !canDownload);
-    if (canDownload) dl.href = Api.exportDownloadUrl(Store.state.root);
-
-    $("btn-export-forge-save").classList.toggle("hidden", !(Api.can("forge_save") && S && S.export_last));
-    $("export-modal").classList.remove("hidden");
-  }
-
-  function wireExportModal() {
-    $("btn-export-psd").addEventListener("click", openExportModal);
-    $("btn-close-export").addEventListener("click", () => $("export-modal").classList.add("hidden"));
-    $("btn-export-run").addEventListener("click", async () => {
-      const res = await Api.submitStage("export", { root: Store.state.root });
-      if (res && res.pendingIntegration) {
-        await Data.showDialogNotice(res.message);
-      } else {
-        Store.toast("PSD 내보내기 작업을 시작했습니다.", "ok");
-        $("export-modal").classList.add("hidden");
-        await Store.refreshAll(true);
-      }
-    });
-    $("btn-export-forge-save").addEventListener("click", async () => {
-      try {
-        const res = await Api.saveToForge(Store.state.root);
-        Store.toast(`Forge 자료에 저장되었습니다: ${(res.asset && res.asset.name) || "완료"}`, "ok");
-      } catch (err) {
-        Store.toast(`Forge 저장 실패: ${err.message}`, "err");
-      }
-    });
-  }
-
-  // ==================== 7. 패널 헤더 ⋮⋮ 드래그 도킹 (피드백 #5) ====================
-  function wirePanelDragDocking() {
-    let draggedPanel = null;
-    document.querySelectorAll(".panel-drag-handle").forEach((h) => {
-      h.addEventListener("dragstart", (e) => {
-        draggedPanel = h.dataset.dragPanel;
-        e.dataTransfer.setData("text/bmk-panel", draggedPanel);
-      });
-      h.addEventListener("dragend", () => {
-        draggedPanel = null;
-        document.querySelectorAll(".dock-drop-hover").forEach((n) => n.classList.remove("dock-drop-hover"));
-      });
-    });
-
-    for (const id of ["left-dock", "right-dock"]) {
-      const dock = $(id);
-      dock.addEventListener("dragover", (e) => {
-        if (!draggedPanel || dock.dataset.panel === draggedPanel) return;
-        e.preventDefault();
-        dock.classList.add("dock-drop-hover");
-      });
-      dock.addEventListener("dragleave", () => dock.classList.remove("dock-drop-hover"));
-      dock.addEventListener("drop", (e) => {
-        dock.classList.remove("dock-drop-hover");
-        if (!draggedPanel || dock.dataset.panel === draggedPanel) return;
-        e.preventDefault();
-        const nextPreset = dock.dataset.panel === "right" ? "right-stack" : "left-stack";
-        Store.savePrefs({ layoutPreset: nextPreset });
-        Store.toast(`패널을 ${nextPreset === "right-stack" ? "우측으로 통합" : "좌측으로 통합"}했습니다. (설정에서 기본 3단 복원 가능)`, "ok");
+    const actions = [{ label: "닫기", cls: "btn-secondary", onClick: closeModal }];
+    if (Api.can("forge_save")) {
+      actions.push({
+        label: "Forge 자료함에 저장", cls: "btn-secondary",
+        onClick: async () => {
+          closeModal();
+          try {
+            await Api.saveToForge(Store.state.root);
+            Store.toast("합성 결과를 Forge 자료함에 저장했습니다.", "ok");
+          } catch (err) {
+            Store.toast(`Forge 저장 실패: ${err.message}`, "err");
+          }
+        },
       });
     }
+    actions.push({
+      label: "PSD 생성 · 내려받기", cls: "btn-primary",
+      onClick: async () => {
+        closeModal();
+        const dlUrl = Api.exportDownloadUrl(Store.state.root);
+        const res = await Api.submitStage("export", { root: Store.state.root });
+        if (res && res.pendingIntegration) {
+          if (dlUrl && Store.state.S && Store.state.S.export_state === "same") {
+            const a = document.createElement("a");
+            a.href = dlUrl;
+            a.download = "";
+            a.click();
+            Store.toast("최신 PSD 파일 다운로드를 시작했습니다.", "ok");
+          } else {
+            Store.toast(res.message, "accent");
+          }
+          return;
+        }
+        if (res && res.ok && dlUrl) {
+          const a = document.createElement("a");
+          a.href = dlUrl;
+          a.download = "";
+          a.click();
+          Store.toast("PSD 내보내기를 완료했습니다.", "ok");
+        }
+      },
+    });
+
+    openModal({
+      title: "PSD 내보내기 — 레이어 구성 미리보기",
+      bodyNodes: [
+        Data.el("div", { className: "block-label", text: "출력될 포토샵 레이어 구조" }),
+        tree,
+      ],
+      actions,
+    });
+  }
+
+  function openPresetsModal() {
+    const p = Store.primaryPatch();
+    if (!p) return;
+    const pr = Data.purposeInfo(p.meta.purpose);
+    const wrap = Data.el("div", { style: "display:flex;flex-direction:column;gap:6px;" });
+    for (const txt of (pr.presets || [])) {
+      wrap.append(Data.el("button", {
+        type: "button", className: "preset-card",
+        onClick: () => {
+          p.meta.user_instruction_ko = txt;
+          p.meta.dirtySpec = true;
+          closeModal();
+          Store.emit("selection");
+        },
+      }, Data.el("strong", { style: "font-weight:500;", text: txt })));
+    }
+    openModal({
+      title: `${pr.label} — 자주 쓰는 수정 지시 프리셋`,
+      bodyNodes: [wrap],
+      actions: [{ label: "닫기", cls: "btn-secondary", onClick: closeModal }],
+    });
+  }
+
+  function openShortcutsModal() {
+    const rows = [
+      ["선택 · 이동 · 크기 · 모서리 회전", "V"],
+      ["사각형 수정 영역 추가", "M"],
+      ["마스크 살리기 브러시 / 지우개", "B / E"],
+      ["레퍼런스 시트 오리기 · 4점 원근", "R"],
+      ["선택 해제 (밝은 원본 전체 보기)", "Esc"],
+      ["원본과 즉시 비교", "Q / Tab"],
+      ["좌우 분할 비교", "S"],
+      ["영역선 표시 / 경계 이음매", "O / N"],
+      ["작업 히스토리 패널", "H"],
+      ["화면 맞춤 (Fit)", "0"],
+      ["여러 영역 다중 선택", "Shift / Ctrl + 클릭"],
+      ["실행 취소 / 다시 실행", "Ctrl+Z / Ctrl+Shift+Z"],
+    ];
+    const grid = Data.el("div", { className: "shortcut-grid" });
+    for (const [label, key] of rows) {
+      grid.append(Data.el("div", { className: "sc-row" }, Data.el("span", { text: label }), Data.el("kbd", { text: key })));
+    }
+    openModal({
+      title: "포토샵 표준 단축키 안내",
+      bodyNodes: [grid],
+      actions: [{ label: "닫기", cls: "btn-primary", onClick: closeModal }],
+    });
+  }
+
+  // ==================== 6. 프로젝트 홈 & 새 프로젝트 모달 + Forge 가져오기 ====================
+  async function renderProjectsHome() {
+    const grid = $("projects-grid");
+    if (!grid) return;
+    grid.innerHTML = "";
+    try {
+      const res = await Api.listProjects();
+      const list = Array.isArray(res.projects) ? res.projects : [];
+      Store.state.projects = list;
+      if (!list.length) {
+        grid.append(Data.el("div", { className: "empty-card", style: "grid-column:1/-1;" },
+          Data.el("p", { text: "아직 만들어진 프로젝트가 없습니다" }),
+          Data.el("small", { text: "우측 상단 [+ 새 프로젝트]를 눌러 원화 이미지를 올려 시작하세요." }),
+        ));
+        return;
+      }
+      for (const proj of list) {
+        const thumb = Api.apiUrl(proj.thumb_url || "");
+        grid.append(Data.el("div", {
+          className: "proj-card",
+          onClick: async () => {
+            try {
+              const r = await Api.openProject(proj.id);
+              const key = (r && r.key) || proj.id;
+              const u = new URL(location.href);
+              u.searchParams.set("root", key);
+              u.searchParams.set("ui", "v2");
+              location.href = u.pathname + u.search;
+            } catch (err) {
+              Store.toast(`프로젝트를 열 수 없습니다: ${err.message}`, "err");
+            }
+          },
+        },
+          Data.el("div", { className: "proj-card-thumb" }, thumb ? Data.el("img", { src: thumb, alt: proj.name }) : null),
+          Data.el("div", { className: "proj-card-body" },
+            Data.el("strong", { text: proj.name || proj.id }),
+            Data.el("div", { className: "proj-card-meta" },
+              Data.el("span", { text: `영역 ${proj.crops || 0}개` }),
+              Data.el("span", { text: `후보 ${proj.candidates || 0}장` }),
+              Data.el("span", { text: `확정 ★ ${proj.stars || 0}` }),
+            ),
+            Data.el("span", { className: "proj-card-time", text: proj.modified || "" }),
+          ),
+        ));
+      }
+    } catch (err) {
+      grid.append(Data.el("div", { className: "empty-card", text: `프로젝트 목록을 불러오지 못했습니다: ${err.message}` }));
+    }
+  }
+
+  function openNewProjectModal(initialFile = null) {
+    let targetFile = initialFile;
+    let targetForgeFile = null;
+    const refFiles = [];
+
+    const nameInput = Data.el("input", {
+      type: "text", className: "np-text-input",
+      placeholder: "예: 캐릭터_의상수정_01",
+      value: initialFile ? initialFile.name.replace(/\.[^.]+$/, "").replace(/[^\p{L}\p{N}_.-]+/gu, "_") : "",
+    });
+    const errEl = Data.el("small", { style: "color:var(--err);min-height:16px;" });
+    const pickedBox = Data.el("div", { style: "display:flex;flex-wrap:wrap;gap:6px;" });
+
+    function refreshPicked() {
+      pickedBox.innerHTML = "";
+      if (targetFile) {
+        const url = URL.createObjectURL(targetFile);
+        pickedBox.append(Data.el("span", { className: "np-picked-chip" },
+          Data.el("img", { src: url, alt: "" }),
+          Data.el("span", { text: `타깃: ${targetFile.name}` }),
+          Data.el("button", { type: "button", className: "row-icon-btn", text: "×", onClick: () => { targetFile = null; refreshPicked(); } }),
+        ));
+      } else if (targetForgeFile) {
+        pickedBox.append(Data.el("span", { className: "np-picked-chip" },
+          Data.el("span", { text: `Forge 타깃: ${targetForgeFile}` }),
+          Data.el("button", { type: "button", className: "row-icon-btn", text: "×", onClick: () => { targetForgeFile = null; refreshPicked(); } }),
+        ));
+      }
+      refFiles.forEach((rf, i) => {
+        pickedBox.append(Data.el("span", { className: "np-picked-chip" },
+          Data.el("span", { text: `참조: ${rf.name}` }),
+          Data.el("button", { type: "button", className: "row-icon-btn", text: "×", onClick: () => { refFiles.splice(i, 1); refreshPicked(); } }),
+        ));
+      });
+    }
+
+    const dropBox = Data.el("div", { className: "np-drop" },
+      Data.el("span", { text: "원화 이미지를 여기에 끌어다 놓거나 파일을 선택하세요" }),
+      Data.el("div", { style: "display:flex;gap:6px;flex-wrap:wrap;justify-content:center;" },
+        Data.el("button", {
+          type: "button", className: "btn-secondary-sm", text: "내 PC에서 원화 선택",
+          onClick: () => {
+            const inp = Data.el("input", { type: "file", accept: "image/*" });
+            inp.addEventListener("change", () => {
+              if (inp.files && inp.files[0]) {
+                targetFile = inp.files[0];
+                targetForgeFile = null;
+                if (!nameInput.value.trim()) nameInput.value = targetFile.name.replace(/\.[^.]+$/, "").replace(/[^\p{L}\p{N}_.-]+/gu, "_");
+                refreshPicked();
+              }
+            });
+            inp.click();
+          },
+        }),
+        Api.can("forge_import") ? Data.el("button", {
+          type: "button", className: "btn-secondary-sm accent-outline", text: "Forge에서 불러오기",
+          onClick: () => {
+            if (window.DPForgeImport && typeof window.DPForgeImport.open === "function") {
+              window.DPForgeImport.open({ mode: "target", onPick: (file) => { targetForgeFile = file; targetFile = null; refreshPicked(); } });
+            } else {
+              Store.toast("Forge 가져오기 모듈이 연결되면 바로 선택할 수 있습니다.");
+            }
+          },
+        }) : null,
+        Data.el("button", {
+          type: "button", className: "btn-secondary-sm", text: "+ 레퍼런스 함께 추가",
+          onClick: () => {
+            const inp = Data.el("input", { type: "file", accept: "image/*", multiple: true });
+            inp.addEventListener("change", () => {
+              for (const f of Array.from(inp.files || [])) refFiles.push(f);
+              refreshPicked();
+            });
+            inp.click();
+          },
+        }),
+      ),
+    );
+    dropBox.addEventListener("dragover", (e) => { e.preventDefault(); dropBox.classList.add("over"); });
+    dropBox.addEventListener("dragleave", () => dropBox.classList.remove("over"));
+    dropBox.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropBox.classList.remove("over");
+      const files = Array.from(e.dataTransfer?.files || []);
+      if (files[0]) {
+        targetFile = files[0];
+        if (!nameInput.value.trim()) nameInput.value = targetFile.name.replace(/\.[^.]+$/, "").replace(/[^\p{L}\p{N}_.-]+/gu, "_");
+        for (const extra of files.slice(1)) refFiles.push(extra);
+        refreshPicked();
+      }
+    });
+    refreshPicked();
+
+    openModal({
+      title: "새 프로젝트 만들기",
+      bodyNodes: [
+        Data.el("div", { className: "np-field" }, Data.el("label", { text: "프로젝트 이름" }), nameInput, errEl),
+        dropBox,
+        pickedBox,
+      ],
+      actions: [
+        { label: "취소", cls: "btn-secondary", onClick: closeModal },
+        {
+          label: "프로젝트 생성 및 열기", cls: "btn-primary",
+          onClick: async () => {
+            const name = nameInput.value.trim();
+            const vErr = Data.validateProjectName(name);
+            if (vErr) { errEl.textContent = vErr; return; }
+            if (!targetFile && !targetForgeFile) { errEl.textContent = "타깃 원화 이미지를 먼저 선택해 주세요."; return; }
+            try {
+              const res = targetFile
+                ? await Api.createProjectFile(name, targetFile)
+                : await Api.createProjectAdopt(name, targetForgeFile);
+              for (const rf of refFiles) {
+                try { await Api.uploadSheet(res.key, rf, null); } catch (_) {}
+              }
+              closeModal();
+              const u = new URL(location.href);
+              u.searchParams.set("root", res.key);
+              u.searchParams.set("ui", "v2");
+              location.href = u.pathname + u.search;
+            } catch (err) {
+              errEl.textContent = err.message;
+            }
+          },
+        },
+      ],
+    });
+  }
+
+  function openForgeImportForRef() {
+    if (window.DPForgeImport && typeof window.DPForgeImport.open === "function") {
+      window.DPForgeImport.open({
+        root: Store.state.root,
+        mode: "ref",
+        onDone: () => Store.refreshAll(true),
+      });
+    } else {
+      Store.toast("Forge 자료함 연동이 활성화되면 여기에서 바로 불러올 수 있습니다.");
+    }
+  }
+
+  // ==================== 이벤트 바인딩 ====================
+  function bindEvents() {
+    // 모달 닫기
+    const mClose = $("modal-close");
+    if (mClose) mClose.addEventListener("click", closeModal);
+    const mBack = $("modal-backdrop");
+    if (mBack) mBack.addEventListener("click", (e) => { if (e.target === mBack) closeModal(); });
+
+    // 히스토리 드로어
+    const btnCloseHist = $("btn-close-history");
+    if (btnCloseHist) btnCloseHist.addEventListener("click", toggleHistoryDrawer);
+
+    // 시트 오리기 & 4점 원근 이벤트
+    const btnSheetClose = $("btn-sheet-close");
+    if (btnSheetClose) btnSheetClose.addEventListener("click", closeSheetOverlay);
+    const shSel = $("sheet-select");
+    if (shSel) shSel.addEventListener("change", (e) => loadSelectedSheet(e.target.value));
+    const cropSel = $("sheet-target-crop");
+    if (cropSel) cropSel.addEventListener("change", drawSheetWarp);
+    const btnShUp = $("btn-sheet-upload");
+    if (btnShUp) btnShUp.addEventListener("click", () => $("hidden-file-sheet").click());
+    const btnShForge = $("btn-sheet-forge");
+    if (btnShForge) btnShForge.addEventListener("click", openForgeImportForRef);
+
+    const btnZout = $("btn-sheet-zout"), btnZin = $("btn-sheet-zin"), btn1to1 = $("btn-sheet-1to1"), btnFit = $("btn-sheet-fit"), btnMax = $("btn-sheet-max");
+    if (btnZout) btnZout.addEventListener("click", () => setSheetZoomAt(sheetState.zoom / 1.25));
+    if (btnZin) btnZin.addEventListener("click", () => setSheetZoomAt(sheetState.zoom * 1.25));
+    if (btn1to1) btn1to1.addEventListener("click", () => {
+      const img = sheetState.sheetImg;
+      const wrap = $("sheet-source-wrap");
+      if (!img || !wrap) return;
+      sheetState.zoom = 1.0;
+      sheetState.panX = Math.round((wrap.clientWidth - img.naturalWidth) / 2);
+      sheetState.panY = Math.round((wrap.clientHeight - img.naturalHeight) / 2);
+      applySheetTransform();
+      drawSheetSource();
+    });
+    if (btnFit) btnFit.addEventListener("click", () => { fitSheetToView(); drawSheetSource(); });
+    if (btnMax) btnMax.addEventListener("click", () => {
+      sheetState.maximized = !sheetState.maximized;
+      $("sheet-split-body").classList.toggle("maximized", sheetState.maximized);
+      btnMax.textContent = sheetState.maximized ? "⤡ 분할로" : "⤢ 최대화";
+      requestAnimationFrame(() => { fitSheetToView(); drawSheetSource(); });
+    });
+
+    const alphaEl = $("sheet-overlay-alpha");
+    if (alphaEl) alphaEl.addEventListener("input", (e) => { sheetState.alpha = Number(e.target.value) / 100; drawSheetWarp(); });
+    const btnFlip = $("btn-sheet-flip");
+    if (btnFlip) btnFlip.addEventListener("click", () => { sheetState.flipX = !sheetState.flipX; drawSheetWarp(); });
+    const btnResetQ = $("btn-sheet-reset-quad");
+    if (btnResetQ) btnResetQ.addEventListener("click", () => { sheetState.flipX = false; sheetState.quad = defaultQuad(); drawSheetWarp(); });
+    const btnSaveVault = $("btn-sheet-save-vault");
+    if (btnSaveVault) btnSaveVault.addEventListener("click", () => saveSheetCut(false));
+    const btnAttach = $("btn-sheet-attach");
+    if (btnAttach) btnAttach.addEventListener("click", () => saveSheetCut(true));
+
+    // 좌측 시트 뷰어: 휠 커서 중심 줌 + 오버스크롤 패닝 + 드래그 오리기
+    const srcWrap = $("sheet-source-wrap");
+    const srcCanvas = $("sheet-source-canvas");
+    if (srcWrap && srcCanvas) {
+      srcWrap.addEventListener("contextmenu", (e) => e.preventDefault());
+      srcWrap.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        const b = srcWrap.getBoundingClientRect();
+        setSheetZoomAt(sheetState.zoom * (e.deltaY < 0 ? 1.16 : 1 / 1.16), e.clientX - b.left, e.clientY - b.top);
+      }, { passive: false });
+      srcWrap.addEventListener("pointerdown", (e) => {
+        if (!sheetState.sheetImg) return;
+        if (e.button === 1 || e.button === 2 || Canvas.view.spaceDown) {
+          sheetState.drag = { kind: "pan", sx: e.clientX, sy: e.clientY, panX: sheetState.panX, panY: sheetState.panY };
+          srcWrap.style.cursor = "grabbing";
+          srcWrap.setPointerCapture(e.pointerId);
+          return;
+        }
+        if (e.button !== 0) return;
+        const b = srcCanvas.getBoundingClientRect();
+        if (!b.width || !b.height) return;
+        const x = Math.max(0, Math.min(1, (e.clientX - b.left) / b.width));
+        const y = Math.max(0, Math.min(1, (e.clientY - b.top) / b.height));
+        sheetState.drag = { kind: "cut", x0: x, y0: y };
+        srcWrap.setPointerCapture(e.pointerId);
+      });
+      srcWrap.addEventListener("pointermove", (e) => {
+        if (!sheetState.drag) {
+          srcWrap.style.cursor = Canvas.view.spaceDown ? "grab" : "crosshair";
+          return;
+        }
+        if (sheetState.drag.kind === "pan") {
+          sheetState.panX = sheetState.drag.panX + (e.clientX - sheetState.drag.sx);
+          sheetState.panY = sheetState.drag.panY + (e.clientY - sheetState.drag.sy);
+          applySheetTransform();
+          return;
+        }
+        if (sheetState.drag.kind !== "cut") return;
+        const b = srcCanvas.getBoundingClientRect();
+        if (!b.width || !b.height) return;
+        const x = Math.max(0, Math.min(1, (e.clientX - b.left) / b.width));
+        const y = Math.max(0, Math.min(1, (e.clientY - b.top) / b.height));
+        sheetState.cutRect = {
+          x: Math.min(sheetState.drag.x0, x),
+          y: Math.min(sheetState.drag.y0, y),
+          w: Math.max(0.03, Math.abs(x - sheetState.drag.x0)),
+          h: Math.max(0.03, Math.abs(y - sheetState.drag.y0)),
+        };
+        drawSheetSource();
+        drawSheetWarp();
+      });
+      srcWrap.addEventListener("pointerup", () => {
+        sheetState.drag = null;
+        srcWrap.style.cursor = "crosshair";
+      });
+    }
+
+    // 우측 4점 원근 꼭짓점 드래그
+    const warpCanvas = $("sheet-warp-canvas");
+    if (warpCanvas) {
+      warpCanvas.addEventListener("pointerdown", (e) => {
+        if (!sheetState.sheetImg) return;
+        const b = warpCanvas.getBoundingClientRect();
+        const x = (e.clientX - b.left) / b.width;
+        const y = (e.clientY - b.top) / b.height;
+        let nearest = -1, bestD = 0.09;
+        sheetState.quad.forEach((pt, idx) => {
+          const d = Math.hypot(pt.x - x, pt.y - y);
+          if (d < bestD) { bestD = d; nearest = idx; }
+        });
+        if (nearest >= 0) {
+          sheetState.drag = { kind: "quad", idx: nearest };
+          warpCanvas.style.cursor = "grabbing";
+          warpCanvas.setPointerCapture(e.pointerId);
+        }
+      });
+      warpCanvas.addEventListener("pointermove", (e) => {
+        const b = warpCanvas.getBoundingClientRect();
+        const x = (e.clientX - b.left) / b.width;
+        const y = (e.clientY - b.top) / b.height;
+        if (!sheetState.drag) {
+          const near = sheetState.quad.some((pt) => Math.hypot(pt.x - x, pt.y - y) < 0.08);
+          warpCanvas.style.cursor = near ? "grab" : "default";
+          return;
+        }
+        if (sheetState.drag.kind !== "quad") return;
+        sheetState.quad[sheetState.drag.idx] = {
+          x: Math.max(0.02, Math.min(0.98, x)),
+          y: Math.max(0.02, Math.min(0.98, y)),
+        };
+        drawSheetWarp();
+      });
+      warpCanvas.addEventListener("pointerup", () => {
+        sheetState.drag = null;
+        warpCanvas.style.cursor = "default";
+      });
+    }
+
+    // 풀스크린 정밀 비교 이벤트
+    const coClose = $("co-close");
+    if (coClose) coClose.addEventListener("click", closeCompareOverlay);
+    const coBlink = $("co-toggle-blink");
+    if (coBlink) coBlink.addEventListener("click", () => { cmpState.blinkOrig = !cmpState.blinkOrig; renderCompareOverlay(); });
+    const coZoomReset = $("co-zoom-reset");
+    if (coZoomReset) coZoomReset.addEventListener("click", () => { cmpState.zoom = 1; renderCompareOverlay(); });
+    const coPick = $("co-pick");
+    if (coPick) coPick.addEventListener("click", async () => {
+      const p = Store.primaryPatch();
+      if (!p || !p.target || !cmpState.candKey) return;
+      try {
+        await Api.pickCandidate(Store.state.root, { crop_id: p.id, tid: p.target.tid, key: cmpState.candKey, mode: "set" });
+        closeCompareOverlay();
+        Store.toast(`"${p.name}"에 선택한 후보를 확정 적용했습니다 ★`, "ok");
+        await Store.refreshAll(true);
+      } catch (err) {
+        Store.toast(`채택 실패: ${err.message}`, "err");
+      }
+    });
+    const coToRt = $("co-to-retouch");
+    if (coToRt) coToRt.addEventListener("click", () => {
+      const p = Store.primaryPatch();
+      if (p && p.target) Store.selectCandidate(p.target.key, cmpState.candKey);
+      closeCompareOverlay();
+      if (window.DPV2Inspector) window.DPV2Inspector.setActiveTab("retouch");
+    });
+    const coReedit = $("co-reedit");
+    if (coReedit) coReedit.addEventListener("click", () => {
+      closeCompareOverlay();
+      if (window.DPV2Inspector) window.DPV2Inspector.setActiveTab("instruct");
+      const inp = $("inp-instruction");
+      if (inp) inp.focus();
+    });
+
+    const cbox = $("co-compare-box");
+    const updateCoSplit = (clientX) => {
+      if (!cbox) return;
+      const r = cbox.getBoundingClientRect();
+      if (!r.width) return;
+      cmpState.blinkOrig = false;
+      cmpState.split = Math.max(0.02, Math.min(0.98, (clientX - r.left) / r.width));
+      updateCompareDivider();
+    };
+    if (cbox) {
+      cbox.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0) return;
+        cmpState.dragging = true;
+        updateCoSplit(e.clientX);
+        cbox.setPointerCapture(e.pointerId);
+      });
+      window.addEventListener("pointermove", (e) => { if (cmpState.dragging) updateCoSplit(e.clientX); });
+      window.addEventListener("pointerup", () => { cmpState.dragging = false; });
+    }
+    const coStage = $("co-stage");
+    if (coStage) {
+      coStage.addEventListener("wheel", (e) => {
+        if (!cmpState.open) return;
+        e.preventDefault();
+        cmpState.zoom = Math.max(0.6, Math.min(5, cmpState.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+        if (cbox) cbox.style.transform = `scale(${cmpState.zoom})`;
+        $("co-zoom-reset").textContent = `${Math.round(cmpState.zoom * 100)}%`;
+      }, { passive: false });
+    }
+
+    // 히스토리 상태 구독
+    Store.subscribe((reason) => {
+      if (reason === "history") renderHistoryDrawer();
+    });
   }
 
   return {
-    init, mountProjectsHome, openSheetCut, openComparer, closeComparer,
-    handleComparerKey, toggleHistoryDrawer, openSettings, openExportModal,
+    sheetState,
+    cmpState,
+    openModal,
+    closeModal,
+    openSheetOverlay,
+    closeSheetOverlay,
+    openCompareOverlay,
+    closeCompareOverlay,
+    toggleHistoryDrawer,
+    openSettingsModal,
+    openExportModal,
+    openPresetsModal,
+    openShortcutsModal,
+    renderProjectsHome,
+    openNewProjectModal,
+    openForgeImportForRef,
+    bindEvents,
   };
 })();

@@ -1,4 +1,4 @@
-// BMK Design Patch Studio v2 — 인터랙티브 라이브 캔버스(Focus Dim · 8핸들/회전 커서 · 전/후 비교 · 마스크 브러시 · 자동 맞춤).
+// BMK Design Patch Studio v2 — 캔버스 뷰포트 · 줌/팬 · Focus Dim · 8핸들/회전 · 2단 플로팅 바 · 실시간 후보/마스크 합성.
 "use strict";
 
 window.DPV2Canvas = (() => {
@@ -6,868 +6,1012 @@ window.DPV2Canvas = (() => {
   const Api = window.DPV2Api;
   const Store = window.DPV2Store;
 
-  const CURSORS = {
-    n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
-    ne: "nesw-resize", sw: "nesw-resize", nw: "nwse-resize", se: "nwse-resize",
+  const view = {
+    imgW: 0,
+    imgH: 0,
+    zoom: 1,
+    panX: 0,
+    panY: 0,
+    fitted: false,
+    spaceDown: false,
+    drag: null, // { type, ... }
+    hoverRect: null,
+    baseUrlLoaded: "",
+    compUrlLoaded: "",
+    lastOverlayUrl: "",
   };
-  const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 
-  let vp, world, imgBase, imgComp, candOv, imgCandLive, splitClip, imgSplitBefore, splitBar, maskCanvas, svg;
-  let cam = { z: 1, tx: 0, ty: 0 };
-  let canvasSize = [1024, 1024];
-  let userAdjustedView = false;
-  let spaceHeld = false;
-  let drag = null;
-  let draftRect = null;
-  let cursorPt = null;
-  let lastBaseUrl = "";
-  let lastCompUrl = "";
-  let lastCandLiveUrl = "";
+  const $ = (id) => document.getElementById(id);
 
-  function $(id) { return document.getElementById(id); }
-
-  function init() {
-    vp = $("canvas-viewport");
-    world = $("canvas-world");
-    imgBase = $("img-base");
-    imgComp = $("img-composite");
-    candOv = $("cand-live-overlay");
-    imgCandLive = $("img-cand-live");
-    splitClip = $("canvas-split-clip");
-    imgSplitBefore = $("img-split-before");
-    splitBar = $("canvas-split-bar");
-    maskCanvas = $("mask-live-canvas");
-    svg = $("canvas-svg");
-
-    wireViewportEvents();
-    wireToolRailAndFooter();
-
-    // 최초 뷰포트 크기 확정 시 캔버스 중앙 자동 맞춤 (사용자 조작 이후엔 덮어쓰지 않음)
-    if (window.ResizeObserver) {
-      new ResizeObserver(() => {
-        if (!userAdjustedView && vp.clientWidth > 40 && vp.clientHeight > 40) fitAll(false);
-      }).observe(vp);
-    }
-
-    Store.subscribe((reason) => {
-      if (reason === "state" || reason === "selection" || reason === "prefs" || reason === "mask" || reason === "view" || reason === "tool") {
-        render();
-      }
-    });
+  // 선택된 후보를 메인 캔버스 위 실시간 오버레이로 투영할 주소·영역 계산
+  function resolveCandidateOverlay(patch, cand) {
+    if (!patch || !cand) return null;
+    if (Store.state.viewFlags.beforeHeld) return null;
+    const sc = patch.stateCrop || {};
+    const region = Array.isArray(sc.region) && sc.region.length === 4 ? sc.region : patch.rect;
+    if (!Array.isArray(region) || region.length !== 4) return null;
+    const isPicked = !!(patch.pickedCand && patch.pickedCand.key === cand.key);
+    const rel = isPicked
+      ? (sc.region_url || cand.pick_url || cand.big_url || "")
+      : (cand.pick_url || cand.big_url || "");
+    if (!rel) return null;
+    return { rel, rect: region, previewing: !isPicked };
   }
 
-  function screenToCanvas(clientX, clientY) {
-    const r = vp.getBoundingClientRect();
-    return [(clientX - r.left - cam.tx) / cam.z, (clientY - r.top - cam.ty) / cam.z];
+  function screenToImage(clientX, clientY) {
+    const vp = $("canvas-viewport");
+    if (!vp) return { x: 0, y: 0 };
+    const b = vp.getBoundingClientRect();
+    return {
+      x: (clientX - b.left - view.panX) / Math.max(0.05, view.zoom),
+      y: (clientY - b.top - view.panY) / Math.max(0.05, view.zoom),
+    };
   }
 
   function applyTransform() {
-    world.style.width = `${canvasSize[0]}px`;
-    world.style.height = `${canvasSize[1]}px`;
-    world.style.transform = `translate(${cam.tx}px, ${cam.ty}px) scale(${cam.z})`;
-    const zEl = $("zoom-readout");
-    if (zEl) zEl.textContent = `${Math.round(cam.z * 100)}%`;
-    updateSplitPosition();
+    const tf = $("canvas-transform");
+    if (!tf) return;
+    tf.style.width = `${view.imgW}px`;
+    tf.style.height = `${view.imgH}px`;
+    tf.style.transform = `translate(${Math.round(view.panX)}px, ${Math.round(view.panY)}px) scale(${view.zoom})`;
+    const zBtn = $("btn-zoom-fit");
+    if (zBtn) zBtn.textContent = `${Math.round(view.zoom * 100)}%`;
+    renderSplitView();
+    renderOverlaySvg();
   }
 
-  function fitAll(markUser = true) {
-    if (!vp || !vp.clientWidth || !vp.clientHeight) return;
-    if (markUser) userAdjustedView = true;
-    const pad = 64;
-    const zx = (vp.clientWidth - pad * 2) / Math.max(1, canvasSize[0]);
-    const zy = (vp.clientHeight - pad * 2) / Math.max(1, canvasSize[1]);
-    cam.z = Math.max(0.05, Math.min(2, Math.min(zx, zy)));
-    cam.tx = (vp.clientWidth - canvasSize[0] * cam.z) / 2;
-    cam.ty = (vp.clientHeight - canvasSize[1] * cam.z) / 2;
+  function fitToViewport() {
+    const vp = $("canvas-viewport");
+    if (!vp || !view.imgW || !view.imgH) return;
+    const vw = vp.clientWidth || 800;
+    const vh = vp.clientHeight || 600;
+    const topSafe = 32;
+    const bottomSafe = 114; // 2단 하단 플로팅 바 여백
+    const sideSafe = 66;    // 좌측 툴 레일 여백
+    const s = Math.min((vw - sideSafe * 2) / view.imgW, (vh - topSafe - bottomSafe) / view.imgH, 1.0);
+    view.zoom = Math.max(0.12, Math.min(4, s));
+    view.panX = Math.round((vw - view.imgW * view.zoom) / 2);
+    view.panY = Math.round(topSafe + (vh - topSafe - bottomSafe - view.imgH * view.zoom) / 2);
+    view.fitted = true;
     applyTransform();
-    renderSvg();
   }
 
-  function fitCrop(id) {
-    const p = id ? Store.getPatch(id) : Store.primaryPatch();
-    if (!p || !vp.clientWidth || !vp.clientHeight) return fitAll(true);
-    userAdjustedView = true;
-    const [x0, y0, x1, y1] = p.rect;
-    const cw = Math.max(64, x1 - x0), ch = Math.max(64, y1 - y0);
-    cam.z = Math.max(0.1, Math.min(4, Math.min((vp.clientWidth - 140) / cw, (vp.clientHeight - 160) / ch)));
-    cam.tx = vp.clientWidth / 2 - ((x0 + x1) / 2) * cam.z;
-    cam.ty = vp.clientHeight / 2 - ((y0 + y1) / 2) * cam.z;
+  function zoomBy(factor, cx = null, cy = null) {
+    const vp = $("canvas-viewport");
+    if (!vp) return;
+    const b = vp.getBoundingClientRect();
+    const mx = cx === null ? b.width / 2 : cx - b.left;
+    const my = cy === null ? b.height / 2 : cy - b.top;
+    const next = Math.max(0.15, Math.min(6, view.zoom * factor));
+    view.panX = mx - ((mx - view.panX) / view.zoom) * next;
+    view.panY = my - ((my - view.panY) / view.zoom) * next;
+    view.zoom = next;
     applyTransform();
-    renderSvg();
   }
 
-  function zoomTo(targetZ, anchorClientX = null, anchorClientY = null) {
-    userAdjustedView = true;
-    const nextZ = Math.max(0.08, Math.min(12, targetZ));
-    const r = vp.getBoundingClientRect();
-    const ax = anchorClientX !== null ? (anchorClientX - r.left) : r.width / 2;
-    const ay = anchorClientY !== null ? (anchorClientY - r.top) : r.height / 2;
-    const cx = (ax - cam.tx) / cam.z;
-    const cy = (ay - cam.ty) / cam.z;
-    cam.z = nextZ;
-    cam.tx = ax - cx * cam.z;
-    cam.ty = ay - cy * cam.z;
-    applyTransform();
-    renderSvg();
+  function getBaseImage() {
+    const img = $("canvas-base");
+    return img && img.complete && img.naturalWidth ? img : null;
   }
 
-  function updateSplitPosition() {
-    const on = Store.state.viewFlags.splitOn;
-    splitClip.classList.toggle("hidden", !on);
-    splitBar.classList.toggle("hidden", !on);
-    if (!on) return;
-    const ratio = Store.state.viewFlags.splitRatio;
-    splitClip.style.width = `${Math.round(canvasSize[0] * ratio)}px`;
-    const barLeft = cam.tx + canvasSize[0] * ratio * cam.z;
-    splitBar.style.left = `${barLeft}px`;
-  }
-
-  function render() {
+  // ── 캔버스 베이스 / 합성 / 후보 라이브 오버레이 동기화 ──
+  function syncCanvasImages() {
     const S = Store.state.S;
-    const emptyEl = $("canvas-empty");
-    const emptyTitle = $("canvas-empty-title");
-    const emptySub = $("canvas-empty-sub");
-    const applyFirstBtn = $("btn-canvas-apply-first");
+    if (!S || !S.canvas) return;
+    const [w, h] = S.canvas.size || [0, 0];
+    if (w && h && (w !== view.imgW || h !== view.imgH)) {
+      view.imgW = w;
+      view.imgH = h;
+      const resEl = $("canvas-res-label");
+      if (resEl) resEl.textContent = `${w} × ${h} px`;
+      view.fitted = false;
+    }
 
-    if (!S || !S.canvas) {
-      emptyEl.classList.remove("hidden");
-      if (S && !S.canvas) {
-        emptyTitle.textContent = "아직 원화를 불러오지 않았습니다";
-        emptySub.textContent = "무료 반영을 한 번 실행하면 원화 캔버스와 크롭 레이어가 준비됩니다.";
-        applyFirstBtn.classList.remove("hidden");
-      } else {
-        emptyTitle.textContent = "캔버스를 불러오는 중…";
-        emptySub.textContent = "";
-        applyFirstBtn.classList.add("hidden");
+    const baseEl = $("canvas-base");
+    const compEl = $("canvas-composite");
+    const baseUrl = Api.apiUrl(S.canvas.base_url);
+    const compUrl = Api.apiUrl(S.canvas.composite_url || S.canvas.base_url);
+    if (baseEl && baseUrl && view.baseUrlLoaded !== baseUrl) {
+      view.baseUrlLoaded = baseUrl;
+      baseEl.onload = () => {
+        if (!view.fitted) fitToViewport();
+        Store.emit("base-image-loaded");
+      };
+      baseEl.src = baseUrl;
+    }
+    if (compEl && compUrl && view.compUrlLoaded !== compUrl) {
+      view.compUrlLoaded = compUrl;
+      compEl.src = compUrl;
+    }
+
+    if (!view.fitted && view.imgW && view.imgH) {
+      requestAnimationFrame(() => fitToViewport());
+    } else {
+      applyTransform();
+    }
+    renderSplitView();
+    renderCandidateOverlay();
+    renderMaskPreview();
+    renderFloatingBar();
+    updateFooterInfo();
+  }
+
+  function renderSplitView() {
+    const compEl = $("canvas-composite");
+    const splitLine = $("split-line");
+    if (!compEl || !splitLine) return;
+    const vf = Store.state.viewFlags;
+    if (vf.beforeHeld) {
+      compEl.style.opacity = "0";
+      compEl.style.clipPath = "";
+      splitLine.classList.add("hidden");
+      return;
+    }
+    compEl.style.opacity = "1";
+    if (vf.splitOn) {
+      const pct = Math.round(vf.splitRatio * 1000) / 10;
+      compEl.style.clipPath = `inset(0 0 0 ${pct}%)`;
+      const vp = $("canvas-viewport");
+      if (vp) {
+        const xScreen = view.panX + view.imgW * view.zoom * vf.splitRatio;
+        splitLine.style.left = `${Math.round(xScreen)}px`;
       }
-      renderFloatingBar();
+      splitLine.classList.remove("hidden");
+    } else {
+      compEl.style.clipPath = "";
+      splitLine.classList.add("hidden");
+    }
+  }
+
+  function renderCandidateOverlay() {
+    const ovImg = $("cand-live-overlay");
+    const badge = $("live-preview-badge");
+    const badgeTxt = $("live-preview-text");
+    if (!ovImg) return;
+
+    const patch = Store.primaryPatch();
+    const cand = Store.currentCandidate(patch);
+    const info = resolveCandidateOverlay(patch, cand);
+
+    if (!info || Store.state.viewFlags.splitOn) {
+      ovImg.classList.add("hidden");
+      if (badge) badge.classList.add("hidden");
       return;
     }
 
-    emptyEl.classList.add("hidden");
-    const [w, h] = S.canvas.size || [1024, 1024];
-    const sizeChanged = canvasSize[0] !== w || canvasSize[1] !== h;
-    canvasSize = [w, h];
-    svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-
-    const baseRel = S.canvas.base_url || `canvas?root=${encodeURIComponent(Store.state.root)}&kind=base`;
-    const compRel = S.canvas.composite_url || `canvas?root=${encodeURIComponent(Store.state.root)}&kind=composite&v=${encodeURIComponent(S.canvas.composite_sig || "")}`;
-    const baseUrl = Api.apiUrl(baseRel);
-    const compUrl = Api.apiUrl(compRel);
-    if (baseUrl && lastBaseUrl !== baseUrl) {
-      lastBaseUrl = baseUrl;
-      imgBase.src = baseUrl;
-      imgSplitBefore.src = baseUrl;
-    }
-    if (compUrl && lastCompUrl !== compUrl) {
-      lastCompUrl = compUrl;
-      imgComp.src = compUrl;
+    const url = Api.apiUrl(info.rel);
+    if (!url) {
+      ovImg.classList.add("hidden");
+      if (badge) badge.classList.add("hidden");
+      return;
     }
 
-    // Before (Q) 누르는 동안은 합성·후보 겹침 모두 숨기고 원본만 표시
-    imgComp.classList.toggle("hidden", Store.state.viewFlags.beforeHeld);
+    const [x1, y1, x2, y2] = info.rect;
+    ovImg.style.left = `${x1}px`;
+    ovImg.style.top = `${y1}px`;
+    ovImg.style.width = `${Math.max(1, x2 - x1)}px`;
+    ovImg.style.height = `${Math.max(1, y2 - y1)}px`;
 
-    if (sizeChanged && !userAdjustedView) fitAll(false);
-    else applyTransform();
+    // 비파괴 스마트 필터 실시간 프리뷰 적용
+    const f = patch.meta.filters;
+    const filters = [];
+    if (f.colorEnabled) {
+      if (f.bright !== 0) filters.push(`brightness(${1 + f.bright / 100})`);
+      if (f.sat !== 0) filters.push(`saturate(${1 + f.sat / 100})`);
+      ovImg.style.opacity = String((f.opacity ?? 100) / 100);
+    } else {
+      ovImg.style.opacity = "1";
+    }
+    ovImg.style.filter = filters.length ? filters.join(" ") : "";
 
-    renderCandidateOverlay();
-    renderMaskLive();
-    renderSvg();
-    renderFloatingBar();
-    updateCursorClasses();
-    updateBrushHud();
+    if (f.transformEnabled && (f.dx || f.dy || f.rot || (f.scale && f.scale !== 100))) {
+      ovImg.style.transform = `translate(${f.dx || 0}px, ${f.dy || 0}px) rotate(${f.rot || 0}deg) scale(${(f.scale || 100) / 100})`;
+    } else {
+      ovImg.style.transform = "";
+    }
+
+    if (view.lastOverlayUrl !== url) {
+      view.lastOverlayUrl = url;
+      ovImg.src = url;
+    }
+    ovImg.classList.remove("hidden");
+
+    if (badge) {
+      if (info.previewing) {
+        badge.classList.remove("hidden");
+        if (badgeTxt) badgeTxt.textContent = `${patch.name} · 후보 #${cand.n || 1} 미리보기 중`;
+      } else {
+        badge.classList.add("hidden");
+      }
+    }
   }
 
-  // 선택 후보 실시간 캔버스 겹침 계산 (viewer.js drawOverlay 와 같은 규칙: pick_url + region 우선, 없으면 rect + big_url 폴백)
-  function resolveCandidateOverlay(patch, cand) {
-    if (!patch || !cand || patch.meta.hidden) return null;
-    if (Store.state.viewFlags.beforeHeld) return null;
-    const mk = Store.state.mask;
-    if (mk && mk.layers && (Store.state.rightTab === "retouch" || Store.state.tool === "brush" || Store.state.tool === "eraser")) {
-      return null;
+  // ── SVG 오버레이 (Focus Dim · 8핸들 · 자동 크롭 틀 · 멀티타깃 focus_box · 이음새) ──
+  function getHandles(rect) {
+    const [x1, y1, x2, y2] = rect;
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    return [
+      { id: "nw", x: x1, y: y1 }, { id: "n", x: mx, y: y1 }, { id: "ne", x: x2, y: y1 },
+      { id: "e", x: x2, y: my }, { id: "se", x: x2, y: y2 }, { id: "s", x: mx, y: y2 },
+      { id: "sw", x: x1, y: y2 }, { id: "w", x: x1, y: my },
+    ];
+  }
+
+  function renderOverlaySvg() {
+    const svg = $("overlay-svg");
+    if (!svg || !view.imgW || !view.imgH) return;
+    svg.setAttribute("viewBox", `0 0 ${view.imgW} ${view.imgH}`);
+    svg.innerHTML = "";
+    if (!Store.state.viewFlags.guidesOn) return;
+
+    const inv = 1 / Math.max(0.2, view.zoom);
+    const strokeW = 1.8 * inv;
+    const handleSz = 9 * inv;
+    const fontSz = Math.round(12 * inv);
+    const accent = Store.activeAccentHex();
+    const isLight = Store.activeTheme().mode === "light";
+    const onAccent = isLight ? "#ffffff" : "#09090b";
+
+    const patches = Store.getPatches();
+    const selIds = Store.state.selectedIds;
+    const primary = Store.primaryPatch();
+
+    // Focus Dim: 선택된 영역이 1개 이상일 때만 바깥쪽 어둡게! 선택 해제 시 0% (밝은 원본 전체 표시)
+    const activeSel = patches.filter((p) => selIds.has(p.id) && !p.meta.hidden);
+    const dimAlpha = (Store.state.prefs.focusDimAlpha ?? 36) / 100;
+    if (activeSel.length > 0 && dimAlpha > 0) {
+      let d = `M 0 0 H ${view.imgW} V ${view.imgH} H 0 Z`;
+      for (const p of activeSel) {
+        const [x1, y1, x2, y2] = p.rect;
+        d += ` M ${x1} ${y1} H ${x2} V ${y2} H ${x1} Z`;
+      }
+      svg.append(Data.svgEl("path", {
+        d,
+        fill: `rgba(0, 0, 0, ${dimAlpha})`,
+        "fill-rule": "evenodd",
+      }));
     }
-    const sc = patch.stateCrop || {};
-    const hasRegion = Array.isArray(sc.region) && sc.region.length === 4;
-    // 미채택 후보: pick_url(인접 패치까지 포함한 합성 미리보기) 우선 → 없으면 후보 원화/큰 썸네일을 rect 자리에 겹침
-    if (!cand.picked) {
-      if (cand.pick_url && hasRegion) return { rect: sc.region, rel: cand.pick_url, previewing: true };
-      const fallbackRel = cand.full_url || cand.big_url || cand.thumb_url;
-      if (fallbackRel) return { rect: patch.rect, rel: fallbackRel, previewing: true };
-      return null;
+
+    // 실제 이음새 선분 (x0/y0/x1/y1)
+    if (Store.state.viewFlags.seamsOn && Store.state.seams && Array.isArray(Store.state.seams.segments)) {
+      for (const seg of Store.state.seams.segments) {
+        const col = seg.severity === "bad" ? "#ef4444" : "#f59e0b";
+        svg.append(Data.svgEl("line", {
+          x1: seg.x0, y1: seg.y0, x2: seg.x1, y2: seg.y1,
+          stroke: col, "stroke-width": strokeW * 2.2, "stroke-linecap": "round",
+        }));
+      }
     }
-    // ★ 채택 후보: region_url 이 있으면 원해상도 겹침으로 선명하게 표시
-    if (hasRegion && sc.region_url) {
-      return { rect: sc.region, rel: sc.region_url, previewing: false };
+
+    // 각 수정 영역 박스 · 라벨 · 자동 크롭 틀 · 멀티타깃 focus_box · 8방향 핸들
+    for (const p of patches) {
+      if (p.meta.hidden) continue;
+      const isSel = selIds.has(p.id);
+      const isPrimary = !!(primary && primary.id === p.id);
+      const [x1, y1, x2, y2] = p.rect;
+      const rw = Math.max(1, x2 - x1), rh = Math.max(1, y2 - y1);
+      const col = isSel ? accent : (p.anyPicked ? "#4ade80" : "#a1a1aa");
+
+      // AI 자동 크롭 확장 가이드
+      if (isSel && Store.state.prefs.showAutoCrop) {
+        const af = Data.computeAutoCropFrame(p.rect, view.imgW, view.imgH);
+        svg.append(Data.svgEl("rect", {
+          x: af.x, y: af.y, width: af.w, height: af.h,
+          fill: "none", stroke: accent, "stroke-opacity": 0.45,
+          "stroke-width": strokeW * 0.8, "stroke-dasharray": `${6 * inv} ${4 * inv}`,
+        }));
+      }
+
+      // 주 박스 (내부는 항상 fill="none" — 원본 색감 무왜곡!)
+      svg.append(Data.svgEl("rect", {
+        x: x1, y: y1, width: rw, height: rh,
+        fill: "none", stroke: col,
+        "stroke-width": isSel ? strokeW * 1.35 : strokeW * 0.9,
+      }));
+
+      // 멀티타깃 focus_box 표시
+      if (isPrimary && p.target && Array.isArray(p.target.focus_box) && p.target.focus_box.length === 4) {
+        const [fx1, fy1, fx2, fy2] = p.target.focus_box;
+        svg.append(Data.svgEl("rect", {
+          x: x1 + fx1, y: y1 + fy1, width: Math.max(4, fx2 - fx1), height: Math.max(4, fy2 - fy1),
+          fill: "none", stroke: "#38bdf8",
+          "stroke-width": strokeW * 1.1, "stroke-dasharray": `${4 * inv} ${3 * inv}`,
+        }));
+      }
+
+      // 상단 라벨 태그
+      const purp = Data.purposeInfo(p.meta.purpose);
+      const labelText = `${p.index}. [${purp.short}] ${p.name}${p.locked ? " (잠금)" : ""}`;
+      const padX = 7 * inv;
+      const labelH = 21 * inv;
+      const labelW = Math.max(80 * inv, (labelText.length * 8.4 + 16) * inv);
+      const ly = Math.max(0, y1 - labelH - 2 * inv);
+
+      svg.append(Data.svgEl("rect", {
+        x: x1, y: ly, width: labelW, height: labelH, rx: 2 * inv,
+        fill: isSel ? accent : "rgba(9, 9, 11, 0.86)",
+        stroke: col, "stroke-width": strokeW * 0.6,
+      }));
+      const txt = Data.svgEl("text", {
+        x: x1 + padX, y: ly + labelH * 0.72,
+        fill: isSel ? onAccent : "#f4f4f5",
+        "font-size": fontSz, "font-weight": "700",
+      });
+      txt.textContent = labelText;
+      svg.append(txt);
+
+      // 주 선택 영역 8방향 리사이즈 핸들
+      if (isPrimary && !p.locked) {
+        for (const hp of getHandles(p.rect)) {
+          svg.append(Data.svgEl("rect", {
+            x: hp.x - handleSz / 2, y: hp.y - handleSz / 2,
+            width: handleSz, height: handleSz,
+            fill: accent, stroke: onAccent, "stroke-width": strokeW * 0.75,
+          }));
+        }
+      }
+    }
+
+    // 드로잉 중인 새 사각형
+    if (view.drag && view.drag.type === "draw-rect" && view.drag.tempRect) {
+      const [x1, y1, x2, y2] = view.drag.tempRect;
+      svg.append(Data.svgEl("rect", {
+        x: x1, y: y1, width: Math.max(1, x2 - x1), height: Math.max(1, y2 - y1),
+        fill: "none", stroke: accent,
+        "stroke-width": strokeW * 1.4, "stroke-dasharray": `${5 * inv} ${4 * inv}`,
+      }));
+    }
+  }
+
+  // ── 2단 리치 플로팅 컨텍스트 바 (목업 100% 복원) ──
+  function renderFloatingBar() {
+    const fb = $("floating-bar");
+    if (!fb) return;
+    const patch = Store.primaryPatch();
+    const tool = Store.state.tool;
+    if (!patch || tool === "brush" || tool === "eraser") {
+      fb.classList.add("hidden");
+      return;
+    }
+    fb.classList.remove("hidden");
+
+    const selList = Store.selectedPatches();
+    const isMulti = selList.length > 1;
+    const purpHost = $("fb-purposes");
+    if (purpHost) {
+      purpHost.innerHTML = "";
+      const commonPurp = Store.getCommonOrMixed(selList, (p) => p.meta.purpose);
+      for (const pr of Data.PURPOSES) {
+        const b = Data.el("button", {
+          type: "button",
+          className: "fb-purpose-chip" + (!commonPurp.mixed && commonPurp.value === pr.id ? " on" : ""),
+          title: pr.hint,
+          onClick: () => {
+            for (const sp of selList) {
+              sp.meta.purpose = pr.id;
+              sp.meta.dirtySpec = true;
+            }
+            Store.emit("selection");
+            if (!isMulti && Api.can("v2_spec_edit")) Store.savePatchSpec(patch);
+          },
+        }, Data.icon(pr.icon, 12), pr.short);
+        purpHost.append(b);
+      }
+    }
+
+    // 부착된 레퍼런스 미니 칩 + '+ 참조' 버튼
+    const refsHost = $("fb-refs");
+    if (refsHost) {
+      refsHost.innerHTML = "";
+      const files = (patch.refCrop && Array.isArray(patch.refCrop.files)) ? patch.refCrop.files : [];
+      files.slice(0, 3).forEach((rf, i) => {
+        const thumb = Api.apiUrl(rf.thumb_url || "");
+        const chip = Data.el("span", { className: "fb-ref-chip", title: rf.name },
+          thumb ? Data.el("img", { src: thumb, alt: "" }) : null,
+          Data.el("span", { text: `@참조${i + 1}` }),
+          Data.el("button", {
+            type: "button", text: "×", title: "이 영역에서 연결 해제",
+            onClick: async () => {
+              try {
+                await Api.linkRef(Store.state.root, Store.state.R?.rev ?? null, {
+                  op: "unlink", crop_id: patch.id, file: rf.name,
+                });
+                Store.toast(`"${rf.name}" 연결을 해제했습니다.`);
+                await Store.refreshAll(true);
+              } catch (err) {
+                Store.toast(`연결 해제 실패: ${err.message}`, "err");
+              }
+            },
+          }),
+        );
+        refsHost.append(chip);
+      });
+      refsHost.append(Data.el("button", {
+        type: "button", className: "fb-mini-btn", title: "시트에서 레퍼런스 오려내 연결 (R)",
+        onClick: () => window.DPV2Overlays && window.DPV2Overlays.openSheetOverlay(),
+      }, Data.icon("scissors", 11), "+ 참조"));
+    }
+
+    // 우측 미니 액션 버튼들
+    const cmpBtn = $("fb-compare-btn");
+    if (cmpBtn) cmpBtn.classList.toggle("hidden", !patch.candidates.length);
+
+    const ratioBtn = $("fb-ratio-btn");
+    if (ratioBtn) {
+      const ratios = (patch.modelInfo && patch.modelInfo.ratios) || [];
+      ratioBtn.classList.toggle("hidden", isMulti || !ratios.length || patch.locked);
+    }
+
+    const lockBtn = $("fb-lock-btn");
+    if (lockBtn) {
+      lockBtn.innerHTML = "";
+      lockBtn.append(Data.icon(patch.locked ? "lock" : "unlock", 12));
+      lockBtn.title = patch.locked ? "잠금 해제" : "위치 잠금";
+    }
+    const delBtn = $("fb-del-btn");
+    if (delBtn) {
+      delBtn.innerHTML = "";
+      delBtn.append(Data.icon("trash", 12));
+    }
+    const deselBtn = $("fb-deselect-btn");
+    if (deselBtn) {
+      deselBtn.innerHTML = "";
+      deselBtn.append(Data.icon("x", 12));
+    }
+
+    // Row 2: 지시문 · AI 작성 · 모델 · 생성
+    const inp = $("fb-instruction");
+    const purp = Data.purposeInfo(patch.meta.purpose);
+    if (inp) {
+      if (document.activeElement !== inp) {
+        inp.value = isMulti ? "" : (patch.meta.user_instruction_ko || "");
+      }
+      inp.placeholder = isMulti
+        ? `${selList.length}개 영역 동시 선택 중 — 목적·모델 일괄 변경 또는 선택 생성`
+        : purp.placeholder;
+    }
+
+    const aiBtn = $("fb-ai-btn");
+    if (aiBtn) {
+      aiBtn.innerHTML = "";
+      aiBtn.append(Data.icon("sparkles", 13), Store.state.assistBusy ? "작성 중…" : "AI 작성");
+      aiBtn.disabled = !!Store.state.assistBusy;
+    }
+
+    const mLabel = $("fb-model-label");
+    if (mLabel) {
+      const commonM = Store.getCommonOrMixed(selList, (p) => p.effectiveModel);
+      mLabel.textContent = commonM.mixed
+        ? `혼합 (${new Set(selList.map((p) => p.effectiveModel)).size}종)`
+        : (patch.modelInfo ? patch.modelInfo.shortName : patch.effectiveModel);
+    }
+    const runBtn = $("fb-run-btn");
+    if (runBtn) {
+      runBtn.textContent = isMulti ? `${selList.length}개 생성` : "생성";
+      runBtn.disabled = !!(Store.state.S && Store.state.S.running);
+    }
+  }
+
+  // ── 마스크 브러시 실시간 캔버스 프리뷰 ──
+  function renderMaskPreview() {
+    const mc = $("mask-canvas");
+    if (!mc) return;
+    const ms = Store.state.mask;
+    if (!ms || !ms.layers || (Store.state.tool !== "brush" && Store.state.tool !== "eraser")) {
+      mc.classList.add("hidden");
+      return;
+    }
+    mc.classList.remove("hidden");
+    const [bx1, by1, bx2, by2] = ms.layers.box;
+    const bw = bx2 - bx1, bh = by2 - by1;
+    if (mc.width !== view.imgW || mc.height !== view.imgH) {
+      mc.width = view.imgW;
+      mc.height = view.imgH;
+    }
+    const ctx = mc.getContext("2d");
+    ctx.clearRect(0, 0, mc.width, mc.height);
+    const out = ctx.createImageData(bw, bh);
+    const { under, patch, over } = ms.layers;
+    const [wx1, wy1] = ms.win;
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        const i4 = (y * bw + x) * 4;
+        const mx = (bx1 + x) - wx1, my = (by1 + y) - wy1;
+        let a = 0;
+        if (mx >= 0 && mx < ms.w && my >= 0 && my < ms.h) a = ms.m[my * ms.w + mx];
+        const oa = over[i4 + 3] / 255;
+        for (let c = 0; c < 3; c++) {
+          const blend = under[i4 + c] * (1 - a) + patch[i4 + c] * a;
+          out.data[i4 + c] = Math.round(blend * (1 - oa) + over[i4 + c] * oa);
+        }
+        out.data[i4 + 3] = 255;
+      }
+    }
+    ctx.putImageData(out, bx1, by1);
+  }
+
+  function paintMaskAt(pt, isErase) {
+    const ms = Store.state.mask;
+    if (!ms) return;
+    const [wx1, wy1] = ms.win;
+    const cx = pt.x - wx1, cy = pt.y - wy1;
+    const rad = Math.max(2, ms.brushSize / 2);
+    const hard = ms.brushHard ?? 0.65;
+    const flow = ms.brushFlow ?? 1;
+    const x0 = Math.max(0, Math.floor(cx - rad));
+    const y0 = Math.max(0, Math.floor(cy - rad));
+    const x1 = Math.min(ms.w - 1, Math.ceil(cx + rad));
+    const y1 = Math.min(ms.h - 1, Math.ceil(cy + rad));
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const d = Math.hypot(x - cx, y - cy) / rad;
+        if (d > 1) continue;
+        const falloff = d <= hard ? 1 : (1 - (d - hard) / Math.max(0.01, 1 - hard));
+        const idx = y * ms.w + x;
+        const w = falloff * flow;
+        ms.m[idx] = isErase
+          ? Math.max(0, ms.m[idx] * (1 - w))
+          : Math.min(1, ms.m[idx] + (1 - ms.m[idx]) * w);
+      }
+    }
+    ms.dirty = true;
+    renderMaskPreview();
+  }
+
+  // ── 히트 테스트 (8핸들 · 모서리 바깥 회전 · 영역 본체) ──
+  const HANDLE_CURSORS = {
+    n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
+    nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize",
+  };
+
+  function hitTest(pt) {
+    const inv = 1 / Math.max(0.2, view.zoom);
+    const sel = Store.primaryPatch();
+    if (sel && !sel.meta.hidden && !sel.locked) {
+      for (const hp of getHandles(sel.rect)) {
+        if (Math.abs(pt.x - hp.x) <= 12 * inv && Math.abs(pt.y - hp.y) <= 12 * inv) {
+          return { type: "handle", patch: sel, handle: hp.id };
+        }
+      }
+      const [x1, y1, x2, y2] = sel.rect;
+      const outside = pt.x < x1 || pt.x > x2 || pt.y < y1 || pt.y > y2;
+      if (outside) {
+        const corners = [{ x: x1, y: y1 }, { x: x2, y: y1 }, { x: x2, y: y2 }, { x: x1, y: y2 }];
+        for (const c of corners) {
+          const dist = Math.hypot(pt.x - c.x, pt.y - c.y);
+          if (dist > 11 * inv && dist <= 32 * inv) {
+            return { type: "rotate", patch: sel };
+          }
+        }
+      }
+    }
+    for (const p of Store.getPatches()) {
+      if (p.meta.hidden) continue;
+      const [x1, y1, x2, y2] = p.rect;
+      if (pt.x >= x1 && pt.x <= x2 && pt.y >= y1 && pt.y <= y2) {
+        return { type: "body", patch: p };
+      }
     }
     return null;
   }
 
-  function renderCandidateOverlay() {
-    if (!candOv || !imgCandLive) return;
-    const p = Store.primaryPatch();
-    const c = Store.currentCandidate(p);
-    const ov = resolveCandidateOverlay(p, c);
-    if (!ov) {
-      candOv.classList.add("hidden");
+  function updateHoverCursor(pt) {
+    const vp = $("canvas-viewport");
+    if (!vp) return;
+    vp.classList.remove("cursor-rotate");
+    if (Store.state.tool !== "select" || view.spaceDown) {
+      vp.style.cursor = "";
       return;
     }
-    const url = Api.apiUrl(ov.rel);
-    if (!url) {
-      candOv.classList.add("hidden");
-      return;
+    const hit = hitTest(pt);
+    if (!hit) vp.style.cursor = "default";
+    else if (hit.type === "handle") vp.style.cursor = HANDLE_CURSORS[hit.handle] || "pointer";
+    else if (hit.type === "rotate") { vp.style.cursor = ""; vp.classList.add("cursor-rotate"); }
+    else if (hit.patch.locked) vp.style.cursor = "pointer";
+    else vp.style.cursor = "move";
+  }
+
+  function updateFooterInfo(pt = null) {
+    const infoEl = $("canvas-cursor-info");
+    if (infoEl) {
+      const selList = Store.selectedPatches();
+      const sel = Store.primaryPatch();
+      if (selList.length > 1) {
+        infoEl.textContent = `${selList.length}개 영역 동시 선택 중 (일괄 편집 가능 · Esc 선택 해제)`;
+      } else if (sel) {
+        const [x1, y1, x2, y2] = sel.rect;
+        infoEl.textContent = `선택: ${sel.name} (${x2 - x1}×${y2 - y1}px · 빈 배경 클릭 또는 Esc로 해제)`;
+      } else {
+        infoEl.textContent = "선택 해제됨 (원본 전체 밝게 보기) · 클릭해 선택하거나 M으로 추가";
+      }
     }
-    const [x0, y0, x1, y1] = ov.rect;
-    candOv.classList.remove("hidden");
-    candOv.style.left = `${x0}px`;
-    candOv.style.top = `${y0}px`;
-    candOv.style.width = `${Math.max(1, x1 - x0)}px`;
-    candOv.style.height = `${Math.max(1, y1 - y0)}px`;
-    if (lastCandLiveUrl !== url) {
-      lastCandLiveUrl = url;
-      candOv.classList.add("loading");
-      imgCandLive.onload = imgCandLive.onerror = () => {
-        if (lastCandLiveUrl === url) candOv.classList.remove("loading");
-      };
-      imgCandLive.src = url;
-      if (imgCandLive.complete) candOv.classList.remove("loading");
+    const coordEl = $("canvas-coords");
+    if (coordEl && pt) {
+      const cx = Math.max(0, Math.min(view.imgW || 9999, Math.round(pt.x)));
+      const cy = Math.max(0, Math.min(view.imgH || 9999, Math.round(pt.y)));
+      coordEl.textContent = `${cx}, ${cy}`;
     }
   }
 
-  function updateCursorClasses() {
-    vp.classList.remove("mode-pan", "mode-panning", "mode-rect", "mode-brush", "mode-eraser");
-    const tool = spaceHeld ? "pan" : Store.state.tool;
-    if (drag && drag.kind === "pan") vp.classList.add("mode-panning");
-    else if (tool === "pan") vp.classList.add("mode-pan");
-    else if (tool === "rect") vp.classList.add("mode-rect");
-    else if (tool === "brush") vp.classList.add("mode-brush");
-    else if (tool === "eraser") vp.classList.add("mode-eraser");
-  }
-
-  function updateBrushHud() {
+  function setTool(toolName) {
+    if (toolName === "sheet") {
+      if (window.DPV2Overlays) window.DPV2Overlays.openSheetOverlay();
+      return;
+    }
+    Store.state.tool = toolName;
+    document.querySelectorAll(".tool-btn").forEach((b) => b.classList.toggle("on", b.dataset.tool === toolName));
+    const vp = $("canvas-viewport");
+    if (vp) vp.className = `canvas-viewport mode-${toolName}`;
+    const showHud = toolName === "brush" || toolName === "eraser";
     const hud = $("brush-hud");
-    const isBrush = Store.state.tool === "brush" || Store.state.tool === "eraser";
-    hud.classList.toggle("hidden", !isBrush);
-    if (!isBrush) return;
-    $("brush-hud-label").textContent = Store.state.tool === "eraser" ? "마스크 지우개 (E)" : "마스크 브러시 (B)";
-    const mk = Store.state.mask;
-    if (mk) {
-      $("hud-brush-size").value = String(mk.brushSize);
-      $("hud-brush-size-val").textContent = `${mk.brushSize}px`;
-      $("hud-brush-hard").value = String(Math.round(mk.brushHard * 100));
-      $("hud-brush-hard-val").textContent = `${Math.round(mk.brushHard * 100)}%`;
-      $("hud-brush-flow").value = String(Math.round(mk.brushFlow * 100));
-      $("hud-brush-flow-val").textContent = `${Math.round(mk.brushFlow * 100)}%`;
-      $("btn-hud-apply-mask").disabled = !mk.dirty;
+    if (hud) hud.classList.toggle("hidden", !showHud);
+    const lbl = $("brush-mode-label");
+    if (lbl) lbl.textContent = toolName === "eraser" ? "마스크 지우개" : "마스크 살리기 브러시";
+    if (showHud && !Store.state.mask) {
+      const p = Store.primaryPatch();
+      const cand = Store.currentCandidate(p);
+      if (cand) Store.openMaskSession(cand.key);
+      else Store.toast("먼저 생성된 후보가 있는 영역을 선택해 주세요.");
     }
+    renderFloatingBar();
+    renderMaskPreview();
+    Store.emit("tool");
   }
 
-  // ── 실시간 마스크 3층 합성 캔버스 (브러시/지우개 사용 시) ──
-  function renderMaskLive() {
-    const mk = Store.state.mask;
-    const show = !!(mk && mk.layers && (Store.state.rightTab === "retouch" || Store.state.tool === "brush" || Store.state.tool === "eraser"));
-    maskCanvas.classList.toggle("hidden", !show);
-    if (!show) return;
-    const [bx0, by0, bx1, by1] = mk.layers.box;
-    const bw = bx1 - bx0, bh = by1 - by0;
-    if (maskCanvas.width !== bw || maskCanvas.height !== bh) {
-      maskCanvas.width = bw;
-      maskCanvas.height = bh;
-    }
-    maskCanvas.style.left = `${bx0}px`;
-    maskCanvas.style.top = `${by0}px`;
-    maskCanvas.style.width = `${bw}px`;
-    maskCanvas.style.height = `${bh}px`;
-
-    const ctx = maskCanvas.getContext("2d");
-    const imgData = ctx.createImageData(bw, bh);
-    const out = imgData.data;
-    const { under: u, patch: p, over: o } = mk.layers;
-    const [wx0, wy0] = mk.win;
-    const dx = bx0 - wx0, dy = by0 - wy0;
-    const ww = mk.w, wh = mk.h;
-
-    for (let y = 0; y < bh; y++) {
-      const wy = y + dy;
-      for (let x = 0; x < bw; x++) {
-        const i = (y * bw + x) * 4;
-        const wx = x + dx;
-        const inWin = wx >= 0 && wx < ww && wy >= 0 && wy < wh;
-        const mv = inWin ? mk.m[wy * ww + wx] : 0;
-        const pa = (p[i + 3] / 255) * mv;
-        const oa = o[i + 3] / 255;
-        out[i] = o[i] * oa + (u[i] + (p[i] - u[i]) * pa) * (1 - oa);
-        out[i + 1] = o[i + 1] * oa + (u[i + 1] + (p[i + 1] - u[i + 1]) * pa) * (1 - oa);
-        out[i + 2] = o[i + 2] * oa + (u[i + 2] + (p[i + 2] - u[i + 2]) * pa) * (1 - oa);
-        out[i + 3] = 255;
-      }
-    }
-    ctx.putImageData(imgData, 0, 0);
-  }
-
-  function stampMaskAt(cx, cy) {
-    const mk = Store.state.mask;
-    if (!mk) return;
-    const lx = cx - mk.win[0], ly = cy - mk.win[1];
-    const R = Math.max(2, mk.brushSize / 2);
-    const x0 = Math.max(0, Math.floor(lx - R));
-    const y0 = Math.max(0, Math.floor(ly - R));
-    const x1 = Math.min(mk.w, Math.ceil(lx + R));
-    const y1 = Math.min(mk.h, Math.ceil(ly + R));
-    const erase = Store.state.tool === "eraser";
-    const hard = mk.brushHard;
-    const flow = mk.brushFlow;
-    for (let y = y0; y < y1; y++) {
-      for (let x = x0; x < x1; x++) {
-        const dist = Math.hypot(x + 0.5 - lx, y + 0.5 - ly);
-        if (dist >= R) continue;
-        let s = 1;
-        if (dist > R * hard) {
-          const t = (dist - R * hard) / Math.max(0.001, R - R * hard);
-          s = 1 - t * t * (3 - 2 * t);
-        }
-        const idx = y * mk.w + x;
-        const cur = mk.m[idx];
-        mk.m[idx] = erase ? cur * (1 - s * flow) : cur + (1 - cur) * s * flow;
-      }
-    }
-    mk.dirty = true;
-    renderMaskLive();
-  }
-
-  // ── SVG 오버레이: Focus Dim (피드백 #8) + 패치 바운딩박스 + 8핸들/회전 + 이음매 ──
-  function renderSvg() {
-    svg.replaceChildren();
-    const [W, H] = canvasSize;
-    const patches = Store.getPatches().filter((p) => !p.meta.hidden);
-    const selPatches = Store.selectedPatches().filter((p) => !p.meta.hidden);
-    const dimAlpha = (Store.state.prefs.focusDimAlpha ?? 42) / 100;
-
-    // 1. 선택 영역 바깥만 어둡게 하는 SVG evenodd Focus Dim (선택 영역 내부 노란 틴트 완전 제거!)
-    if (dimAlpha > 0 && selPatches.length && !Store.state.viewFlags.beforeHeld) {
-      let d = `M0 0 H${W} V${H} H0 Z`;
-      for (const p of selPatches) {
-        const [x0, y0, x1, y1] = (drag && drag.id === p.id && drag.previewRect) ? drag.previewRect : p.rect;
-        d += ` M${x0} ${y0} H${x1} V${y1} H${x0} Z`;
-      }
-      svg.append(Data.svgEl("path", {
-        d,
-        fill: "#000000",
-        "fill-opacity": dimAlpha.toFixed(2),
-        "fill-rule": "evenodd",
-        "pointer-events": "none",
-      }));
-    }
-
-    const invZ = 1 / Math.max(0.05, cam.z);
-
-    // 2. 이음매 세그먼트 표시 (N 토글 — 서버 실제 좌표 x0/y0/x1/y1 과 line 둘 다 수용)
-    if (Store.state.viewFlags.seamsOn && Store.state.seams && Array.isArray(Store.state.seams.segments)) {
-      for (const seg of Store.state.seams.segments) {
-        const coords = (seg.x0 !== undefined && seg.y0 !== undefined && seg.x1 !== undefined && seg.y1 !== undefined)
-          ? [seg.x0, seg.y0, seg.x1, seg.y1]
-          : (Array.isArray(seg.line) && seg.line.length === 4 ? seg.line : null);
-        if (!coords) continue;
-        svg.append(Data.svgEl("line", {
-          x1: coords[0], y1: coords[1], x2: coords[2], y2: coords[3],
-          stroke: seg.severity === "bad" ? "#ef4444" : "#f59e0b",
-          "stroke-width": 4 * invZ,
-          "stroke-linecap": "round",
-          "pointer-events": "none",
-        }));
-      }
-    }
-
-    // 3. 패치 사각형 & 핸들
-    const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#dfe104";
-    for (const p of patches) {
-      const isPrimary = p.id === (Store.primaryPatch() && Store.primaryPatch().id);
-      const isSelected = Store.state.selectedIds.has(p.id) || isPrimary;
-      const rect = (drag && drag.id === p.id && drag.previewRect) ? drag.previewRect : p.rect;
-      const [x0, y0, x1, y1] = rect;
-      const rw = Math.max(1, x1 - x0), rh = Math.max(1, y1 - y0);
-      const rot = (drag && drag.id === p.id && drag.previewRot !== undefined) ? drag.previewRot : (p.meta.rotDeg || 0);
-      const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-
-      const g = Data.svgEl("g", rot ? { transform: `rotate(${rot} ${cx} ${cy})` } : {});
-
-      // AI 자동 크롭 경계 점선 미리보기
-      if (Store.state.prefs.showAutoCrop && isSelected && window.DPLayoutGeom) {
-        const ac = window.DPLayoutGeom.autoCrop(rect, canvasSize);
-        if (ac) {
-          g.append(Data.svgEl("rect", {
-            x: ac[0], y: ac[1], width: ac[2] - ac[0], height: ac[3] - ac[1],
-            fill: "none", stroke: "#38bdf8", "stroke-width": 1.5 * invZ,
-            "stroke-dasharray": `${6 * invZ} ${4 * invZ}`, "pointer-events": "none",
-          }));
-        }
-      }
-
-      // 선택 영역 본체 (fill="none" — 원본 색감 왜곡 0%!)
-      const box = Data.svgEl("rect", {
-        x: x0, y: y0, width: rw, height: rh,
-        fill: "transparent",
-        stroke: isSelected ? accent : "rgba(228,228,231,0.58)",
-        "stroke-width": (isPrimary ? 2.4 : isSelected ? 1.8 : 1.3) * invZ,
-        "stroke-dasharray": p.locked ? `${5 * invZ} ${3 * invZ}` : "",
-        style: `cursor:${Store.state.tool === "select" && !p.locked ? "move" : "pointer"}`,
-        "data-crop-id": p.id,
-        "data-hit": "body",
-      });
-      g.append(box);
-
-      // 상단 인덱스/이름 배지
-      const labelH = 19 * invZ;
-      const labelText = `${p.index}. ${p.name}${p.locked ? " 🔒" : ""}`;
-      const approxW = Math.max(68, labelText.length * 7.8 + 14) * invZ;
-      const ly = y0 - labelH - 2 * invZ < 0 ? y0 + 2 * invZ : y0 - labelH - 2 * invZ;
-      g.append(Data.svgEl("rect", {
-        x: x0, y: ly, width: approxW, height: labelH, rx: 3 * invZ,
-        fill: isSelected ? accent : "rgba(15,15,18,0.86)",
-        "pointer-events": "none",
-      }));
-      const txt = Data.svgEl("text", {
-        x: x0 + 6 * invZ, y: ly + 13.5 * invZ,
-        fill: isSelected ? "#09090b" : "#f4f4f5",
-        "font-size": 11 * invZ,
-        "font-weight": "700",
-        "pointer-events": "none",
-      });
-      txt.textContent = labelText;
-      g.append(txt);
-
-      // 다중 타깃(A·B·C) focus_box 서브 프레임 표시 (선택 패치에서 클릭으로 타깃 전환)
-      if (isPrimary && p.targets && p.targets.length > 1) {
-        const boxPalette = ["#ff5d5d", "#46d17e", "#4da3ff", "#ffa24d"];
-        p.targets.forEach((tg, ti) => {
-          const fb = Array.isArray(tg.focus_box) && tg.focus_box.length === 4 ? tg.focus_box : null;
-          if (!fb) return;
-          const activeTg = p.target && p.target.key === tg.key;
-          const col = boxPalette[ti % boxPalette.length];
-          g.append(Data.svgEl("rect", {
-            x: x0 + fb[0], y: y0 + fb[1],
-            width: Math.max(1, fb[2] - fb[0]), height: Math.max(1, fb[3] - fb[1]),
-            fill: "transparent",
-            stroke: col,
-            "stroke-width": (activeTg ? 2.2 : 1.3) * invZ,
-            "stroke-dasharray": activeTg ? "" : `${4 * invZ} ${3 * invZ}`,
-            style: "cursor:pointer",
-            "data-crop-id": p.id, "data-target-key": tg.key, "data-hit": "target",
-          }));
-          const tlbl = Data.svgEl("text", {
-            x: x0 + fb[0] + 4 * invZ, y: y0 + fb[1] + 13 * invZ,
-            fill: col, "font-size": 11 * invZ, "font-weight": "700", "pointer-events": "none",
-          });
-          tlbl.textContent = tg.tid;
-          g.append(tlbl);
-        });
-      }
-
-      // 주 선택 패치 & 잠금 해제 & select 도구: 8개 리사이즈 핸들 + 4개 바깥 회전 구역 + 상단 회전 노브
-      if (isPrimary && !p.locked && Store.state.tool === "select") {
-        const hs = 8 * invZ;
-        const rotZone = 14 * invZ;
-        const outerCorners = [
-          [x0 - rotZone, y0 - rotZone],
-          [x1, y0 - rotZone],
-          [x1, y1],
-          [x0 - rotZone, y1],
-        ];
-        for (const [rx, ry] of outerCorners) {
-          g.append(Data.svgEl("rect", {
-            x: rx, y: ry, width: rotZone, height: rotZone,
-            fill: "transparent", class: "cursor-rotate",
-            "data-crop-id": p.id, "data-hit": "rotate",
-          }));
-        }
-
-        // 상단 회전 연결선 & 핸들
-        const rotY = y0 - 22 * invZ;
-        g.append(Data.svgEl("line", {
-          x1: cx, y1: y0, x2: cx, y2: rotY,
-          stroke: accent, "stroke-width": 1.4 * invZ, "pointer-events": "none",
-        }));
-        g.append(Data.svgEl("circle", {
-          cx, cy: rotY, r: 5.5 * invZ,
-          fill: "#09090b", stroke: accent, "stroke-width": 1.8 * invZ,
-          class: "cursor-rotate", "data-crop-id": p.id, "data-hit": "rotate",
-        }));
-
-        // 8개 리사이즈 핸들
-        const pts = {
-          nw: [x0, y0], n: [cx, y0], ne: [x1, y0], e: [x1, cy],
-          se: [x1, y1], s: [cx, y1], sw: [x0, y1], w: [x0, cy],
-        };
-        for (const hKey of HANDLES) {
-          const [hx, hy] = pts[hKey];
-          g.append(Data.svgEl("rect", {
-            x: hx - hs / 2, y: hy - hs / 2, width: hs, height: hs,
-            fill: "#ffffff", stroke: "#09090b", "stroke-width": 1.4 * invZ,
-            style: `cursor:${CURSORS[hKey]}`,
-            "data-crop-id": p.id, "data-hit": "resize", "data-handle": hKey,
-          }));
-        }
-      }
-      svg.append(g);
-    }
-
-    // 4. 새 영역 드래그 미리보기 (M 도구)
-    if (draftRect) {
-      const [dx0, dy0, dx1, dy1] = draftRect;
-      svg.append(Data.svgEl("rect", {
-        x: dx0, y: dy0, width: Math.max(1, dx1 - dx0), height: Math.max(1, dy1 - dy0),
-        fill: "none", stroke: accent, "stroke-width": 2 * invZ,
-        "stroke-dasharray": `${6 * invZ} ${4 * invZ}`, "pointer-events": "none",
-      }));
-    }
-
-    // 5. 브러시/지우개 커서 원
-    if (cursorPt && (Store.state.tool === "brush" || Store.state.tool === "eraser")) {
-      const r = ((Store.state.mask && Store.state.mask.brushSize) || 48) / 2;
-      svg.append(Data.svgEl("circle", {
-        cx: cursorPt[0], cy: cursorPt[1], r,
-        fill: "none",
-        stroke: Store.state.tool === "eraser" ? "#ef4444" : "#22c55e",
-        "stroke-width": 1.6 * invZ,
-        "pointer-events": "none",
-      }));
-    }
-  }
-
-  // ── 하단 도킹 컨텍스트 바 ──
-  function renderFloatingBar() {
-    const bar = $("floating-bar");
-    const p = Store.primaryPatch();
-    if (!p || !Store.state.S || !Store.state.S.canvas) {
-      bar.classList.add("hidden");
-      return;
-    }
-    bar.classList.remove("hidden");
-    const [x0, y0, x1, y1] = p.rect;
-    const cand = Store.currentCandidate(p);
-    const tgLabel = p.targets && p.targets.length > 1 && p.target ? ` · ${p.target.tid}` : "";
-    const prevLabel = cand && !cand.picked ? ` [미리보기 c${String(cand.n).padStart(2, "0")}]` : "";
-    $("fb-name").textContent = `${p.name}${tgLabel}${prevLabel}`;
-    $("fb-dims").textContent = `${x1 - x0}×${y1 - y0}`;
-
-    // 선택 패치 실시간 크롭 썸네일 미리보기 (포토샵식 직관성)
-    const fbThumb = $("fb-thumb");
-    if (fbThumb && lastBaseUrl && canvasSize[0] > 0 && canvasSize[1] > 0) {
-      const rw = Math.max(1, x1 - x0), rh = Math.max(1, y1 - y0);
-      fbThumb.style.backgroundImage = `url("${lastBaseUrl}")`;
-      fbThumb.style.backgroundSize = `${(100 * canvasSize[0]) / rw}% ${(100 * canvasSize[1]) / rh}%`;
-      fbThumb.style.backgroundPosition = `${canvasSize[0] > rw ? (100 * x0) / (canvasSize[0] - rw) : 0}% ${canvasSize[1] > rh ? (100 * y0) / (canvasSize[1] - rh) : 0}%`;
-    }
-
-    const grp = $("fb-purpose-group");
-    grp.replaceChildren();
-    for (const purp of Data.PURPOSES) {
-      const btn = Data.el("button", {
-        type: "button",
-        className: "mini-btn" + (p.meta.purpose === purp.id ? " on" : ""),
-        title: purp.desc,
-        onClick: () => {
-          p.meta.purpose = purp.id;
-          p.meta.dirtySpec = true;
-          Store.emit("selection");
-        },
-      }, Data.icon(purp.icon, 13), Data.el("span", { text: purp.short }));
-      grp.append(btn);
-    }
-
-    // 비율 고정 모델(나노바나나 등)일 때 [비율 맞추기] 원클릭 버튼 표시
-    const ratioBtn = $("btn-fb-ratio-fit");
-    const hasRatios = p.modelInfo && p.modelInfo.ratios && p.modelInfo.ratios.length > 0 && window.DPLayoutGeom;
-    const matchedRatio = hasRatios ? window.DPLayoutGeom.ratioMatch(x1 - x0, y1 - y0, p.modelInfo.ratios, 0.01, Data.RATIO_SIZES) : "ok";
-    ratioBtn.classList.toggle("hidden", !hasRatios || !!matchedRatio);
-
-    $("btn-fb-compare").classList.toggle("hidden", !p.candidates.length);
-    const lockBtn = $("btn-fb-lock");
-    lockBtn.replaceChildren(Data.icon(p.locked ? "unlock" : "lock", 13), Data.el("span", { text: p.locked ? "해제" : "잠금" }));
-  }
-
-  // ── 포인터 & 휠 & 도구 이벤트 ──
-  function wireViewportEvents() {
-    vp.addEventListener("wheel", (e) => {
-      e.preventDefault();
-      const factor = Math.exp(-e.deltaY * 0.0014);
-      zoomTo(cam.z * factor, e.clientX, e.clientY);
-    }, { passive: false });
+  function bindEvents() {
+    const vp = $("canvas-viewport");
+    if (!vp) return;
 
     vp.addEventListener("pointerdown", (e) => {
-      if (e.button === 1 || spaceHeld || Store.state.tool === "pan") {
-        e.preventDefault();
-        userAdjustedView = true;
-        drag = { kind: "pan", startX: e.clientX, startY: e.clientY, tx0: cam.tx, ty0: cam.ty, pid: e.pointerId };
+      if (e.button === 1 || Store.state.tool === "pan" || view.spaceDown) {
+        view.drag = { type: "pan", sx: e.clientX, sy: e.clientY, panX: view.panX, panY: view.panY };
+        vp.classList.add("panning");
         vp.setPointerCapture(e.pointerId);
-        updateCursorClasses();
         return;
       }
       if (e.button !== 0) return;
 
-      const pt = screenToCanvas(e.clientX, e.clientY);
+      const pt = screenToImage(e.clientX, e.clientY);
+
+      if (Store.state.tool === "rect") {
+        view.drag = { type: "draw-rect", x0: pt.x, y0: pt.y, tempRect: [pt.x, pt.y, pt.x + 1, pt.y + 1] };
+        vp.setPointerCapture(e.pointerId);
+        return;
+      }
 
       if (Store.state.tool === "brush" || Store.state.tool === "eraser") {
         if (!Store.state.mask) {
-          const p = Store.primaryPatch();
-          if (p && p.pickedCand) {
-            Store.openMaskSession(p.pickedCand.key).then(() => Store.toast("마스크 브러시가 준비되었습니다 — 다시 칠해 주세요."));
-          } else {
-            Store.toast("먼저 후보 비교 탭에서 ★ 후보를 하나 채택하면 마스크 브러시를 쓸 수 있습니다.", "warn");
-          }
+          Store.toast("후보가 생성된 영역을 먼저 선택한 뒤 브러시를 사용해 주세요.");
           return;
         }
-        e.preventDefault();
-        drag = { kind: "brush", pid: e.pointerId };
-        vp.setPointerCapture(e.pointerId);
-        stampMaskAt(pt[0], pt[1]);
-        return;
-      }
-
-      if (Store.state.tool === "rect") {
-        e.preventDefault();
-        drag = { kind: "newRect", startPt: pt, pid: e.pointerId };
+        view.drag = { type: "mask" };
+        paintMaskAt(pt, Store.state.tool === "eraser");
         vp.setPointerCapture(e.pointerId);
         return;
       }
 
-      const hit = e.target && e.target.getAttribute ? e.target.getAttribute("data-hit") : null;
-      const cropId = e.target && e.target.getAttribute ? e.target.getAttribute("data-crop-id") : null;
-      if (hit === "target" && cropId) {
-        const tgKey = e.target.getAttribute("data-target-key");
-        if (tgKey) Store.selectTargetForCrop(cropId, tgKey);
+      // 선택 · 이동 · 크기 · 회전 도구 (V)
+      const hit = hitTest(pt);
+      if (!hit) {
+        // 버그 2 영구 해결: 빈 배경 클릭 시 선택 완전 해제 → Focus Dim 꺼지고 밝은 원본 표시!
+        Store.clearSelection();
         return;
       }
-      if (hit && cropId) {
-        const p = Store.getPatch(cropId);
-        if (!p) return;
-        Store.selectPatch(cropId, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey });
-        if (p.locked) {
-          Store.toast("잠긴 패치입니다 — 잠금을 해제한 뒤 이동·크기 조절하세요.", "warn");
-          return;
-        }
-        e.preventDefault();
-        if (hit === "body") {
-          drag = { kind: "move", id: cropId, startPt: pt, rect0: p.rect.slice(), previewRect: p.rect.slice(), moved: false, pid: e.pointerId };
-        } else if (hit === "resize") {
-          const handle = e.target.getAttribute("data-handle");
-          drag = { kind: "resize", id: cropId, handle, startPt: pt, rect0: p.rect.slice(), previewRect: p.rect.slice(), moved: false, pid: e.pointerId };
-        } else if (hit === "rotate") {
-          const cx = (p.rect[0] + p.rect[2]) / 2, cy = (p.rect[1] + p.rect[3]) / 2;
-          const a0 = Math.atan2(pt[1] - cy, pt[0] - cx);
-          drag = { kind: "rotate", id: cropId, cx, cy, a0, rot0: p.meta.rotDeg || 0, previewRot: p.meta.rotDeg || 0, moved: false, pid: e.pointerId };
-        }
-        vp.setPointerCapture(e.pointerId);
+
+      if (e.shiftKey || e.ctrlKey || e.metaKey) {
+        Store.selectPatch(hit.patch.id, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey });
+        return;
       }
+      if (!Store.state.selectedIds.has(hit.patch.id) || Store.state.selectedIds.size > 1) {
+        Store.selectPatch(hit.patch.id);
+      }
+      if (hit.patch.locked) return;
+
+      if (hit.type === "rotate") {
+        const [x1, y1, x2, y2] = hit.patch.rect;
+        const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+        view.drag = {
+          type: "rotate",
+          patch: hit.patch,
+          startAngle: Math.atan2(pt.y - cy, pt.x - cx),
+          origRot: hit.patch.meta.filters.rot || 0,
+        };
+        hit.patch.meta.filters.transformEnabled = true;
+        vp.setPointerCapture(e.pointerId);
+        return;
+      }
+
+      view.drag = {
+        type: hit.type === "handle" ? "resize" : "move",
+        patch: hit.patch,
+        handle: hit.handle || null,
+        startPt: pt,
+        origRect: hit.patch.rect.slice(),
+        moved: false,
+      };
+      vp.setPointerCapture(e.pointerId);
     });
 
     vp.addEventListener("pointermove", (e) => {
-      const pt = screenToCanvas(e.clientX, e.clientY);
-      cursorPt = pt;
-      const coords = $("canvas-coords");
-      if (coords) coords.textContent = `${Math.round(pt[0])}, ${Math.round(pt[1])}`;
-      if (Store.state.tool === "brush" || Store.state.tool === "eraser") renderSvg();
+      const pt = screenToImage(e.clientX, e.clientY);
+      updateFooterInfo(pt);
 
-      if (!drag || drag.pid !== e.pointerId) return;
-      e.preventDefault();
-      if (drag.kind === "pan") {
-        cam.tx = drag.tx0 + (e.clientX - drag.startX);
-        cam.ty = drag.ty0 + (e.clientY - drag.startY);
+      if (!view.drag) {
+        updateHoverCursor(pt);
+        return;
+      }
+      const dg = view.drag;
+
+      if (dg.type === "pan") {
+        view.panX = dg.panX + (e.clientX - dg.sx);
+        view.panY = dg.panY + (e.clientY - dg.sy);
         applyTransform();
         return;
       }
-      if (drag.kind === "brush") {
-        stampMaskAt(pt[0], pt[1]);
+
+      if (dg.type === "draw-rect") {
+        const x1 = Math.max(0, Math.min(view.imgW, dg.x0));
+        const y1 = Math.max(0, Math.min(view.imgH, dg.y0));
+        const x2 = Math.max(0, Math.min(view.imgW, pt.x));
+        const y2 = Math.max(0, Math.min(view.imgH, pt.y));
+        dg.tempRect = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+        renderOverlaySvg();
         return;
       }
-      const dx = pt[0] - drag.startPt[0], dy = pt[1] - drag.startPt[1];
-      const snap = !e.altKey;
-      const G = window.DPLayoutGeom;
-      if (drag.kind === "newRect") {
-        draftRect = G ? G.newRect(drag.startPt[0], drag.startPt[1], dx, dy, canvasSize, snap, e.shiftKey)
-          : [Math.min(drag.startPt[0], pt[0]), Math.min(drag.startPt[1], pt[1]), Math.max(drag.startPt[0], pt[0]), Math.max(drag.startPt[1], pt[1])];
-        renderSvg();
+
+      if (dg.type === "mask") {
+        paintMaskAt(pt, Store.state.tool === "eraser");
         return;
       }
-      if (drag.kind === "move") {
-        if (Math.hypot(dx, dy) > 2) drag.moved = true;
-        drag.previewRect = G ? G.move(drag.rect0, dx, dy, canvasSize, snap) : drag.rect0.slice();
-        renderSvg();
+
+      if (dg.type === "rotate" && dg.patch) {
+        const [x1, y1, x2, y2] = dg.patch.rect;
+        const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+        const deg = ((Math.atan2(pt.y - cy, pt.x - cx) - dg.startAngle) * 180) / Math.PI;
+        dg.patch.meta.filters.rot = Math.max(-45, Math.min(45, Math.round((dg.origRot + deg) * 2) / 2));
+        renderCandidateOverlay();
+        Store.emit("filters");
         return;
       }
-      if (drag.kind === "resize") {
-        drag.moved = true;
-        drag.previewRect = G ? G.resize(drag.rect0, drag.handle, dx, dy, canvasSize, snap, e.shiftKey) : drag.rect0.slice();
-        renderSvg();
-        return;
-      }
-      if (drag.kind === "rotate") {
-        drag.moved = true;
-        const a = Math.atan2(pt[1] - drag.cy, pt[0] - drag.cx);
-        let deg = drag.rot0 + (a - drag.a0) * 180 / Math.PI;
-        deg = e.shiftKey ? Math.round(deg / 15) * 15 : Math.round(deg);
-        drag.previewRot = ((deg + 180) % 360 + 360) % 360 - 180;
-        renderSvg();
+
+      if ((dg.type === "move" || dg.type === "resize") && dg.patch) {
+        const dx = pt.x - dg.startPt.x;
+        const dy = pt.y - dg.startPt.y;
+        const [ox1, oy1, ox2, oy2] = dg.origRect;
+        const ow = ox2 - ox1, oh = oy2 - oy1;
+        let nx1 = ox1, ny1 = oy1, nx2 = ox2, ny2 = oy2;
+        if (dg.type === "move") {
+          nx1 = Math.max(0, Math.min(view.imgW - ow, Math.round(ox1 + dx)));
+          ny1 = Math.max(0, Math.min(view.imgH - oh, Math.round(oy1 + dy)));
+          nx2 = nx1 + ow; ny2 = ny1 + oh;
+        } else {
+          const h = dg.handle;
+          if (h.includes("w")) nx1 = Math.max(0, Math.min(ox2 - 48, Math.round(ox1 + dx)));
+          if (h.includes("e")) nx2 = Math.min(view.imgW, Math.max(ox1 + 48, Math.round(ox2 + dx)));
+          if (h.includes("n")) ny1 = Math.max(0, Math.min(oy2 - 48, Math.round(oy1 + dy)));
+          if (h.includes("s")) ny2 = Math.min(view.imgH, Math.max(oy1 + 48, Math.round(oy2 + dy)));
+        }
+        dg.patch.rect[0] = nx1; dg.patch.rect[1] = ny1; dg.patch.rect[2] = nx2; dg.patch.rect[3] = ny2;
+        dg.moved = true;
+        renderOverlaySvg();
       }
     });
 
-    const endDrag = async (e) => {
-      if (!drag || drag.pid !== e.pointerId) return;
-      const d = drag;
-      drag = null;
-      updateCursorClasses();
-      if (d.kind === "brush" && Store.state.mask) {
-        Store.state.mask.ops.push(Store.state.tool === "eraser" ? "지우개" : "브러시");
-        Store.emit("mask");
-        return;
-      }
-      if (d.kind === "newRect" && draftRect) {
-        const rect = draftRect;
-        draftRect = null;
-        if (rect[2] - rect[0] >= 32 && rect[3] - rect[1] >= 32) {
-          try {
-            await Store.addCrop(rect);
-            Store.state.tool = "select";
-            Store.emit("tool");
-            Store.toast("새 수정 영역을 추가했습니다.", "ok");
-          } catch (err) {
-            Store.toast(`영역 추가 실패: ${err.message}`, "err");
-          }
-        }
-        renderSvg();
-        return;
-      }
-      if ((d.kind === "move" || d.kind === "resize") && d.moved && d.previewRect) {
-        const changed = d.previewRect.some((v, i) => v !== d.rect0[i]);
-        if (changed) {
-          try {
-            await Store.updateCrop(d.id, { rect: d.previewRect }, d.kind === "move" ? "영역 이동" : "영역 크기 조절");
-          } catch (err) {
-            Store.toast(`영역 저장 실패: ${err.message}`, "err");
-          }
-        }
-        renderSvg();
-        return;
-      }
-      if (d.kind === "rotate" && d.moved) {
-        const p = Store.getPatch(d.id);
-        if (p) {
-          p.meta.rotDeg = d.previewRot;
-          Store.toast(`회전 각도 ${d.previewRot}° 적용`, "ok");
-          // 후보정 마스크 세션이 열려 있고 ★ 후보가 같으면 서버 변형에도 반영
-          if (Store.state.mask && p.pickedCand && Store.state.mask.key === p.pickedCand.key) {
-            const seen = Store.state.mask.info && Store.state.mask.info.adjust ? Store.state.mask.info.adjust.at : "";
-            Api.adjustMask(Store.state.root, { key: p.pickedCand.key, op: "set", seen, rot: d.previewRot }).catch(() => {});
-          }
-          Store.emit("selection");
-        }
-      }
-    };
-    vp.addEventListener("pointerup", endDrag);
-    vp.addEventListener("pointercancel", endDrag);
-    vp.addEventListener("pointerleave", () => { cursorPt = null; if (Store.state.tool === "brush" || Store.state.tool === "eraser") renderSvg(); });
+    vp.addEventListener("pointerup", async (e) => {
+      if (!view.drag) return;
+      const dg = view.drag;
+      view.drag = null;
+      vp.classList.remove("panning");
+      try { vp.releasePointerCapture(e.pointerId); } catch (_) {}
 
-    // 캔버스 전/후 분할 드래그 바
-    let splitDrag = null;
-    splitBar.addEventListener("pointerdown", (e) => {
+      if (dg.type === "draw-rect" && dg.tempRect) {
+        const [x1, y1, x2, y2] = dg.tempRect;
+        renderOverlaySvg();
+        if (x2 - x1 >= 24 && y2 - y1 >= 24) {
+          await Store.addCrop([x1, y1, x2, y2]);
+          setTool("select");
+        }
+        return;
+      }
+
+      if ((dg.type === "move" || dg.type === "resize") && dg.moved && dg.patch) {
+        const label = dg.type === "move" ? `영역 이동 (${dg.patch.name})` : `영역 크기 조절 (${dg.patch.name})`;
+        await Store.updateCrop(dg.patch.id, { rect: dg.patch.rect.slice() }, label);
+      }
+    });
+
+    // 커서 중심 휠 줌
+    vp.addEventListener("wheel", (e) => {
       e.preventDefault();
-      splitDrag = { pid: e.pointerId };
-      splitBar.setPointerCapture(e.pointerId);
-    });
-    splitBar.addEventListener("pointermove", (e) => {
-      if (!splitDrag || splitDrag.pid !== e.pointerId) return;
-      const pt = screenToCanvas(e.clientX, e.clientY);
-      Store.state.viewFlags.splitRatio = Math.max(0.02, Math.min(0.98, pt[0] / Math.max(1, canvasSize[0])));
-      updateSplitPosition();
-    });
-    splitBar.addEventListener("pointerup", () => { splitDrag = null; });
-  }
+      zoomBy(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY);
+    }, { passive: false });
 
-  function wireToolRailAndFooter() {
-    document.querySelectorAll(".tool-rail .tool-btn[data-tool]").forEach((btn) => {
-      btn.addEventListener("click", () => setTool(btn.dataset.tool));
+    // 분할 비교선 드래그
+    const splitLine = $("split-line");
+    if (splitLine) {
+      let spDrag = false;
+      splitLine.addEventListener("pointerdown", (e) => {
+        spDrag = true;
+        splitLine.setPointerCapture(e.pointerId);
+        e.stopPropagation();
+      });
+      splitLine.addEventListener("pointermove", (e) => {
+        if (!spDrag) return;
+        const pt = screenToImage(e.clientX, e.clientY);
+        Store.state.viewFlags.splitRatio = Math.max(0.02, Math.min(0.98, pt.x / Math.max(1, view.imgW)));
+        renderSplitView();
+      });
+      splitLine.addEventListener("pointerup", () => { spDrag = false; });
+    }
+
+    // 툴 레일 아이콘 채우기 & 클릭 바인딩
+    const toolIcons = {
+      select: ["cursor", "V"],
+      rect: ["rectTool", "M"],
+      brush: ["brush", "B"],
+      eraser: ["eraser", "E"],
+      pan: ["hand", "H"],
+      sheet: ["scissors", "R"],
+    };
+    document.querySelectorAll(".tool-btn").forEach((b) => {
+      const def = toolIcons[b.dataset.tool];
+      if (def) {
+        b.innerHTML = "";
+        b.append(Data.icon(def[0], 16), Data.el("kbd", { text: def[1] }));
+      }
+      b.addEventListener("click", () => setTool(b.dataset.tool));
     });
-    const sheetToolBtn = $("btn-tool-sheet");
-    if (sheetToolBtn) sheetToolBtn.addEventListener("click", () => {
-      if (window.DPV2Overlays) window.DPV2Overlays.openSheetCut();
-    });
-    $("btn-toggle-autocrop").addEventListener("click", () => {
-      Store.savePrefs({ showAutoCrop: !Store.state.prefs.showAutoCrop });
-      $("btn-toggle-autocrop").classList.toggle("active", !!Store.state.prefs.showAutoCrop);
-    });
-    $("btn-fit-crop").addEventListener("click", () => fitCrop());
-    $("btn-zoom-out").addEventListener("click", () => zoomTo(cam.z / 1.25));
-    $("btn-zoom-in").addEventListener("click", () => zoomTo(cam.z * 1.25));
-    $("btn-zoom-fit").addEventListener("click", () => fitAll(true));
-    $("btn-zoom-100").addEventListener("click", () => zoomTo(1));
-    $("input-focus-dim").addEventListener("input", (e) => {
-      Store.savePrefs({ focusDimAlpha: Number(e.target.value) });
-    });
+
+    // 줌 버튼
+    const zIn = $("btn-zoom-in"), zOut = $("btn-zoom-out"), zFit = $("btn-zoom-fit");
+    if (zIn) zIn.addEventListener("click", () => zoomBy(1.2));
+    if (zOut) zOut.addEventListener("click", () => zoomBy(1 / 1.2));
+    if (zFit) zFit.addEventListener("click", fitToViewport);
 
     // 브러시 HUD
-    $("hud-brush-size").addEventListener("input", (e) => {
-      if (Store.state.mask) Store.state.mask.brushSize = Number(e.target.value);
-      $("hud-brush-size-val").textContent = `${e.target.value}px`;
+    const hudSz = $("hud-brush-size"), hudHd = $("hud-brush-hard");
+    if (hudSz) hudSz.addEventListener("input", (e) => {
+      const v = Number(e.target.value);
+      $("hud-brush-size-val").textContent = `${v}px`;
+      if (Store.state.mask) Store.state.mask.brushSize = v;
+      const rtSz = $("rt-brush-size");
+      if (rtSz) { rtSz.value = String(v); $("rt-brush-size-val").textContent = `${v}px`; }
     });
-    $("hud-brush-hard").addEventListener("input", (e) => {
-      if (Store.state.mask) Store.state.mask.brushHard = Number(e.target.value) / 100;
-      $("hud-brush-hard-val").textContent = `${e.target.value}%`;
+    if (hudHd) hudHd.addEventListener("input", (e) => {
+      const v = Number(e.target.value);
+      $("hud-brush-hard-val").textContent = `${v}%`;
+      if (Store.state.mask) Store.state.mask.brushHard = v / 100;
     });
-    $("hud-brush-flow").addEventListener("input", (e) => {
-      if (Store.state.mask) Store.state.mask.brushFlow = Number(e.target.value) / 100;
-      $("hud-brush-flow-val").textContent = `${e.target.value}%`;
-    });
-    $("btn-hud-apply-mask").addEventListener("click", () => Store.saveMaskSession());
+    const hudSave = $("btn-hud-save-mask");
+    if (hudSave) hudSave.addEventListener("click", () => Store.saveMaskSession());
+    const hudDone = $("btn-hud-done-mask");
+    if (hudDone) hudDone.addEventListener("click", () => setTool("select"));
 
-    // 하단 플로팅 컨텍스트 바 버튼
-    $("btn-fb-ratio-fit").addEventListener("click", async () => {
-      const p = Store.primaryPatch();
-      if (!p || !p.modelInfo || !window.DPLayoutGeom) return;
-      const fitted = window.DPLayoutGeom.ratioFitRect(p.rect, canvasSize, p.modelInfo.ratios, 0.01, Data.RATIO_SIZES);
-      if (!fitted) {
-        Store.toast("이 영역을 모델 허용 비율로 넓힐 수 없습니다 — 직접 크기를 조절해 주세요.", "warn");
-        return;
+    // 라이브 후보 프리뷰 즉시 채택 버튼
+    const livePick = $("btn-live-pick");
+    if (livePick) livePick.addEventListener("click", async () => {
+      const patch = Store.primaryPatch();
+      const cand = Store.currentCandidate(patch);
+      if (!patch || !patch.target || !cand) return;
+      try {
+        await Api.pickCandidate(Store.state.root, {
+          crop_id: patch.id, tid: patch.target.tid, key: cand.key, mode: "set",
+        });
+        Store.toast(`${patch.name}에 후보 #${cand.n || 1}을 확정 적용했습니다 ★`, "ok");
+        await Store.refreshAll(true);
+      } catch (err) {
+        Store.toast(`채택 실패: ${err.message}`, "err");
       }
-      await Store.updateCrop(p.id, { rect: fitted.rect }, `비율 맞춤 (${fitted.ratio})`);
-      Store.toast(`${p.modelInfo.label} 비율(${fitted.ratio})에 맞게 영역을 조정했습니다.`, "ok");
     });
 
-    $("btn-fb-compare").addEventListener("click", () => {
-      if (window.DPV2Overlays) window.DPV2Overlays.openComparer();
-    });
-
-    $("btn-fb-lock").addEventListener("click", async () => {
+    // 플로팅 바 컨트롤 바인딩
+    const fbInp = $("fb-instruction");
+    if (fbInp) fbInp.addEventListener("input", (e) => {
       const p = Store.primaryPatch();
       if (!p) return;
-      await Store.updateCrop(p.id, { locked: !p.locked }, p.locked ? "잠금 해제" : "잠금");
+      p.meta.user_instruction_ko = e.target.value;
+      p.meta.dirtySpec = true;
+      const rt = $("inp-instruction");
+      if (rt && document.activeElement !== rt) rt.value = e.target.value;
     });
-
-    $("btn-fb-delete").addEventListener("click", async () => {
+    const fbAi = $("fb-ai-btn");
+    if (fbAi) fbAi.addEventListener("click", () => window.DPV2Inspector && window.DPV2Inspector.runAssistForSelection());
+    const fbModel = $("fb-model-btn");
+    if (fbModel) fbModel.addEventListener("click", (e) => window.DPV2Inspector && window.DPV2Inspector.openModelPopover(e.currentTarget));
+    const fbRun = $("fb-run-btn");
+    if (fbRun) fbRun.addEventListener("click", () => window.DPV2Inspector && window.DPV2Inspector.runSelectedGeneration(true));
+    const fbCmp = $("fb-compare-btn");
+    if (fbCmp) fbCmp.addEventListener("click", () => window.DPV2Overlays && window.DPV2Overlays.openCompareOverlay());
+    const fbRatio = $("fb-ratio-btn");
+    if (fbRatio) fbRatio.addEventListener("click", async () => {
+      const p = Store.primaryPatch();
+      if (!p || !window.DPLayoutGeom || !p.modelInfo || !p.modelInfo.ratios.length) return;
+      const best = window.DPLayoutGeom.ratioFitRect(p.rect, view.imgW, view.imgH, p.modelInfo.ratios, Data.RATIO_SIZES);
+      if (best) {
+        await Store.updateCrop(p.id, { rect: best }, `비율 맞춤 (${p.name})`);
+        Store.toast("선택 모델 비율에 맞춰 영역 틀을 조정했습니다.", "ok");
+      }
+    });
+    const fbLock = $("fb-lock-btn");
+    if (fbLock) fbLock.addEventListener("click", async () => {
       const p = Store.primaryPatch();
       if (!p) return;
-      if (!(await Data.askDialogConfirm(`패치 "${p.name}" 영역을 삭제할까요?`, { ok: "삭제", danger: true }))) return;
-      await Store.deleteCrop(p.id);
+      await Store.updateCrop(p.id, { locked: !p.locked }, p.locked ? `잠금 해제 (${p.name})` : `잠금 (${p.name})`);
     });
-  }
-
-  function setTool(tool) {
-    Store.state.tool = tool;
-    document.querySelectorAll(".tool-rail .tool-btn[data-tool]").forEach((b) => {
-      b.classList.toggle("active", b.dataset.tool === tool);
-    });
-    if ((tool === "brush" || tool === "eraser") && !Store.state.mask) {
+    const fbDel = $("fb-del-btn");
+    if (fbDel) fbDel.addEventListener("click", async () => {
       const p = Store.primaryPatch();
-      if (p && p.pickedCand) Store.openMaskSession(p.pickedCand.key);
+      if (!p) return;
+      const ok = await Data.askDialogConfirm(`"${p.name}" 수정 영역을 삭제할까요?`, { okText: "삭제", cancelText: "취소" });
+      if (ok) await Store.deleteCrop(p.id);
+    });
+    const fbDesel = $("fb-deselect-btn");
+    if (fbDesel) fbDesel.addEventListener("click", () => Store.clearSelection());
+
+    // 플로팅 바에 레퍼런스 드롭 허용
+    const fb = $("floating-bar");
+    if (fb) {
+      fb.addEventListener("dragover", (e) => {
+        if (e.dataTransfer?.types?.includes("text/dps-ref-file")) {
+          e.preventDefault();
+          fb.classList.add("drop-hover");
+        }
+      });
+      fb.addEventListener("dragleave", () => fb.classList.remove("drop-hover"));
+      fb.addEventListener("drop", async (e) => {
+        fb.classList.remove("drop-hover");
+        const refName = e.dataTransfer?.getData("text/dps-ref-file");
+        const p = Store.primaryPatch();
+        if (refName && p && window.DPV2Inspector) {
+          e.preventDefault();
+          await window.DPV2Inspector.linkRefToPatches(refName, Store.selectedPatches());
+        }
+      });
     }
-    Store.emit("tool");
+
+    // 바깥 어둡게 슬라이더
+    const dimSlider = $("input-focus-dim");
+    if (dimSlider) {
+      dimSlider.addEventListener("input", (e) => {
+        const val = Number(e.target.value);
+        Store.savePrefs({ focusDimAlpha: val });
+        renderOverlaySvg();
+      });
+    }
+
+    // 리사이즈 대응
+    if (typeof ResizeObserver !== "undefined") {
+      new ResizeObserver(() => {
+        if (view.imgW && view.imgH) applyTransform();
+      }).observe(vp);
+    }
+
+    Store.subscribe((reason) => {
+      if (reason === "state") syncCanvasImages();
+      else if (reason === "selection" || reason === "prefs" || reason === "filters") {
+        renderOverlaySvg();
+        renderCandidateOverlay();
+        renderSplitView();
+        renderFloatingBar();
+        updateFooterInfo();
+      } else if (reason === "mask") {
+        renderMaskPreview();
+      }
+    });
   }
 
-  function setSpaceHeld(held) {
-    if (spaceHeld === held) return;
-    spaceHeld = held;
-    updateCursorClasses();
-  }
-
-  function getCanvasSize() { return canvasSize.slice(); }
-
-  return { init, render, fitAll, fitCrop, zoomTo, setTool, setSpaceHeld, getCanvasSize, resolveCandidateOverlay };
+  return {
+    view,
+    resolveCandidateOverlay,
+    fitToViewport,
+    zoomBy,
+    setTool,
+    getBaseImage,
+    syncCanvasImages,
+    renderOverlaySvg,
+    renderSplitView,
+    renderCandidateOverlay,
+    renderFloatingBar,
+    bindEvents,
+  };
 })();
