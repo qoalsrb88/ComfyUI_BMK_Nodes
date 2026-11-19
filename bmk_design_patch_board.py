@@ -7256,7 +7256,8 @@ async def pipeline_handler(request: web.Request) -> web.StreamResponse:
     result = await asyncio.to_thread(pl.view, root, switch_prepare=prepare,
                                     import_pending=_import_pending if prepare is not None else None)
     if server_mode():
-        result["crop_overrides"] = await asyncio.to_thread(_crop_override_counts, root)
+        # 받은 dict 를 고치지 않고 새 dict 로(응답에만 더하는 칸 — 패치별 생성 설정, UX v2-B D558)
+        result = {**result, "crop_overrides": await asyncio.to_thread(_crop_override_counts, root)}
         settings = result.get("settings") or result.get("derived", {}).get("settings") or {}
         source = await asyncio.to_thread(_read_forge_source, root, settings.get("import", {}).get("psd_path"))
         if source:

@@ -2417,10 +2417,14 @@ def update_crop_gen(root: str, mutate: Callable[[dict], Any], *, expect_rev: int
         rev = doc["rev"]
         if expect_rev is not None and expect_rev != rev:
             raise CropGenConflict(f"패치별 생성 설정이 다른 창에서 바뀌었습니다(rev {expect_rev} → {rev})")
-        before = _jsonable(doc["crops"])
+        # 「바뀌었나」는 JSON 글로 본다(키 순서는 무시) — 파이썬의 == 는 True == 1 · 2.0 == 2 라, 손으로 고친 값을 바로잡는 쓰기를 놓친다
+        def text(value):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+        before = text(_jsonable(doc["crops"]))
         result = mutate(doc["crops"])
         after = _jsonable(doc["crops"])
-        if after == before:
+        if text(after) == before:
             return result, rev, False
         rev += 1
         write_json_atomic(path, _check_crop_gen({"schema": CROP_GEN_SCHEMA, "rev": rev, "crops": after}))

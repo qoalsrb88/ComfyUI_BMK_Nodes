@@ -62356,6 +62356,17 @@ def ux_v2b_core_unit():
     check((rev, changed) == (3, True) and json.loads(path.read_bytes()) == {"schema": store.CROP_GEN_SCHEMA, "rev": 3, "crops": {}},
           "V2BS4 crops 가 비어도 파일과 rev 는 남음")
     check(store.prepare_inputs_fp(root, m) not in (fp0, fp1), "V2BS4 빈 crops 파일도 지문의 재료(파일이 있을 때만)")
+    # 리뷰(통합): 「바뀌었나」는 JSON 값으로 본다 — 손으로 고친 {"n": true}·{"n": 2.0} 을 정수로 바로잡는 쓰기는 써져야 한다(True == 1 로 넘기지 않는다).
+    # 키 순서만 다른 같은 내용은 쓰지 않는다.
+    for wrong, right in ((True, 1), (2.0, 2)):
+        path.write_bytes(json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": 7, "crops": {a: {"n": wrong}}}).encode())
+        _, rev, changed = store.update_crop_gen(root, lambda crops: crops.update({a: {"n": right}}), expect_rev=7)
+        saved = json.loads(path.read_bytes())["crops"][a]["n"]
+        check((rev, changed) == (8, True) and saved == right and type(saved) is int, f"V2BS4 타입만 다른 값도 바뀐 것으로 써짐: {wrong!r} → {saved!r} (rev {rev}, changed {changed})")
+    path.write_bytes(json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": 7, "crops": {a: {"model": "ideogram-4.5", "quality": "low", "n": 2}}}).encode())
+    raw7 = path.read_bytes()
+    _, rev, changed = store.update_crop_gen(root, lambda crops: crops.update({a: {"n": 2, "quality": "low", "model": "ideogram-4.5"}}), expect_rev=7)
+    check((rev, changed) == (7, False) and path.read_bytes() == raw7, "V2BS4 키 순서만 다른 같은 내용은 쓰지 않음")
     for label, raw in (("JSON 아님", b"{"), ("목록", b"[]"), ("스키마 다름", b'{"schema": "x", "rev": 1, "crops": {}}'),
                        ("rev 문자열", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": "1", "crops": {}}).encode()),
                        ("rev 불", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": True, "crops": {}}).encode()),
@@ -62560,13 +62571,17 @@ def ux_v2b_flow_unit():
 
     with _v2b_env(dp, out):
         h, root, ids = _v2b_project(dp, scope["input"], "flow", project)
-        a, b, c, d = (ids[name] for name, _ in V2B_RECTS)  # 001 템플릿 · 002 직접 입력 · 003 작업 없음 · 004 AI 작성
+        a, b, c, d = (ids[name] for name, _ in V2B_RECTS)  # 001 템플릿 · 002 직접 입력 · 003 작업 없음 · 004 템플릿(아래에서 스펙을 치움)
+        # 004 의 AI 작성본은 치운다 — 프로젝트 모델을 바꾸면 AI 작성본이 낡아 작업이 없어지는데 전환 미리 보기는 그것을 세지 못한다
+        # (이 묶음 이전부터의 한계 — 실제보다 많게 보인다). 여기서는 미리 보기와 실제 반영의 건수를 대조하므로 템플릿 패치로 둔다.
+        Path(root, "specs", d + ".json").unlink()
         args = _v2b_args(pl, project)
         pl.update(root, 0, "prepare", args)
         key = store.root_key(root)
         h, _, report = pre.run(h, **args)
         m0 = store.load_manifest(root)
-        check(_v2b_pack(m0, report) == V2B_PINNED[project], "V2BF1 기준 Prepare(파일 없음) = 불변 다이제스트")
+        check(sorted({j["crop_id"] for j in m0["jobs"]}) == sorted([a, b, d]) and all(j["model"] == project for j in m0["jobs"]),
+              "V2BF1 기준 Prepare(파일 없음) — 작업이 있는 패치 셋")
         first = view(key)
         check(first["seen"] == 0 and all(r["applied"] and r["gen"] is None for r in first["crops"]),
               f"V2BF1 반영 직후 모든 패치 applied(작업 없는 패치 포함): {[(r['crop_id'], r['applied']) for r in first['crops']]}")
@@ -62621,6 +62636,14 @@ def ux_v2b_flow_unit():
               f"V2BF6 전환 미리 보기 — 덮어쓴 둘은 그대로, 따르는 하나만 승인 필요: {dict((k, sw.get(k)) for k in ('exact', 'kept_overrides', 'need', 'error'))}")
         same = pl.switch_preview(root, m2, settings, prepare=args)
         check(same.get("exact") is True and same.get("need") == 0 and same.get("kept_overrides") == 2, "V2BF6 같은 설정의 미리 보기 0건")
+        # 리뷰(통합): 미리 보기의 건수를 정답으로 고정하지 않고 실제로 그 설정으로 반영한 계획과 대조한다
+        h, _, _ = pre.run(h, **target)
+        real = rn.split_approval(rn.plan_calls(store.load_manifest(root), root), "", backend=rn.backend_name(root))
+        check(len(real["needs_approval"]) == sw.get("need") == 1 and {e["crop_id"] for e in real["needs_approval"]} == {d},
+              f"V2BF6 미리 보기 건수 = 실제 반영 뒤의 승인 필요 건수: {len(real['needs_approval'])} vs {sw.get('need')}")
+        h, _, _ = pre.run(h, **args)
+        check(json.dumps(store.load_manifest(root)["jobs"], ensure_ascii=False) == json.dumps(m2["jobs"], ensure_ascii=False),
+              "V2BF6 설정을 되돌려 반영하면 작업 목록이 그대로")
 
         # ── 계획의 모델별 묶음(승인 해시를 만드는 목록에서 센다): 끝난 원장을 치우면 셋 다 승인 필요
         shutil.rmtree(Path(root, "cands"), ignore_errors=True)
@@ -62637,6 +62660,46 @@ def ux_v2b_flow_unit():
               f"V2BF7 계획의 모델별 묶음(표 순서·건수·장 수 합): {groups}")
         check(isinstance(groups, list) and len(groups) == 3 and groups[0].get("complexity") == "medium" and groups[1].get("quality") == "low" and groups[2].get("opts") == {"image_size": "1K", "thinking_level": "medium"}
               and groups[2]["fan_out"] is True and groups[0]["fan_out"] is False, f"V2BF7 묶음의 품질·복잡도·옵션·장마다 따로 표시: {groups}")
+
+        # ── 리뷰(통합) 6: 비율 목록 모델의 패치는 레이아웃에서 비율이 달라지면 applied 가 아니다(작업의 비율과 지금 사각형의 비율을 대조)
+        layout = store.layout_from_manifest(store.load_manifest(root))
+        next(cr for cr in layout["crops"] if cr["id"] == b)["rect"] = [256, 0, 448, 192]  # 9:16 → 1:1
+        store.write_json_atomic(str(Path(root, store.LAYOUT_NAME)), layout)
+        moved = by_id(view(key))[b]
+        check(moved["ratio"] == {"ok": True, "matched": "1:1", "nearest": "1:1"} and moved["applied"] is False,
+              f"V2BF8 비율이 달라진 영역은 반영 전(applied false): {moved['ratio']} {moved['applied']}")
+        Path(root, store.LAYOUT_NAME).unlink()
+        check(by_id(view(key))[b]["applied"] is True, "V2BF8 레이아웃이 매니페스트와 같으면 다시 applied")
+
+        # ── 리뷰(통합) 3: 프로젝트 모델이 비율 목록 모델이어도 크기 규칙을 쓰는 패치(모델을 따로 정한 GPT)가 있으면 크기 규칙 변경은 갈라짐이다
+        nano = "nano-banana-2.1"
+        nargs = _v2b_args(pl, nano)
+        for label, entries in (("덮어쓴 GPT 패치 있음", True), ("덮어쓰기 없음", False)):
+            nh, nroot, nids = _v2b_project(dp, scope["input"], "rule-" + ("mix" if entries else "plain"), nano)
+            pl.update(nroot, 0, "prepare", nargs)
+            if entries:
+                store.update_crop_gen(nroot, lambda crops: crops.update({nids["001_square"]: models.gen_bundle("gpt-image-2.6-sunburst")}), expect_rev=0)
+            nh, _, _ = pre.run(nh, **nargs)
+            nm = store.load_manifest(nroot)
+            nsettings = bd._route_settings(nroot, nm)["settings"]
+            check(pl.drift(nsettings, nm) == [], f"V2BF9 반영 직후 갈라짐 없음({label})")
+            fields = [x["field"] for x in pl.drift(dict(nsettings, prepare=dict(nsettings["prepare"], size_rule="int_k_2560")), nm)]
+            check(fields == (["size_rule"] if entries else []), f"V2BF9 크기 규칙 변경의 갈라짐 판정({label}): {fields}")
+            if entries:  # 실제로 그 패치의 생성 조건이 달라진다(그래서 갈라짐이어야 한다)
+                before_key = next(j["cell_key"] for j in nm["jobs"] if j["crop_id"] == nids["001_square"])
+                nh, _, _ = pre.run(nh, **dict(nargs, size_rule="int_k_2560"))
+                check(next(j["cell_key"] for j in store.load_manifest(nroot)["jobs"] if j["crop_id"] == nids["001_square"]) != before_key,
+                      "V2BF9 크기 규칙이 바뀌면 GPT 패치의 생성 조건이 달라짐")
+
+    # ── 리뷰(통합) 7: 로컬판(ComfyUI 탭)의 전환 미리 보기 응답에는 새 키가 없다(응답 정본 그대로)
+    with _v2b_env(dp, out, server=False):
+        lname = "gpt-image-2.5-sunburst"
+        lh, lroot, _lids = _v2b_project(dp, out, "local-preview", lname)
+        largs = _v2b_args(pl, lname)
+        lh, _, _ = pre.run(lh, **largs)
+        lm = store.load_manifest(lroot)
+        lsw = pl.switch_preview(lroot, lm, dict(pl.defaults(lroot), prepare=largs), prepare=dict(largs, model="gpt-image-2.5-flare"))
+        check(lsw.get("exact") is True and "kept_overrides" not in lsw, f"V2BF10 로컬판 미리 보기 응답에 kept_overrides 없음: {sorted(lsw)}")
 
 
 # ── 아래 묶음들은 갈래가 채운다(갈래마다 자기 묶음 안에서만 — 다른 묶음·위의 감독관 묶음은 고치지 않는다) ───────────────
@@ -74157,7 +74220,9 @@ def forge_f3_server_unit():
                           "F3S9 오류 상태에서도 safe·목록 가림")
                 with patch.object(pl, "view", return_value={"error": scope["home"] + "/bmk_design_patch/p/x.psd"}):
                     _, data = await call(app, "GET", bd.API + "/pipeline", headers=auth)
-                    check(data == {"error": "<계정 폴더>/bmk_design_patch/p/x.psd"}, "F3S9 미들웨어가 요청 계정 범위를 유지")
+                    # 서버 모드의 GET /pipeline 은 패치별 생성 설정의 수(crop_overrides — UX v2-B)를 응답에 더한다(받은 dict 는 고치지 않는다)
+                    check(data == {"error": "<계정 폴더>/bmk_design_patch/p/x.psd", "crop_overrides": {"model": 0, "n": 0}},
+                          "F3S9 미들웨어가 요청 계정 범위를 유지")
             check(payload == saved_payload, "F3S9 응답 변환은 원본 설정·기록을 바꾸지 않음")
             async def binary(request):
                 return web.Response(body=b"C:/data/private/x", content_type="image/png")

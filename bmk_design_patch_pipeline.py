@@ -874,6 +874,18 @@ def prepare_record(m: dict) -> tuple[str | None, dict]:
     return ("jobs" if rec else None), rec
 
 
+def _sized_patch_jobs(m: dict, rec: dict) -> bool:
+    """모델을 따로 정한 패치(UX v2-B)의 작업 가운데 크기 규칙을 쓰는 것이 있는가 — 작업의 모델이 마지막 반영의 프로젝트 모델과 다르고
+    비율 목록 모델이 아닌 것. 프로젝트 모델이 비율 목록 모델이면 크기 규칙은 갈라짐이 아니지만(쓰지 않는다), 그런 패치가 있으면 크기 규칙이
+    그 패치의 요청 크기·생성 조건을 바꾼다. 패치별 설정이 없는 프로젝트는 모든 작업이 프로젝트 모델이라 늘 False(지금 판정 그대로)."""
+    project = rec.get("model")
+    for job in _jobs_of(m):
+        model = _models().get(job.get("model"))
+        if job.get("model") != project and model is not None and not model.ratios:
+            return True
+    return False
+
+
 def drift(settings: dict, m: dict) -> list[dict]:
     """설정과 매니페스트의 갈라짐 [{"section", "field", "manifest", "settings", "kind"}].
     import = 매니페스트 source 와 그대로 비교(Import 캐시 판정과 같게 대소문자 구분, Import 기록이 없으면 비교 안 함),
@@ -903,7 +915,7 @@ def drift(settings: dict, m: dict) -> list[dict]:
             continue
         if key == "quality" and recorded_model is not None and not recorded_model.qualities:
             continue
-        if key == "size_rule" and target_model is not None and target_model.ratios:
+        if key == "size_rule" and target_model is not None and target_model.ratios and not _sized_patch_jobs(m, rec):
             continue
         mv, sv = rec[key], pre.get(key)
         if key in _PREPARE_OPTS:
@@ -1050,7 +1062,8 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
         except (OSError, ValueError, KeyError, TypeError):
             uncertain = True
         lo, hi = ap["est_usd"]
-        return {"prepare": target, "exact": True, "kept_overrides": len(kept_overrides), "need": len(ap["needs_approval"]),
+        # kept_overrides 는 서버 모드 응답에만 싣는다(로컬판의 응답 정본은 그대로 — 패치별 모델을 정하는 화면이 서버 모드에만 있다)
+        return {"prepare": target, "exact": True, **_server_text({}, {"kept_overrides": len(kept_overrides)}), "need": len(ap["needs_approval"]),
                 "cells": len({e["cell_key"] for e in ap["needs_approval"]}), "est_usd": [lo, hi],
                 "credits": [round(lo * runner.CREDITS_PER_USD), round(hi * runner.CREDITS_PER_USD)],
                 "pending_preapproved": len(ap["preapproved"]), "est_usd_pre": list(runner.estimate_calls(ap["preapproved"])),
