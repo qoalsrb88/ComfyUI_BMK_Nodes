@@ -62060,6 +62060,40 @@ def forge_models2_settings_unit():
         check([c.get("ratio_changed", False) for c in candidates] == [False, True, False, True],
               "FIX-P3 비율 모델의 크롭 비교는 원장 요청 크기와 무관")
 
+        ph, pr = _fx_project(dp, out, "placed-ratio", [("001_panel", [0, 0, 800, 1000])],
+                             np.zeros((1000, 1000, 3), dtype=np.uint8))
+        pre.run(ph, **args("nano-banana-2.1"))
+        pm = st.load_manifest(pr)
+        job = pm["jobs"][0]
+        req = dict(job, backend="forge", rep=0, call_id=rn.call_id_for(job["cell_key"], 0))
+        received = ([1856, 2304], [2048, 2048], [2048, 2048])
+        slots = [{"slot": i, "file": job["inputs"][0]["file"], "size": size} for i, size in enumerate(received)]
+        rn._add_candidates(pm, req, {"slots": slots}, [])
+        pm["candidates"][2]["origin_info"]["model"] = "seedream-5.5"
+        rn._write_json(rn._lpath(pr, job["cell_key"], 0, "req"), req | {"size": [2048, 2048]})
+
+        def placed_flags():
+            st.save_manifest(pr, pm)
+            target = bd.build_state(pr)["targets"][0]
+            check(target["size"] == [pm["crops"][0]["rect"][2], 1000], "FIX-P7 타깃 크기는 현재 크롭")
+            return [c.get("ratio_changed", False) for c in target["candidates"]]
+
+        check(placed_flags() == [False, True, False], "FIX-P7 크롭 수정 전 후보 표지와 Seedream 원장 기준")
+        pm["crops"][0]["rect"] = [0, 0, 1000, 1000]
+        flags = placed_flags()
+        check(not flags[0], "FIX-P7 크롭을 넓혀도 원래 자리에 맞는 나노 후보에는 표지가 생기지 않음")
+        check(flags[1], "FIX-P7 크롭을 넓혀도 원래 자리에 맞지 않는 나노 후보의 표지가 유지됨")
+        check(not flags[2], "FIX-P7 Seedream 은 원래 quad 와 달라도 요청 원장 기준")
+        pm["candidates"][0]["quad"] = [10.75, 10.25, 18.5, 10.75, 17.75, 20.25, 10.5, 19.75]
+        check(not placed_flags()[0], "FIX-P7 기울어진 소수 좌표 quad 는 정수 반올림 없이 8×10 테두리로 판정")
+        for bad_quad in (None, [0, 0, 1], [0] * 8):
+            for c in pm["candidates"][:2]:
+                if bad_quad is None:
+                    c.pop("quad", None)
+                else:
+                    c["quad"] = bad_quad
+            check(placed_flags() == [True, False, False], f"FIX-P7 quad 누락·손상 시 현재 크롭으로 판정 {bad_quad}")
+
         integration_cases = (
             ("gpt-to-nano", args("gpt-image-2.5-sunburst"), args("nano-banana-2.1"), 2),
             ("nano-to-gpt", args("nano-banana-2.1"), args("gpt-image-2.5-sunburst"), 4),
@@ -62106,6 +62140,27 @@ def forge_models2_settings_unit():
                           and ("opts" in e["job"]) == bool(by_key[e["cell_key"]].get("opts"))
                           for e in ap["needs_approval"] + ap["blocked"]),
                       f"FIX-P6 승인 계획의 작업도 opts 규칙 유지 {case}")
+
+            sh, sr = project("switch-size-rule", [("001_match", [0, 0, 80, 100]), ("002_mismatch", [90, 0, 172, 100])])
+            gpt = args("gpt-image-2.5-sunburst", size_rule="user_k")
+            nano = args("nano-banana-2.1", size_rule="int_k_2560")
+            pre.run(sh, **gpt)
+            sm = st.load_manifest(sr)
+            settled(sr, sm)
+            settings = pl.derive(sr, sm)["settings"]
+            fields = {row["field"] for row in pl.drift(dict(settings, prepare=nano), sm)}
+            check("model" in fields and "size_rule" not in fields, "FIX-P8 GPT → 나노 갈라짐에서 모델만 크기 규칙 차이를 대표")
+            preview = pl.switch_preview(sr, sm, settings, prepare=nano)
+            pre.run(sh, **nano)
+            sm = st.load_manifest(sr)
+            ap = rn.split_approval(rn.plan_calls(sm, sr), "", backend=rn.BACKEND_FORGE)
+            check(preview.get("exact") is True and preview.get("need") == len(ap["needs_approval"]) == 2,
+                  "FIX-P8 GPT user_k → 나노 int_k_2560 미리 보기와 실제 승인 필요 건수 일치")
+            settings = pl.derive(sr, sm)["settings"]
+            fields = {row["field"] for row in pl.drift(dict(settings, prepare=gpt), sm)}
+            preview = pl.switch_preview(sr, sm, settings, prepare=gpt)
+            check({"model", "size_rule"} <= fields and preview.get("exact") is False and preview["need"] is None,
+                  "FIX-P8 나노 int_k_2560 → GPT user_k 는 크기 규칙 갈라짐·셀 수 없음 유지")
 
         # 나머지 Prepare 단위 사례는 제출 판정과 분리한다. 실제 백엔드 통합 판정은 위에서 검사한다.
         with patch.object(rn, "blocked_reason", return_value=None):
