@@ -63501,7 +63501,176 @@ console.log(JSON.stringify(out)); process.exit(0);
 def ux_v2b_dev_unit():
     """UX v2-B 갈래 D — 가짜 Forge 를 상대로 모델이 섞인 실행(D550 · 명세 ❓7). --quick 포함."""
     section("UX v2-B — 가짜 Forge 의 섞인 모델 실행 (ux_v2b_dev_unit)")
-    # (갈래 D 가 채운다)
+    from tempfile import mkdtemp
+    from unittest.mock import patch
+
+    dp = _dp_package()
+    bd, rn, models = dp.board, dp.runner, dp.models
+    fg = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge")
+    fb = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge_backend")
+    dev = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge_dev")
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))
+    project, ideo, nano = "gpt-image-2.6-sunburst", "ideogram-4.5", "nano-banana-2.1"
+    ideogram_gen = models.gen_bundle(ideo, "low")
+    pre = dp.BMKDesignPatchPrepare()
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="v2bd_", dir=OUT_ROOT.resolve()))
+
+    def prepare(name, *, wide=False):
+        if wide:
+            # 3:1 크롭도 실제 작업이 되도록 지시문만 있는 스펙 없이 시작한다.
+            rects = [V2B_RECTS[i] for i in (0, 2, 3)]
+            h, root = _fx_project(dp, out, name, rects, np.full((544, 768, 3), 120, dtype=np.uint8))
+            a, b, d = [c["id"] for c in store.load_manifest(root)["crops"]]
+        else:
+            h, root, ids = _v2b_project(dp, out, name, project)
+            a, b, d = (ids[k] for k in ("001_square", "002_tall", "004_panel"))
+        store.update_crop_gen(root, lambda rows: rows.update({
+            a: ideogram_gen, b: models.gen_bundle(nano, opts={"image_size": "1K"}) | {"n": 8}, d: {"n": 3}}), expect_rev=0)
+        bd.pl.update(root, 0, "prepare", args)
+        h, _, _ = pre.run(h, **args)
+        return h, root, (a, b, d)
+
+    def plan(root, ids):
+        return bd.pipeline_plan(root, only_ids=list(ids), style=False)["run"]
+
+    class MeasuredForge(dev.FakeForge):
+        def __init__(self, poll_errors):
+            super().__init__(media_origin="https://forge.test")
+            self.poll_errors = iter(poll_errors)
+            self.active = self.peak = 0
+            self.options_by_request = {}
+
+        async def handle(self, method, url, headers, body, timeout):
+            path = urllib.parse.urlsplit(url).path
+            submit = method == "POST" and path == "/api/image/generate"
+            poll = method == "GET" and path.startswith("/api/image/jobs/")
+            if submit:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+                data = json.loads(body)
+                keys = ("quality", "complexity", "ideogram", "image_size", "aspect_ratio", "thinking_level")
+                self.options_by_request[data.get("request_id")] = {k: data[k] for k in keys if k in data}
+            if poll:
+                # 폴링을 잠깐 늦춰 다른 작업이 제출될 기회를 준다. 과부하 사례에서만 오류를 돌려준다.
+                self.fault = {"path": path, "times": 1, "delay": 0.03, "status": next(self.poll_errors, 200)}
+            reply = await super().handle(method, url, headers, body, timeout)
+            rejected = (submit or poll) and reply[0] != 200
+            if rejected or (poll and json.loads(reply[2])["status"] in ("completed", "failed")):
+                self.active -= 1
+            return reply
+
+    def run_plan(root, ids, approve, *, concurrency=4, poll_errors=()):
+        fake = MeasuredForge(poll_errors)
+        config = fg.ForgeConfig(fake.media_origin, media_origins=(fake.media_origin,))
+        client = fg.ForgeClient(config, transport=fake.handle)
+        account = "v2bd"
+        ctx = {"root": root, "client": client, "organization_id": "org1", "account": account,
+               "token_of": lambda: dev.issue_token(account), "reject_token": lambda _: None, "stop": lambda: False,
+               "options": {"concurrency": concurrency, "prompt_autopilot": False}}
+        token = rn.set_forge(ctx)
+        try:
+            backend = rn.make_backend(root, None)
+            _, ap = dp._run_plan(root, approve, {"only": ",".join(ids)}, backend.name)
+            report = asyncio.run(rn.run_calls(root, ap["to_run"], backend, concurrency=concurrency))
+            # 모든 호출이 반환한 뒤에는 세마포어의 허가가 전부 돌아와 있다.
+            slots = backend._semaphore._value if backend._semaphore is not None else None
+            return fake, report, slots
+        finally:
+            rn.reset_forge(token)
+            fb.forget_catalog((ctx["organization_id"], account))
+
+    def board_candidates(root):
+        return {t["crop_id"]: t["candidates"] for t in bd.build_state(root)["targets"]}
+
+    def metadata(row):
+        return row.get("model"), row.get("quality"), row.get("opts")
+
+    with _v2b_env(dp, out), patch.object(rn, "mock_enabled", return_value=False), patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": ""}):
+        args = _v2b_args(bd.pl, project, variants="V1")
+        h, root, ids = prepare("mixed")
+        a, b, d = ids
+        jobs = {j["crop_id"]: j for j in store.load_manifest(root)["jobs"]}
+        counts = {a: 2, b: 8, d: 3}
+        expected = {a: (ideo, "low", None), b: (nano, "standard", {"image_size": "1K", "thinking_level": "medium",
+                                                                    "aspect_ratio": "9:16"}), d: (project, "high", None)}
+        check({cid: (metadata(j), j["n"]) for cid, j in jobs.items()} == {cid: (expected[cid], counts[cid]) for cid in ids},
+              "V2BD1 Prepare 의 패치별 모델·품질·옵션·장 수")
+        approved = plan(root, ids)
+        fake, report, slots = run_plan(root, ids, approved["hash"])
+        check(approved["need"] == report.launched == report.done == len(fake.requests) == len(jobs) == 3
+              and not report.failed and not report.errors and report.stopped_reason == "none"
+              and fake.calls.count(("POST", "/api/image/generate")) == 3, "V2BD1 승인 해시로 세 작업 완료·중복 제출과 재시도 없음")
+        records = {r["job_id"]: r for r in fake.requests if "job_id" in r}
+        wire_opts = {ideo: {"ideogram": {"operation": "auto", "quality": "low", "magic_prompt": "off"}},
+                     nano: expected[b][2], project: {"quality": "high", "complexity": "medium"}}
+        for cid, job in jobs.items():
+            name = job["model"]
+            job_id = fb.read_sidecar(root, job["cell_key"], 0).get("job_id")
+            record = records.get(job_id, {})
+            sent = fake.jobs.get(job_id, {}).get("request_data", {})
+            shape = fixture["generate"] if name == project else fixture["models"]["requests"][name]
+            check(record.get("checkpoint") == fixture["models"]["names"][name] and record.get("reused") is False
+                  and record.get("keys") == sorted(shape["request"]) and sent.get("num_outputs") == job["n"]
+                  and fake.options_by_request.get(sent.get("request_id")) == wire_opts[name],
+                  f"V2BD1 작업별 접수 기록의 checkpoint·요청 키·옵션·num_outputs {cid}")
+
+        candidates = store.load_manifest(root)["candidates"]
+        visible = board_candidates(root)
+        for cid in ids:
+            saved = [c for c in candidates if c["crop_id"] == cid]
+            shown = visible[cid]
+            check(len(saved) == len(shown) == counts[cid] and {c["key"] for c in saved} == {c["key"] for c in shown}
+                  and all(metadata(c["origin_info"]) == expected[cid] for c in saved)
+                  and all(metadata(c) == expected[cid] and not c["old_cell"] for c in shown),
+                  f"V2BD2 받은 후보와 보드의 모델·품질·옵션 {cid}")
+        limit = min(models.job_slots(j["model"], 4, j["n"]) for j in jobs.values())
+        check(slots == limit == 1 and 0 < fake.peak <= limit, f"V2BD3 나노바나나 8장 혼합 실행의 세마포어 {slots}·실측 최대 {fake.peak}")
+
+        old_key = jobs[a]["cell_key"]
+        keys = {c["key"] for c in visible[a]}
+        store.update_crop_gen(root, lambda rows: rows.pop(a), expect_rev=1)
+        h, _, _ = pre.run(h, **args)
+        cleared = plan(root, ids)
+        current = next(j for j in store.load_manifest(root)["jobs"] if j["crop_id"] == a)
+        shown = board_candidates(root)[a]
+        check(current["model"] == project and current["cell_key"] != old_key and cleared["need"] == cleared["by_crop"][a]["need"] == 1
+              and cleared["hash"] and [g["model"] for g in cleared["groups"]] == [project]
+              and {c["key"] for c in shown} == keys and all(c["cell_key"] == old_key and c["old_cell"] for c in shown),
+              "V2BD5 덮어쓰기 해제 뒤 기존 후보는 옛 조건·새 프로젝트 모델 작업만 승인 필요")
+        store.update_crop_gen(root, lambda rows: rows.update({a: ideogram_gen}), expect_rev=2)
+        pre.run(h, **args)
+        restored = plan(root, ids)
+        shown = board_candidates(root)[a]
+        restored_keys = [j["cell_key"] for j in store.load_manifest(root)["jobs"] if j["crop_id"] == a]
+        check(restored_keys == [old_key] and restored["by_crop"][a]["done"] == 1 and restored["need"] == 0
+              and not restored["hash"] and not restored["groups"]
+              and {c["key"] for c in shown} == keys and all(c["cell_key"] == old_key and not c["old_cell"] for c in shown),
+              "V2BD5 같은 모델 묶음을 되살리면 같은 후보가 현재 조건으로 완료·재승인 0건")
+
+        _, root, ids = prepare("ratio", wide=True)
+        a, b, d = ids
+        mixed, allowed = plan(root, ids), plan(root, (a, d))
+        reasons = mixed["reasons"]
+        check(mixed["by_crop"][b]["blocked"] == 1 and mixed["by_crop"][b]["need"] == 0
+              and mixed["hash"] == allowed["hash"] and mixed["need"] == allowed["need"] == 2
+              and [(g["model"], g["need"], g["images"]) for g in mixed["groups"]] == [(project, 1, 3), (ideo, 1, 2)]
+              and [(r["n"], r["msg"]) for r in reasons if r["reason"] == "blocked"] == [(1, "발사 못 함 — " + models.ratio_problem(nano))]
+              and sum(r["n"] for r in reasons if r["reason"] != "blocked") == 2, "V2BD4 비율 차단 작업을 제외한 승인 해시·묶음·사유")
+        fake, report, slots = run_plan(root, ids, mixed["hash"])
+        check(slots == fake.peak == 1, "V2BD3 승인된 두 작업 밖의 8장 패치도 매니페스트 동시 상한에 포함")
+        check(report.launched == report.done == 2 and not report.failed and not report.errors
+              and sorted(r["checkpoint"] for r in fake.requests) == sorted(fixture["models"]["names"][n] for n in (project, ideo))
+              and fake.calls.count(("POST", "/api/image/generate")) == 2, "V2BD4 나노바나나 제출 0건·나머지 두 모델 완료")
+
+        _, root, ids = prepare("overload")
+        pending = plan(root, ids)
+        fake, report, _ = run_plan(root, ids, pending["hash"], concurrency=1, poll_errors=(429, 503))
+        sent = [r["checkpoint"] for r in fake.requests]
+        failed = [rn.read_ledger(root, c["cell_key"])[c["rep"]]["failed"]["status"] for c in report.calls if c["status"] == "failed"]
+        check(pending["need"] == 3 and len(set(sent)) == len(sent) == 2 and report.stopped_reason == "auth"
+              and failed == [429, 503] and len(report.remaining) == 1 and fake.calls.count(("POST", "/api/image/generate")) == 2,
+              "V2BD6 서로 다른 모델의 429·503 누적 뒤 남은 작업 제출 0건")
 
 
 def want(name: str) -> bool:
