@@ -644,6 +644,7 @@ class ServerConfig:
     trusted_proxies: tuple = ()                # 주소·CIDR. 오른쪽부터 신뢰한 프록시를 건너뛴다
     forge: object | None = None                # bmk_design_patch_forge.ForgeConfig — 있으면 실제 검증기·Forge 생성 백엔드(F2), 없으면 F1 그대로(mock)
     assist_model: str | None = None
+    crop_model: bool = True                    # 패치별 생성 모델·장 수 설정
 
 
 class DevVerifier:
@@ -674,10 +675,14 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
     try:
         try:
             from . import bmk_design_patch_board as board
+            from . import bmk_design_patch_cropgen as cropgen
+            from . import bmk_design_patch_models as models
             from . import bmk_design_patch_store as store
             from . import bmk_design_patch_v2 as v2
         except ImportError:
             import bmk_design_patch_board as board
+            import bmk_design_patch_cropgen as cropgen
+            import bmk_design_patch_models as models
             import bmk_design_patch_store as store
             import bmk_design_patch_v2 as v2
         try:
@@ -810,20 +815,35 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
         def account(session):
             return {"name": session["name"], "tag": session["tag"]} if session else None
 
+        def backend_name():
+            if accounts is None or os.environ.get("BMK_DP_MOCK_API", "").strip().lower() in ("1", "true", "yes", "on"):
+                return "mock"
+            return "forge"
+
+        def model_rows(scope, catalog=None):
+            backend = backend_name()
+            checked = False
+            if backend == "forge" and scope is not None:
+                forge_backend = board._forge_backend()
+                key = (scope["org"], scope["account"])
+                ttl = forge_backend.CATALOG_PREVIEW_TTL
+                if catalog is None:
+                    catalog = forge_backend.cached_catalog(key, max_age=None, failure_max_age=ttl)
+                checked = catalog is not None and not forge_backend.catalog_failed(key, max_age=ttl)
+            rows = {name: models.describe(name, catalog, checked=checked) for name in models.MODELS}
+            if backend == "mock":
+                for name in models.FORGE_ONLY:
+                    rows[name].update(available=False, why="이 모델은 Forge 서버에서만 생성합니다.")
+            return rows, checked
+
         async def env(request):
-            try:
-                from . import bmk_design_patch_forge_backend as forge_backend
-                from . import bmk_design_patch_models as models
-            except ImportError:
-                import bmk_design_patch_forge_backend as forge_backend
-                import bmk_design_patch_models as models
             session = request.get("bmk_dp_session")
             result = {"server_mode": True, "session": session is not None, "account": account(session),
                     "session_url": "/api/session", "prefs_url": "/api/preferences",
-                    "caps": {name: name in SERVER_CAPS for name in board.LOCAL_CAPS}, "backend": "mock"}
+                    "caps": {name: name in SERVER_CAPS for name in board.LOCAL_CAPS}, "backend": backend_name()}
             result["caps"]["ui_v2"] = await asyncio.to_thread(board.v2_available)
+            result["caps"]["v2_crop_model"] = config.crop_model
             if accounts is not None:
-                result["backend"] = "mock" if os.environ.get("BMK_DP_MOCK_API", "").strip().lower() in ("1", "true", "yes", "on") else "forge"
                 result["caps"]["v2_forge_prompt"] = result["backend"] == "forge"
                 result["caps"].update(forge_import=bool(forge_routes), forge_save=bool(forge_routes))
                 result.update(token_url="/api/session/token", token_refresh=bool(session and session.get("token_refresh")),
@@ -831,23 +851,17 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                               messages={"session": config.forge.session_message, "request": config.forge.request_message})
             if accounts is None:  # Forge 연결이 없는 서버(F1 구성)의 env 는 그대로 — 모델 목록을 싣지 않는다
                 return result
-            catalog, checked = None, False
-            result["caps"]["models_error"] = None
+            forge_backend = board._forge_backend()
+            catalog = None
             if result["backend"] == "forge" and session is not None:
                 ctx = accounts.context(session["scope"])
                 key = (ctx["organization_id"], session["scope"]["account"])
                 catalog = await forge_backend.ensure_catalog(key, ctx["client"], ctx["token_of"], ctx["reject_token"], timeout=5.0,
                                                               failure_max_age=forge_backend.CATALOG_PREVIEW_TTL)
-                if catalog is None:
-                    catalog = forge_backend.cached_catalog(key, max_age=None, failure_max_age=forge_backend.CATALOG_PREVIEW_TTL)
-                checked = catalog is not None and not forge_backend.catalog_failed(key, max_age=forge_backend.CATALOG_PREVIEW_TTL)
-                if not checked:
-                    result["caps"]["models_error"] = forge_backend._CATALOG_UNREADABLE
-            result["caps"]["models"] = [models.describe(name, catalog, checked=checked) for name in models.MODELS]
-            if result["backend"] == "mock":
-                for row in result["caps"]["models"]:
-                    if models.is_forge_only(row["name"]):
-                        row.update(available=False, why="이 모델은 Forge 서버에서만 생성합니다.")
+            rows, checked = model_rows(session["scope"] if session else None, catalog)
+            result["caps"]["models_error"] = (forge_backend._CATALOG_UNREADABLE
+                                               if result["backend"] == "forge" and session is not None and not checked else None)
+            result["caps"]["models"] = list(rows.values())
             return result
 
         async def index(request):
@@ -1041,7 +1055,11 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
         routes = web.RouteTableDef()
         board.register_routes(routes, base_dir=None)
         app.add_routes(routes)
-        for method, path, handler in (*jobs_module.routes(runner), *v2.routes()):
+        crop_routes = ()
+        if config.crop_model:
+            app[cropgen.MODEL_ROWS] = model_rows
+            crop_routes = cropgen.routes()
+        for method, path, handler in (*jobs_module.routes(runner), *v2.routes(), *crop_routes):
             app.router.add_route(method, path, handler)
         app.add_routes([web.get("/", index), web.get("/api/session", session_get), web.post("/api/session", session_post),
                         web.post("/api/session/logout", logout), web.get("/api/preferences", preferences),
@@ -1151,6 +1169,7 @@ def main(argv=None) -> int:
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--forge-api")
     parser.add_argument("--assist-model")
+    parser.add_argument("--no-crop-model", action="store_true")
     parser.add_argument("--forge-media-origin", action="append")
     parser.add_argument("--forge-access-key", action="append")
     parser.add_argument("--forge-concurrency", type=int)
@@ -1186,7 +1205,7 @@ def main(argv=None) -> int:
                           parent_origins=tuple(dict.fromkeys(parents)), allowed_hosts=tuple(args.allowed_host),
                           dev_handoff=args.dev_handoff, dev_parent_port=args.dev_parent_port,
                           cookie_samesite=args.cookie_samesite, workers=args.workers, trusted_proxies=tuple(args.trusted_proxy),
-                          forge=forge_config, assist_model=args.assist_model)
+                          forge=forge_config, assist_model=args.assist_model, crop_model=not args.no_crop_model)
     try:
         config = _validate_config(config)
     except ValueError as e:
