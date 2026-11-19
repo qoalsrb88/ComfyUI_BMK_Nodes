@@ -451,7 +451,7 @@ class ForgeBackend:
             jobs = runner.store.load_manifest(self._root).get("jobs", [])
             return min([concurrency, slots] + [models.job_slots(j["model"], concurrency, j["n"]) for j in jobs])
         except (OSError, ValueError, TypeError, KeyError):
-            return slots
+            return 1  # 뒤 작업의 모델·장 수를 확인할 수 없으므로 한 잡씩 실행한다.
 
     async def request(self, job: dict, input_paths: list[str], call_id: str) -> dict:
         """→ {"data": [{"url": "forge-job:<job_id>/<slot>", "b64": None}…], "credits": None, "usage": None, "ctx": {…}}."""

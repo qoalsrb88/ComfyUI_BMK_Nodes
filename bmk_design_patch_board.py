@@ -7240,8 +7240,9 @@ def _crop_override_counts(root: str) -> dict:
     if not entries:
         return {"model": 0, "n": 0}
     crops = store.load_manifest(root)["crops"] + (_layout_or_none(root) or {}).get("crops", [])
-    ids = {c["id"] for c in crops} & entries.keys()
-    return {key: sum(key in entries[cid] for cid in ids) for key in ("model", "n")}
+    ids = {c["id"] for c in crops}
+    valid = [entry for cid, entry in entries.items() if cid in ids and models.gen_entry_problem(entry) is None]
+    return {key: sum(key in entry for entry in valid) for key in ("model", "n")}
 
 
 @_guard
