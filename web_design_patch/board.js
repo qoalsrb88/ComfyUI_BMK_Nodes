@@ -2123,6 +2123,12 @@
     on("btn-generate", () => goMode("generate"));
     on("btn-mask", () => goMode("mask"));
     on("btn-export", () => pipe && pipe.exportNow());
+    // 새 화면(v2) 전환 단추: 서버가 v2 화면 파일을 갖고 있을 때만(caps.ui_v2) 보인다 — 같은 프레임에서 쿼리를 유지한 채 ?ui=v2 로.
+    const toV2 = $("btn-v2");
+    if (toV2) {
+      toV2.hidden = !(window.DPEnv && window.DPEnv.can("ui_v2"));
+      toV2.addEventListener("click", () => { const u = new URL(location.href); u.searchParams.set("ui", "v2"); location.assign(u.href); });
+    }
     const exportMenu = $("export-menu");
     $("btn-export-folder").hidden = !can("open_folder");
     on("btn-export-folder", () => { exportMenu.open = false; if (pipe && can("open_folder")) pipe.openFolder(); });

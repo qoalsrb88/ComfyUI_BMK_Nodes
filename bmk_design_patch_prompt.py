@@ -28,7 +28,7 @@ Design Patch(가제 Multi Layer Crop Edit)는 일러스트의 크롭마다 GPT �
 - flatten_ref(rgba, matte=(128,128,128)) -> rgb HxWx3 uint8
 - spec_from_manifest(crop, target, refs_dir, glossary, overrides) -> spec   매니페스트 crop/target 항목 → 최소 스펙.
 - auto_pick_ref(crop_name, refs_auto) -> str      refs_auto 중 Prepare 가 고르는 1장(아래 refs 규칙 — Studio S2 refs.seed_link 도 이것).
-- UX v2 본문 경로(파일 끝 절): v2_of / v2_update / v2_roles / roles_problem / v2_input_hash / v2_state / render_body / body_problem / text_problem,
+- UX v2 본문 경로(파일 끝 절): v2_of / v2_update / v2_roles / v2_layout / v2_images / roles_problem / v2_input_hash / v2_state / render_body / body_problem / text_problem,
   BODY_TEMPLATE = "dp-body/1" · BODY_VARIANT = "B1_body". 스펙의 "_v2" 가 없으면 아무것도 바뀌지 않는다.
 
 스펙 형식 (JSON 직렬화 가능 dict — 시제품 docstring 과 같음)
@@ -620,7 +620,11 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _ADDRESS = re.compile(r"(?im)\b[a-z][a-z0-9+.-]*://|\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b|[A-Za-z]:[\\/]|\\\\"
                       r"|(?:^|[\s\"'(=\[])(?:\.{1,2}/|~/|/)[A-Za-z0-9_.-]")
 # 본문이 틀의 줄(범례·Canvas·Guide·Target·Integration·Preserve·Notes·Request)을 흉내 내면 뒤의 규칙과 섞인다 — 그런 줄 머리는 받지 않는다.
-_RESERVED_LINE = re.compile(r"(?im)^[ \t]*(?:input images\b|canvas:|guide:|targets?(?: \([^)\n]*\))?:|integration:|preserve:|notes:|request:)")
+# 줄 머리의 낱말 뒤에 머리말 꼴의 부호(콜론·등호·여는 괄호·줄표, 띄어 쓴 하이픈)가 오면 틀의 줄로 본다. "Preserve the face …"·
+# "Preserve @image1's lighting …"·'Target "SALE" on the sign.' 같은 문장은 통과(전각 부호는 _WIDE 가 따로 막는다).
+_RESERVED_LINE = re.compile(r"(?im)^[ \t]*(?:input images\b|(?:canvas|guide|targets?|integration|preserve|notes|request)\b[ \t]*"
+                            r"(?:[:=(\[\u2012-\u2015]|-(?=[\s-]|$)))")
+_WIDE = re.compile("[\uff00-\uffef]")  # 전각·반각 꼴 문자 — 영문 본문에 쓸 일이 없고, 줄 머리·그림 표기 검사를 피하는 데 쓰일 수 있다
 _INVISIBLE = re.compile("[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]")  # 보이지 않는 서식 문자
 _FILE_SHA: dict = {}
 
@@ -649,6 +653,8 @@ def body_problem(body, image_count: int | None = None) -> str | None:
         return "프롬프트 본문에 읽을 글자가 없습니다"
     if _INVISIBLE.search(body):
         return "프롬프트 본문에 보이지 않는 서식 문자가 있습니다 — 빼고 적어 주세요"
+    if _WIDE.search(body):
+        return "프롬프트 본문에 전각 문자가 있습니다 — 반각 영문·숫자·문장 부호로 적어 주세요"
     reserved = _RESERVED_LINE.search(body)
     if reserved:
         return f"프롬프트 본문의 줄은 「{reserved.group(0).strip()}」로 시작할 수 없습니다(프롬프트의 틀이 쓰는 줄 머리)"
@@ -777,6 +783,29 @@ def roles_problem(roles: list, image_count: int | None = None) -> str | None:
     if image_count is not None and image_count != 1 + len(roles):
         return "올라갈 그림 수가 프롬프트를 쓸 때와 다릅니다(같은 그림이 겹치거나 빠짐) — 레퍼런스 연결을 정리해 주세요"
     return None
+
+
+IMAGES_MOVED = "올라갈 그림의 구성이 프롬프트를 쓸 때와 다릅니다(같은 그림이 겹치거나 갈라짐) — 레퍼런스 연결을 정리해 주세요"
+
+
+def v2_layout(spec: dict) -> list:
+    """업로드 자리마다 그 그림이 맡은 역할 목록(_plan_images 의 순서) — 가이드·붙이기 전 = [역할, None], 레퍼런스 = [역할, 타깃 id,
+    그 타깃 안의 순번]. Prepare 가 평탄화 전·후의 값을 대조한다 — 그림 수가 같아도 한쪽이 갈라지고 다른 쪽이 합쳐지거나, 같은 타깃의
+    두 레퍼런스가 자리를 바꾸면(가이드와 픽셀이 같은 쪽이 가이드 자리로 합쳐짐) @imageN 이 다른 그림을 가리킨다."""
+    order, roles = _plan_images(spec)
+    slots = {path: [[kind, owner] for kind, owner in roles[path] if kind != "ref"] for path in order}
+    for t in spec["targets"]:
+        for i, r in enumerate(t.get("refs", [])):
+            slots[r].append(["ref", t["id"], i])
+    return [slots[path] for path in order]
+
+
+def v2_images(spec: dict) -> list:
+    """업로드 순서의 (경로, 역할) — 역할 = "canvas" / "guide" / "before_paste" / "ref"(렌더러가 실제로 배정한 첫 역할. 경로가 guide 칸과
+    같아도 렌더러가 가이드로 쓰지 않으면 ref 다)."""
+    order, roles = _plan_images(spec)
+    names = {"canvas": "canvas", "guide": "guide", "before": "before_paste", "ref": "ref"}
+    return [(path, names[roles[path][0][0]]) for path in order]
 
 
 def v2_input_hash(v2: dict, model: str, roles: list, *, manual: bool = False) -> str:

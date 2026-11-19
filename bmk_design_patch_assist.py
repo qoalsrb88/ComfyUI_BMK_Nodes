@@ -77,6 +77,12 @@ def _access_error(exc):
                          reason="forge_unreachable")
 
 
+def _one_line(text) -> str:
+    """요청 글의 한 줄에 넣을 사용자 글: 줄바꿈·연속 공백은 공백 하나로, 꺾쇠는 괄호로 — 지시문으로 <user_prompt> 틀이나 줄 구조를
+    흉내 낼 수 없게 한다."""
+    return " ".join(str(text).replace("<", "(").replace(">", ")").split())
+
+
 def _writer_input(root, view, purpose, instruction):
     with store.manifest_lock(root):
         crop = board._crop(store.load_manifest(root), view["crop_id"])
@@ -98,7 +104,7 @@ def _writer_input(root, view, purpose, instruction):
     if instruction:
         refs = {str(i): row["token"] for i, row in enumerate((r for r in view["images"] if r["role"] == "ref"), 1)}
         translated = re.sub(r"@참조([0-9]+)", lambda m: refs.get(m[1], m[0]), instruction.replace("@원본", "@image1"))
-        lines.append("Instruction (Korean, from the user): " + translated)
+        lines.append("Instruction (Korean, from the user): " + _one_line(translated))
     lines.append("Images:")
     for row in view["images"]:
         role = row["role"]
@@ -106,11 +112,11 @@ def _writer_input(root, view, purpose, instruction):
         lines.append(f"- {row['token']}: {_ROLES[role]} ({attached})")
     names = [t.get("name_en") or t.get("label") for t in crop.get("targets", [])]
     if any(names):
-        lines.append("Targets in this crop: " + ", ".join(name for name in names if name))
+        lines.append("Targets in this crop: " + ", ".join(_one_line(name) for name in names if name))
     return "\n".join([*lines, "</user_prompt>"]), image
 
 
-def _output(text, image_count, token):
+def _output(text, image_count, token, instruction=""):
     try:
         data = json.loads(text)
     except (ValueError, RecursionError):
@@ -124,8 +130,16 @@ def _output(text, image_count, token):
     if len(body) > 1500:
         raise ValueError("작성한 본문은 1500자까지입니다.")
     # 그림 안에 들어갈 글자(간판·라벨 등)는 따옴표 안에 원문 그대로 둘 수 있다 — 따옴표 밖의 한글은 영어로 옮기지 않은 것이다.
-    if any("HANGUL" in unicodedata.name(c, "") for c in _QUOTED.sub("", body)):
+    hangul = lambda s: any("HANGUL" in unicodedata.name(c, "") for c in s)  # noqa: E731
+    if hangul(_QUOTED.sub("", body)):
         raise ValueError("영문 본문에 한글이 있습니다(그림에 넣을 글자는 큰따옴표 안에).")
+    # 따옴표 안의 한글은 사용자가 지시문에 적은 글자 그대로여야 한다 — 번역하지 않은 지시를 따옴표로 감싼 본문을 받지 않는다.
+    for quoted in _QUOTED.findall(body):
+        inner = quoted[1:-1].strip()
+        # 작성기는 한 줄로 고친 지시문(_one_line — 공백 정리·꺾쇠는 괄호)을 받았다 — 원문과 그 꼴 어느 쪽에 있어도 받는다.
+        flat = " ".join(inner.split())
+        if hangul(inner) and (len(inner) > 60 or not (flat in " ".join(instruction.split()) or flat in _one_line(instruction))):
+            raise ValueError("영문 본문의 따옴표 안 한글이 지시문에 적힌 글자와 다릅니다.")
     if any(unicodedata.category(c) == "Cs" for c in body):
         raise ValueError("영문 본문에 잘못된 유니코드 문자가 있습니다.")
     if token in body or "data:image/" in body.lower() or re.search(r"(?:^|\s)/[^\s/]+/", body):
@@ -195,38 +209,45 @@ def routes(accounts, *, model: str | None = None, timeout: float = 90.0, per_min
         return None
 
     async def write(root, scope, view, disconnected):
+        deadline = clock() + timeout  # 접근 확인(마지막 확인이 오래됐을 때만 Forge 를 한 번 부른다)까지 같은 마감 안에서
+        calls = 0
         try:
-            await accounts.ensure_access(scope)
-        except forge.ForgeError as exc:
-            raise _access_error(exc) from None
+            await asyncio.wait_for(accounts.ensure_access(scope), timeout)
+        except (forge.ForgeError, TimeoutError, asyncio.TimeoutError) as exc:
+            # 접근 확인이 시간 안에 끝나지 않음(바깥 마감·Forge 창구의 자체 제한) = 작성 호출의 시간 초과와 같은 응답
+            if isinstance(exc, forge.ForgeError) and exc.kind != "timeout":
+                raise _access_error(exc) from None
+            return {"ok": True, "status": "failed", "reason": "timeout", "error": _TIMEOUT, "crop_id": view["crop_id"],
+                    "seen": view["seen"], "cached": False, "forge_calls": calls}
         ctx = accounts.context(scope)
         token = ctx["token_of"]()
         if token is None:
             raise _access_error(forge.ForgeError("unauthorized"))
         client = ctx["client"]
-        deadline = clock() + timeout
-        calls = 0
         v2 = view["v2"]
         purpose, instruction = v2["purpose"], v2["user_instruction_ko"].strip()
 
-        async def invoke(method, *, key=None, **kwargs):
+        async def invoke(method, *, key=None, keep=None, timed=True, **kwargs):
+            """Forge 호출 하나. key 가 있으면 그 응답을 cache_ttl 초 기억한다 — keep(result) 가 참일 때만(실패·미지원 응답을 기억하면
+            일시 장애가 기억 시간만큼 모든 요청에 되돌아간다). 기억은 조직 단위다."""
             nonlocal calls
             if disconnected():
                 raise asyncio.CancelledError
             now = clock()
+            if key is not None:
+                key = (scope["org"], *key)
             if key in cache and now < cache[key][0]:
                 return cache[key][1]
             remaining = deadline - now
             if remaining < 0.5:
                 raise TimeoutError
             calls += 1
-            # 목록 API에는 timeout 인자가 없다. 응답 해석까지 포함해 같은 마감 안에 끝낸다.
-            if key != "capabilities":
+            if timed:  # 목록 API 에는 timeout 인자가 없다 — 응답 해석까지 포함해 같은 마감 안에 끝낸다
                 kwargs["timeout"] = remaining
             result = await asyncio.wait_for(method(token, **kwargs), remaining)
             if clock() >= deadline:
                 raise TimeoutError
-            if key is not None:
+            if key is not None and keep(result):
                 cache[key] = (clock() + cache_ttl, result)
             return result
 
@@ -241,7 +262,7 @@ def routes(accounts, *, model: str | None = None, timeout: float = 90.0, per_min
             if expires <= now:
                 del cache[key]
         try:
-            caps = await invoke(client.prompt_capabilities, key="capabilities")
+            caps = await invoke(client.prompt_capabilities, key=("capabilities",), keep=lambda r: r["available"] is True, timed=False)
             if not caps["available"]:
                 return unsuccessful("unsupported", "guidance_unavailable")
             checkpoint = models.guidance_checkpoint(view["model"])
@@ -249,7 +270,8 @@ def routes(accounts, *, model: str | None = None, timeout: float = 90.0, per_min
             if profile is None:
                 return unsuccessful("unsupported", "model_not_supported")
             skills = tuple(skill for skill in SKILLS[purpose] if skill in caps["skills"][profile])
-            prepared = await invoke(client.prepare_prompt, key=(checkpoint, skills, caps["guidance_revision"]),
+            prepared = await invoke(client.prepare_prompt, key=("guidance", checkpoint, skills, caps["guidance_revision"]),
+                                    keep=lambda r: r["status"] == "prepared",
                                     checkpoint=checkpoint, skill_ids=list(skills), request=(instruction or PURPOSE[purpose])[:6000],
                                     image_count=len(view["images"]))
             if prepared["status"] == "unsupported":
@@ -269,12 +291,12 @@ def routes(accounts, *, model: str | None = None, timeout: float = 90.0, per_min
             if exc.kind == "timeout":
                 return unsuccessful("failed", "timeout", _TIMEOUT)
             raise _access_error(exc) from None
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             return unsuccessful("failed", "timeout", _TIMEOUT)
         if not response["ok"]:
             return unsuccessful("failed", "writer", response["error"])
         try:
-            body, summary = _output(response["text"], len(view["images"]), token)
+            body, summary = _output(response["text"], len(view["images"]), token, instruction)
         except ValueError as exc:
             return unsuccessful("failed", "bad_output", str(exc))
         record = {"source": "assist", "body_en": body, "summary_ko": summary, "input_hash": view["input_hash"],
