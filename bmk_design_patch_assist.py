@@ -83,11 +83,23 @@ def _one_line(text) -> str:
     return " ".join(str(text).replace("<", "(").replace(">", ")").split())
 
 
+def _check_applied_rect(root, crop_id, crop=None):
+    """호출자가 매니페스트 잠금을 쥔 동안 편집 중인 영역과 반영된 영역을 비교한다."""
+    layout = board._layout_or_none(root)
+    pending = board._crop(layout, crop_id) if layout else None
+    if pending is not None:
+        if crop is None:
+            crop = board._crop(store.load_manifest(root), crop_id)
+        if pending["rect"] != crop["rect"]:
+            raise board._Reject(409, "영역을 옮긴 뒤 아직 반영하지 않았습니다 — 먼저 반영이 필요합니다", reason="apply_needed")
+
+
 def _writer_input(root, view, purpose, instruction):
     with store.manifest_lock(root):
         crop = board._crop(store.load_manifest(root), view["crop_id"])
         if crop is None or board._vlm().crop_signature(crop) != view["crop_sig"]:
             raise board._Reject(409, _STALE, reason="stale")
+        _check_applied_rect(root, view["crop_id"], crop)
     try:
         path = board._file_path(root, crop.get("source"))
         with Image.open(path) as source:
@@ -195,12 +207,7 @@ def routes(accounts, *, model: str | None = None, timeout: float = 90.0, per_min
     def applied_view(root, crop_id):
         with store.manifest_lock(root):
             view = specs.spec_view(root, crop_id)
-            layout = board._layout_or_none(root)
-            pending = board._crop(layout, crop_id) if layout else None
-            if pending is not None:
-                crop = board._crop(store.load_manifest(root), crop_id)
-                if pending["rect"] != crop["rect"]:
-                    raise board._Reject(409, "영역을 옮긴 뒤 아직 반영하지 않았습니다 — 먼저 반영이 필요합니다", reason="apply_needed")
+            _check_applied_rect(root, crop_id)
             return view
 
     def reserve(key):
