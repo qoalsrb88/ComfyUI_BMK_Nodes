@@ -347,9 +347,9 @@ window.DPV2Inspector = (() => {
     Store.toast(`${patches.length}개 패치에 ${label}을 적용했습니다.`, "ok");
   }
 
-  // 계약 §7.3 C1: 클릭 시에만 실행 · 동시 1건 순차 · 최대 8패치 상한 · 429/5xx/timeout 시 즉시 중단(재시도 없음)
-  async function runAssistSequence(patches) {
-    if (Store.state.assistBusy || !patches.length) return;
+  // 계약 §7.3 C1 · V2A D518/D520: 클릭 시에만 실행 · 먼저 POST /spec 으로 저장 후 POST /prompt/assist · 최대 8패치 순차 · 재시도 없음
+  async function runAssistSequence(patches, force = false) {
+    if (Store.state.assistBusy || !patches.length) return { ok: false, done: 0 };
     const targets = patches.slice(0, MAX_ASSIST_BATCH);
     if (patches.length > MAX_ASSIST_BATCH) {
       Store.toast(`안정성을 위해 한 번에 최대 ${MAX_ASSIST_BATCH}개 패치만 작성합니다. 나머지는 다시 눌러 주세요.`, "warn");
@@ -357,32 +357,54 @@ window.DPV2Inspector = (() => {
     Store.state.assistBusy = true;
     Store.emit("selection");
     let done = 0;
+    let aborted = false;
     try {
       for (const p of targets) {
+        if (!p.meta.specLoaded && Api.can("v2_spec_edit")) {
+          await Store.loadSpec(p.id, true);
+        }
+        if (p.meta.dirtySpec || !p.meta.seen || p.meta.seen === "null") {
+          await Store.savePatchSpec(p);
+        }
         const res = await Api.assistPrompt(Store.state.root, {
           crop_id: p.id,
-          purpose: p.meta.purpose,
-          direction_ko: p.meta.direction_ko || p.note || p.name,
-          model: p.effectiveModel,
-          refs_mode: "auto",
+          seen: p.meta.seen,
+          crop_sig: p.meta.crop_sig,
+          force,
         });
         if (res.status === "unsupported") {
-          Store.toast(res.reason || "AI 프롬프트 브릿지(V2-A) 연결 대기 중입니다.", "warn");
+          Store.toast(res.reason || "이 모델 또는 환경은 AI 프롬프트 작성을 지원하지 않습니다.", "warn");
+          aborted = true;
           break;
         }
         if (res.status !== "written") {
           Store.toast(`${p.name}: AI 작성 실패(${res.reason || "알 수 없는 오류"}) — 남은 작업을 멈춥니다.`, "err");
+          aborted = true;
           break;
         }
         p.meta.summary_ko = res.summary_ko || "";
+        p.meta.body_en = res.body_en || "";
         p.meta.prompt_en = res.prompt_en || "";
         p.meta.skill_ids = Array.isArray(res.skill_ids) ? res.skill_ids : [];
+        if ("seen" in res && res.seen !== undefined) p.meta.seen = res.seen;
+        if ("input_hash" in res && res.input_hash) {
+          p.meta.promptInputHash = res.input_hash;
+          p.meta.specInputHash = res.input_hash;
+        }
+        p.meta.specState = "body";
+        p.meta.specWhy = null;
+        p.meta.promptSource = "assist";
+        p.meta.cached = !!res.cached;
+        p.meta.forgeCalls = Number(res.forge_calls || 0);
+        p.meta.rawDirty = false;
         done += 1;
         Store.emit("selection");
       }
-      if (done > 0) Store.toast(`AI 프롬프트 ${done}건 작성 완료`, "ok");
+      if (done > 0 && !aborted) Store.toast(`AI 프롬프트 ${done}건 작성 완료`, "ok");
+      return { ok: !aborted, done };
     } catch (err) {
       Store.toast(`AI 작성 중단: ${err.message}`, "err");
+      return { ok: false, done };
     } finally {
       Store.state.assistBusy = false;
       Store.emit("selection");
@@ -423,6 +445,7 @@ window.DPV2Inspector = (() => {
         title: purp.desc,
         onClick: () => {
           p.meta.purpose = purp.id;
+          p.meta.dirtySpec = true;
           Store.emit("selection");
         },
       })),
@@ -438,20 +461,24 @@ window.DPV2Inspector = (() => {
       Data.el("p", { className: "muted-text", text: Data.purposeInfo(p.meta.purpose).desc }),
     );
 
-    // 2) 한국어 한 줄 지시 + @참조 멘션 바 + AI 스마트 작성
+    // 2) 한국어 한 줄 지시 + @참조 멘션 바 + AI 스마트 작성 (§3.1–§3.4 · D503 · D521)
     const refFiles = (p.refCrop && p.refCrop.files || []).filter((f) => !f.missing);
     const dirArea = Data.el("textarea", {
       className: "direction-textarea",
       placeholder: "예: @참조1 의 금속 브로치 질감으로 교체하고 기존 그림자 방향 유지",
     });
-    dirArea.value = p.meta.direction_ko || "";
-    dirArea.addEventListener("input", () => { p.meta.direction_ko = dirArea.value; });
+    dirArea.value = p.meta.user_instruction_ko || "";
+    dirArea.addEventListener("input", () => {
+      p.meta.user_instruction_ko = dirArea.value;
+      p.meta.dirtySpec = true;
+    });
 
     const insertMention = (token) => {
       const start = dirArea.selectionStart ?? dirArea.value.length;
       const end = dirArea.selectionEnd ?? dirArea.value.length;
       dirArea.value = dirArea.value.slice(0, start) + token + " " + dirArea.value.slice(end);
-      p.meta.direction_ko = dirArea.value;
+      p.meta.user_instruction_ko = dirArea.value;
+      p.meta.dirtySpec = true;
       dirArea.focus();
     };
 
@@ -470,11 +497,26 @@ window.DPV2Inspector = (() => {
     );
 
     const aiChk = Data.el("input", { type: "checkbox", checked: p.meta.aiAuto });
-    aiChk.addEventListener("change", () => { p.meta.aiAuto = aiChk.checked; Store.emit("selection"); });
+    aiChk.addEventListener("change", () => {
+      p.meta.aiAuto = aiChk.checked;
+      p.meta.dirtySpec = true;
+      Store.emit("selection");
+    });
 
-    const rawArea = Data.el("textarea", { className: "raw-prompt-area", placeholder: "AI가 최적화한 영문 프롬프트 또는 직접 입력 프롬프트" });
-    rawArea.value = p.meta.prompt_en || "";
-    rawArea.addEventListener("input", () => { p.meta.prompt_en = rawArea.value; });
+    const rawArea = Data.el("textarea", {
+      className: "raw-prompt-area",
+      placeholder: "영문 본문 직접 입력(raw_prompt_override · 틀과 @imageN 순서·보존 문장은 서버가 자동 유지)",
+    });
+    rawArea.value = p.meta.body_en || "";
+    rawArea.addEventListener("input", () => {
+      p.meta.body_en = rawArea.value;
+      p.meta.dirtySpec = true;
+      p.meta.rawDirty = true;
+    });
+
+    const fullPreview = p.meta.prompt_en
+      ? Data.el("pre", { className: "muted-text selectable-text", style: "white-space:pre-wrap;margin:4px 0 0;font-size:11px;", text: p.meta.prompt_en })
+      : null;
 
     const aiBox = Data.el("div", { className: "ai-box" },
       Data.el("div", { className: "insp-card-head" },
@@ -483,17 +525,23 @@ window.DPV2Inspector = (() => {
           type: "button", className: "mini-btn accent-outline",
           disabled: Store.state.assistBusy,
           text: Store.state.assistBusy ? "작성 중…" : "AI 작성 실행",
-          title: "클릭할 때만 서버 브릿지로 영문 프롬프트를 생성합니다",
-          onClick: () => runAssistSequence([p]),
+          title: "경량 LLM 호출로 영문 프롬프트를 작성합니다 (클릭 시에만 실행 · 별도 확인 상자 없음)",
+          onClick: () => runAssistSequence([p], !!p.meta.body_en && !p.meta.dirtySpec),
         }),
       ),
+      Data.el("p", { className: "muted-text", text: "클릭 시 경량 LLM 호출로 영문 본문을 작성합니다(동일 입력은 캐시 재사용)." }),
+      p.meta.specState === "blocked" && p.meta.specWhy
+        ? Data.el("span", { className: "tag-chip warn", text: `주의: ${p.meta.specWhy}` }) : null,
       p.meta.summary_ko ? Data.el("p", { className: "ai-summary-ko selectable-text", text: p.meta.summary_ko }) : null,
       p.meta.skill_ids && p.meta.skill_ids.length
-        ? Data.el("div", { className: "inline-row" }, ...p.meta.skill_ids.map((s) => Data.el("span", { className: "tag-chip accent", text: s })))
+        ? Data.el("div", { className: "inline-row" },
+          ...p.meta.skill_ids.map((s) => Data.el("span", { className: "tag-chip accent", text: s })),
+          p.meta.cached ? Data.el("span", { className: "tag-chip ok", text: "캐시 재사용" }) : null)
         : null,
       Data.el("details", {},
-        Data.el("summary", { className: "muted-text", text: "영문 프롬프트 보기 · 직접 편집" }),
+        Data.el("summary", { className: "muted-text", text: "영문 본문 직접 편집 · 전체 프롬프트 보기" }),
         rawArea,
+        fullPreview,
       ),
     );
 
@@ -501,13 +549,7 @@ window.DPV2Inspector = (() => {
       type: "button", className: "btn-secondary-sm full-w", text: "이 패치 지시문 저장",
       onClick: async () => {
         try {
-          await Api.saveSpec(Store.state.root, {
-            crop_id: p.id,
-            purpose: p.meta.purpose,
-            direction_ko: p.meta.direction_ko,
-            prompt_en: p.meta.prompt_en,
-            prompt_source: p.meta.prompt_en ? (p.meta.aiAuto ? "assist" : "manual") : "template",
-          });
+          await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
           Store.toast("지시문을 저장했습니다.", "ok");
           await Store.refreshAll(true);
         } catch (err) {
@@ -1116,14 +1158,41 @@ window.DPV2Inspector = (() => {
     $("btn-canvas-apply-first").addEventListener("click", handleFreeApply);
 
     $("btn-run-generate").addEventListener("click", async () => {
-      const selIds = Store.selectedPatches().map((p) => p.id);
+      const sel = Store.selectedPatches();
+      const selIds = sel.map((p) => p.id);
+      // D519: 지시가 바뀐 패치만 먼저 저장·자동 작성(상한 8패치 · 동시 1 · 실패 시 중단) 후 DPSubmit 승인 상자로 이동
+      if (Api.can("v2_spec_edit")) {
+        try {
+          for (const p of sel) {
+            if (!p.meta.specLoaded) await Store.loadSpec(p.id, true);
+            if (p.meta.dirtySpec) await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
+          }
+        } catch (err) {
+          Store.toast(`지시문 저장 실패: ${err.message}`, "err");
+          return;
+        }
+      }
+      if (Api.can("v2_forge_prompt")) {
+        const stale = sel.filter((p) => {
+          const m = p.meta;
+          if (!m.aiAuto) return false;
+          const needsBody = !!(m.user_instruction_ko && m.user_instruction_ko.trim()) || ["remove", "vary", "detail"].includes(m.purpose);
+          if (!needsBody) return false;
+          return m.specState === "blocked" || !m.body_en || (m.specInputHash && m.promptInputHash !== m.specInputHash);
+        });
+        if (stale.length) {
+          const assistRes = await runAssistSequence(stale, false);
+          if (!assistRes.ok) return;
+        }
+      }
       const res = await Api.submitStage("run", {
         root: Store.state.root,
         only: selIds.join(","),
-        plan: Store.state.plan,
       });
       if (res && res.pendingIntegration) {
         await Data.showDialogNotice(res.message);
+      } else if (res && res.ok === false && res.reason !== "cancelled") {
+        Store.toast(res.error || "생성 요청을 완료하지 못했습니다.", "err");
       } else {
         await Store.refreshAll(true);
       }

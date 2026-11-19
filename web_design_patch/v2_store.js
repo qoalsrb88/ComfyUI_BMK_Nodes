@@ -147,7 +147,7 @@ window.DPV2Store = (() => {
     });
   }
 
-  // ── 패치 메타 · 통합 뷰 ──
+  // ── 패치 메타 · 스펙 동기화(§3.1–§3.3) · 통합 뷰 ──
   function ensurePatchMeta(cropId, cropObj) {
     let m = state.patchMeta.get(cropId);
     if (!m) {
@@ -155,11 +155,25 @@ window.DPV2Store = (() => {
         || (cropObj && cropObj.note) || "";
       m = {
         purpose: "correct",
-        direction_ko: targetText,
+        user_instruction_ko: targetText,
         aiAuto: true,
         summary_ko: "",
+        body_en: "",
         prompt_en: "",
+        promptSource: "",
         skill_ids: [],
+        seen: "null",
+        crop_sig: "",
+        specLoaded: false,
+        specState: "template", // template | body | blocked
+        specWhy: null,
+        specInputHash: "",
+        promptInputHash: "",
+        specImages: [],
+        dirtySpec: false,
+        rawDirty: false,
+        forgeCalls: 0,
+        cached: false,
         modelOverride: "", // "" = 프로젝트 기본 모델 상속
         quality: "",
         count: 0,
@@ -171,6 +185,84 @@ window.DPV2Store = (() => {
       state.patchMeta.set(cropId, m);
     }
     return m;
+  }
+
+  function applySpecResponse(cropId, res) {
+    if (!res || typeof res !== "object") return;
+    const m = ensurePatchMeta(cropId);
+    m.specLoaded = true;
+    if ("seen" in res) m.seen = res.seen ?? "null";
+    if ("crop_sig" in res) m.crop_sig = res.crop_sig ?? "";
+    if ("state" in res) m.specState = res.state || "template";
+    if ("why" in res) m.specWhy = res.why || null;
+    if ("prompt_en" in res) m.prompt_en = res.prompt_en || "";
+    if ("input_hash" in res) m.specInputHash = res.input_hash || "";
+    if (Array.isArray(res.images)) m.specImages = res.images;
+    if (res.v2 && typeof res.v2 === "object") {
+      if (res.v2.purpose) m.purpose = res.v2.purpose;
+      if (typeof res.v2.user_instruction_ko === "string") m.user_instruction_ko = res.v2.user_instruction_ko;
+      if (typeof res.v2.ai_auto === "boolean") m.aiAuto = res.v2.ai_auto;
+      const pr = res.v2.prompt;
+      if (pr && typeof pr === "object") {
+        m.promptSource = pr.source || "";
+        m.body_en = pr.body_en || "";
+        m.summary_ko = pr.summary_ko || "";
+        m.promptInputHash = pr.input_hash || "";
+        m.skill_ids = Array.isArray(pr.skill_ids) ? pr.skill_ids : [];
+      } else {
+        m.promptSource = "";
+        m.body_en = "";
+        m.summary_ko = "";
+        m.promptInputHash = "";
+        m.skill_ids = [];
+      }
+    }
+    m.dirtySpec = false;
+    m.rawDirty = false;
+  }
+
+  async function loadSpec(cropId, force = false) {
+    if (!state.root || !cropId || !Api.can("v2_spec_edit")) return null;
+    const m = ensurePatchMeta(cropId);
+    if (m.specLoaded && !force) return m;
+    try {
+      const res = await Api.getSpec(state.root, cropId);
+      if (res) {
+        applySpecResponse(cropId, res);
+        emit("selection");
+      }
+      return m;
+    } catch (_) {
+      return m;
+    }
+  }
+
+  async function savePatchSpec(patch, opts = {}) {
+    if (!state.root || !patch) return null;
+    const m = patch.meta;
+    if (Api.can("v2_spec_edit") && !m.specLoaded) {
+      await loadSpec(patch.id, true);
+    }
+    const payload = {
+      crop_id: patch.id,
+      seen: m.seen,
+      crop_sig: m.crop_sig,
+      purpose: m.purpose,
+      user_instruction_ko: m.user_instruction_ko || "",
+      ai_auto: !!m.aiAuto,
+    };
+    if (opts.includeRaw || m.rawDirty) {
+      payload.raw_prompt_override = m.body_en || "";
+    }
+    const res = await Api.saveSpec(state.root, payload);
+    if (res && Api.can("v2_spec_edit")) {
+      applySpecResponse(patch.id, res);
+    } else {
+      m.dirtySpec = false;
+      m.rawDirty = false;
+    }
+    emit("selection");
+    return res;
   }
 
   function projectPrepare() {
@@ -301,6 +393,7 @@ window.DPV2Store = (() => {
     state.primaryId = id;
     state.lastClickedId = id;
     emit("selection");
+    if (Api.can("v2_spec_edit")) loadSpec(id);
   }
 
   function selectAllPatches() {
@@ -459,6 +552,9 @@ window.DPV2Store = (() => {
         if (patches.length && (!state.primaryId || !patches.some((p) => p.id === state.primaryId))) {
           state.primaryId = patches[0].id;
           state.selectedIds = new Set([patches[0].id]);
+        }
+        if (state.primaryId && Api.can("v2_spec_edit")) {
+          await loadSpec(state.primaryId, true);
         }
       } else if (state.S && state.S.running) {
         try { state.progress = await Api.getProgress(state.root); } catch (_) {}
@@ -677,7 +773,7 @@ window.DPV2Store = (() => {
   return {
     state, subscribe, emit, toast,
     loadPrefs, savePrefs, applyPrefsToDom, initForgeThemeListener,
-    ensurePatchMeta, projectPrepare, getPatches, getPatch, primaryPatch, selectedPatches,
+    ensurePatchMeta, loadSpec, savePatchSpec, projectPrepare, getPatches, getPatch, primaryPatch, selectedPatches,
     currentCandidate, selectCandidate, selectPatch, selectAllPatches, getCommonOrMixed,
     pushHistory, undoHistory, redoHistory, jumpHistory,
     refreshAll, loadLayout, loadRefs, loadPipelineAndPlan, loadSeams, startPolling, stopPolling,

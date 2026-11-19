@@ -207,17 +207,33 @@ window.DPV2Api = (() => {
     return data;
   }
 
-  // ── 6. V2 계약 확장 라우트 (caps 게이트 · §7.1 A1/A6/A7 · §7.3 C1/C2) ──
+  // ── 6. V2 계약 확장 라우트 (STUDIO_UX_V2A_SPEC §3.2–§3.4 · caps 게이트 · §7.3 C1/C2) ──
+  async function getSpec(root, cropId) {
+    if (!can("v2_spec_edit")) return null;
+    return getJson("spec?" + qs({ root, crop_id: cropId }));
+  }
+
   async function saveSpec(root, body) {
     if (can("v2_spec_edit")) {
-      return postJson("spec", Object.assign({ root }, body));
+      // §3.3: 허용 키 외의 키는 400 이므로 계약 키만 정확히 전송
+      const payload = {
+        root,
+        crop_id: body.crop_id,
+        seen: body.seen ?? "null",
+        crop_sig: body.crop_sig ?? "",
+      };
+      if ("purpose" in body && body.purpose !== undefined) payload.purpose = body.purpose;
+      if ("user_instruction_ko" in body && body.user_instruction_ko !== undefined) payload.user_instruction_ko = body.user_instruction_ko;
+      if ("ai_auto" in body && body.ai_auto !== undefined) payload.ai_auto = !!body.ai_auto;
+      if ("raw_prompt_override" in body && body.raw_prompt_override !== undefined) payload.raw_prompt_override = body.raw_prompt_override;
+      return postJson("spec", payload);
     }
     // 백엔드 V2-A 병합 전 폴백: draft/adopt (op: "set")로 대상 문구만 저장 시도
     const dv = await getDraft(root, body.crop_id);
     return adoptDraft(root, {
       crop_id: body.crop_id,
       op: "set",
-      text: body.direction_ko || "",
+      text: body.user_instruction_ko || "",
       seen: dv.seen,
       crop_sig: dv.crop_sig,
       preview: false,
@@ -232,21 +248,21 @@ window.DPV2Api = (() => {
         reason: "Phase V2-A 백엔드 브릿지(prompt/assist) 연결 대기 중입니다.",
         skill_ids: [],
         summary_ko: "",
+        body_en: "",
         prompt_en: "",
       };
     }
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), ASSIST_TIMEOUT_MS);
     try {
-      // 계약 §7.1 A1: UI는 ref_names 를 보내지 않고 서버가 refs.json 에서 직접 읽음
+      // §3.4: 서버가 저장된 스펙의 목적·지시문·모델을 직접 읽음 — UI는 식별자·seen·crop_sig·force 만 전송
       const payload = {
         root,
         crop_id: body.crop_id,
-        purpose: body.purpose,
-        direction_ko: body.direction_ko,
-        model: body.model,
-        refs_mode: body.refs_mode || "auto",
+        seen: body.seen ?? "null",
+        crop_sig: body.crop_sig ?? "",
       };
+      if (body.force) payload.force = true;
       return await postJson("prompt/assist", payload, ctrl.signal);
     } catch (err) {
       if (err && err.name === "AbortError") {
@@ -266,7 +282,7 @@ window.DPV2Api = (() => {
     return postJson("layout/batch_update", Object.assign({ root, seen }, patch));
   }
 
-  // ── 7. 유료·무료 실행 제출 어댑터 (계약 §7.4 D4·D5: 공용 모듈 DPSubmit 만 호출) ──
+  // ── 7. 유료·무료 실행 제출 어댑터 (STUDIO_UX_V2A_SPEC §3.6 · 계약 §7.4 D4·D5: 공용 모듈 DPSubmit 만 호출) ──
   function submitAdapter() {
     return window.DPSubmit || null;
   }
@@ -277,17 +293,30 @@ window.DPV2Api = (() => {
       return {
         ok: false,
         pendingIntegration: true,
-        message: "실행 제출 공용 모듈(Phase V2-A DPSubmit)이 연결되면 v2에서 바로 실행됩니다. 지금은 우측 상단 [기존 화면(v1)]에서 동일 프로젝트로 실행할 수 있습니다.",
+        message: "실행 제출 공용 모듈(Phase V2-A submit.js · DPSubmit)이 연결되면 v2에서 바로 실행됩니다. 지금은 우측 상단 [기존 화면(v1)]에서 동일 프로젝트로 실행할 수 있습니다.",
       };
     }
     if (stage === "apply" || stage === "export") {
-      if (typeof mod.submitFree === "function") return mod.submitFree(stage, options);
+      if (typeof mod.submitFree === "function") return mod.submitFree(stage, { root: options.root });
     }
-    if (stage === "run" || stage === "draft" || stage === "reroll" || stage === "postprocess") {
+    if (stage === "run") {
+      // §3.6: submitPaid("run", { root, only }) — 화면의 plan 은 넘기지 않음(모듈이 최신 계획을 직접 조회)
+      const paidOpts = { root: options.root };
+      if (options.only) paidOpts.only = options.only;
+      if (typeof mod.submitPaid === "function") return mod.submitPaid(stage, paidOpts);
+    }
+    if (stage === "draft" || stage === "reroll" || stage === "postprocess") {
       if (typeof mod.submitPaid === "function") return mod.submitPaid(stage, options);
     }
-    if (typeof mod.submit === "function") return mod.submit(stage, options);
-    return { ok: false, pendingIntegration: true, message: "지원되지 않는 제출 인터페이스입니다." };
+    return { ok: false, reason: "unsupported", message: "이 단계에서 지원되지 않는 제출 유형입니다." };
+  }
+
+  async function waitJob(root, promptId) {
+    const mod = submitAdapter();
+    if (mod && typeof mod.wait === "function" && promptId) {
+      return mod.wait(root, promptId);
+    }
+    return null;
   }
 
   return {
@@ -299,6 +328,6 @@ window.DPV2Api = (() => {
     getDraft, adoptDraft, getPrompt, pickCandidate, rejectCandidate, rerollCell, drainRun,
     getSeams, saveToForge, exportDownloadUrl,
     getMask, editMask, adjustMask, fetchImageRgba, encodePngL, saveMaskPng,
-    saveSpec, assistPrompt, batchUpdateCrops, submitAdapter, submitStage,
+    getSpec, saveSpec, assistPrompt, batchUpdateCrops, submitAdapter, submitStage, waitJob,
   };
 })();
