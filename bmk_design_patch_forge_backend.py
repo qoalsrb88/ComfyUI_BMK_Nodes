@@ -58,6 +58,8 @@ _CALL_ID = re.compile(r"([0-9a-f]{24})_r(\d+)")
 _JOB_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _PRIVATE_TEXT = re.compile(r"://|data:|\\|[a-z0-9_.-]+:\d+|(?:\d{1,3}\.){3}\d{1,3}|::|(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}", re.I)
+# 주소와 UTF-8로 쓸 수 없는 서로게이트는 원문 전체에서 검사한 뒤 저장 길이를 제한한다.
+_UNRECORDABLE_PROMPT = re.compile(r"://|data:|[\ud800-\udfff]", re.I)
 _LOCK = threading.Lock()
 _PROGRESS = {}
 CATALOG_TTL = 600.0
@@ -219,7 +221,7 @@ def blocked_reason(job: dict) -> str | None:
             # 잘못된 값 자체에는 토큰·주소가 들어 있을 수 있다.
             return f"{model.label} 의 품질 설정이 잘못되었습니다 — 반영을 다시 실행해 주세요."
     why = models.opts_problem(model.name, job.get("opts"))
-    return why or models.size_problem(model.name, job.get("size"))
+    return why or models.size_problem(model.name, job.get("size"), job.get("opts"))
 
 
 def encode_inputs(input_paths: list[str]) -> list[bytes]:
@@ -717,7 +719,7 @@ class ForgeBackend:
             text = item.get("prompt_used") if isinstance(item, dict) else None
             changed = isinstance(text, str) and _normalized_prompt(text) != normalized
             side["prompt_changed"].append(changed)
-            side["prompt_used"].append(text[:10000] if changed and not re.search(r"://|data:", text, re.I) else None)
+            side["prompt_used"].append(text[:10000] if changed and not _UNRECORDABLE_PROMPT.search(text) else None)
         side["result_ids"] = [value for value in result.get("result_ids") or []
                               if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,256}", value)]
         self._save(ck, rep, side)

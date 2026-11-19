@@ -61705,6 +61705,17 @@ def forge_models2_backend_unit():
             changes = [{"opts": value} for value in bad_opts]
             changes += [{"size": [123, 456]}, {"size": None}, {"quality": "high"}, {"inputs": [{}] * 15},
                         {"n": 9}, {"n": True}]
+            if name == "nano-banana-pro":
+                pro_opts = {"aspect_ratio": "4:5", "image_size": "4K"}
+                changes.append({"size": [1024, 1024], "opts": pro_opts})
+                root, job, paths = project(name)
+                matching = dict(job, size=[3712, 4608], opts=pro_opts)
+                client = Client()
+                with active(root, client) as backend:
+                    check(rn.blocked_reason(matching, backend="forge") is None, "B5 프로 4:5·4K 예상 크기 허용")
+                    await backend.request(matching, paths, rn.call_id_for(job["cell_key"], 0))
+                check(len(client.submissions) == 1 and client.submissions[0]["aspect_ratio"] == "4:5"
+                      and client.submissions[0]["image_size"] == "4K", "B5 맞는 크기·옵션 조합은 한 번 제출")
             for change in changes:
                 root, job, paths = project(name)
                 job.update(change)
@@ -61739,6 +61750,9 @@ def forge_models2_backend_unit():
         for name in ("gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare",
                      "seedream-5.5", "ideogram-4.5"):
             root, job, paths = project(name)
+            check(rn.blocked_reason(dict(job, size=[1024, 1024]), backend="forge") is None
+                  and (rn.blocked_reason(dict(job, size=[0, 0]), backend="forge") is None) == (name in models.LOCAL_MODELS),
+                  "B5 GPT·Seedream·Ideogram의 기존 크기 판정 유지 " + name)
             job["opts"] = {"image_size": "2K"}
             client = Client()
             with active(root, client) as backend:
@@ -61795,6 +61809,37 @@ def forge_models2_backend_unit():
             expect_raises(lambda: fb.read_sidecar(root, ck, 0), "FM2B 사이드카 prompt_used 형식 검사")
             check(fb.prompt_used(root, call_id) == [], "FM2B 손상된 사이드카는 원문을 노출하지 않음")
 
+    async def surrogate_prompt_cases():
+        valid = "색을 유지해 주세요 \U0001f3a8"
+        class SurrogatePromptClient(Client):
+            async def job(self, token, job_id):
+                result = await super().job(token, job_id)
+                result["metadata"] = [{"prompt_used": "\ud800"}, {"prompt_used": valid},
+                                      {"prompt_used": "a" * 10000 + "\udfff"}]
+                return result
+
+        for recovery in (False, True):
+            root, job, _ = project(n=3)
+            client = SurrogatePromptClient()
+            if recovery:
+                client.failure = fg.ForgeError("unreachable", kind="connect")
+                with active(root, client) as backend:
+                    await run_plan(root, backend)
+                check(rn._rep_state(rn.read_ledger(root, job["cell_key"])[0], False) == "recoverable",
+                      "B4 제출 영수증으로 다운로드 복구 준비")
+                client.failure = None
+            with active(root, client) as backend:
+                report = await run_plan(root, backend)
+            route = "다운로드 복구" if recovery else "최초 수확"
+            candidates = store.load_manifest(root)["candidates"]
+            check(report.done == 1 and report.failed == 0 and report.recovered == int(recovery)
+                  and len(client.submissions) == 1 and len(candidates) == 3
+                  and all(Path(store.resolve_path(root, c["file"])).read_bytes() == png for c in candidates),
+                  f"B4 {route}에서 프롬프트 인코딩과 무관하게 그림 3장 저장·후보 등록")
+            side = fb.read_sidecar(root, job["cell_key"], 0)
+            check(side.get("prompt_changed") == [True, True, True] and side.get("prompt_used") == [None, valid, None],
+                  f"B4 {route}에서 UTF-8로 기록할 수 없는 슬롯만 원문 생략·변경 표지 보존")
+
     async def all_model_prompt_cases():
         rewritten = "서버가 바꾼 프롬프트"
         for name in (*models.LOCAL_MODELS, "seedream-5.5"):
@@ -61837,6 +61882,7 @@ def forge_models2_backend_unit():
             asyncio.run(request_cases())
             prompt_cases()
             asyncio.run(all_model_prompt_cases())
+            asyncio.run(surrogate_prompt_cases())
             asyncio.run(retry_case())
         raw = b"\n".join(path.read_bytes() for path in out.rglob("*.json"))
         check(secret.encode() not in raw and org.encode() not in raw and b"https://forge.example" not in raw,
