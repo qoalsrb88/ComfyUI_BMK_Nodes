@@ -294,6 +294,30 @@ def _record(outputs, exc=None, *, interrupted=False, node=None, scope=None):
         return {"status": {"status_str": "error", "completed": False, "messages": [["execution_error", info]]}, "outputs": {}}
 
 
+def _apply_manifest(root):
+    try:
+        return pl.store.load_manifest(root)
+    except Exception:
+        return None  # 기록 보충용 읽기가 실패해도 노드 실행 결과는 보존한다.
+
+
+def _apply_summary(before, after):
+    try:
+        jobs = after["jobs"]
+        old_keys = {job["cell_key"] for job in before["jobs"]}
+        new_keys = {job["cell_key"] for job in jobs}
+        gone = old_keys - new_keys
+        occupied = {job["crop_id"] for job in jobs}
+        no_job = [crop["id"] for crop in after["crops"] if crop["id"] not in occupied]
+        if not all(isinstance(cid, str) and board._CROP_ID_RE.fullmatch(cid) for cid in no_job):
+            return None
+        old_cands = sum(board._cell_of(cand)[0] in gone for cand in before["candidates"])
+        return {"jobs": len(jobs), "new_jobs": len(new_keys - old_keys), "kept_jobs": len(old_keys & new_keys),
+                "gone_jobs": len(gone), "old_cands": old_cands, "no_job": no_job}
+    except (KeyError, TypeError, AttributeError, ValueError):
+        return None
+
+
 class JobRunner:
     """프로젝트당 직렬 작업 큐. scope = board.current_scope() 모양(작업 스레드가 그 범위를 건다)."""
 
@@ -464,8 +488,14 @@ class JobRunner:
                 forge_token = backend.set_forge(ctx)
                 if job.get("stage") in ("apply", "run", "reroll"):
                     _refresh_catalog(ctx)
+            before = _apply_manifest(job["raw_root"]) if job.get("stage") == "apply" and compat.server_mode() else None
             result = execute(job["prompt"])
+            after = _apply_manifest(job["raw_root"]) if before is not None else None
             record = _record(result["outputs"], node=job["node"], scope=job["scope"])
+            if after is not None and record["status"]["status_str"] == "success":
+                summary = _apply_summary(before, after)
+                if summary is not None:
+                    record["apply_summary"] = summary
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 logger.warning("Design Patch 작업의 프로세스 종료 예외를 오류로 기록합니다: %s", type(exc).__name__)

@@ -49,7 +49,14 @@
         "open_folder": true,
         "path_input": true,
         "ps_mask": true,
-        "agent_approve": true
+        "agent_approve": true,
+        "ui_v2": false,
+        "v2_spec_edit": false,
+        "v2_forge_prompt": false,
+        "v2_auto_prepare": false,
+        "v2_crop_model": false,
+        "v2_postprocess": false,
+        "v2_psd_reimport": false
       }
     }
   },
@@ -74,7 +81,14 @@
         "open_folder": false,
         "path_input": false,
         "ps_mask": false,
-        "agent_approve": false
+        "agent_approve": false,
+        "ui_v2": false,
+        "v2_spec_edit": true,
+        "v2_forge_prompt": false,
+        "v2_auto_prepare": true,
+        "v2_crop_model": false,
+        "v2_postprocess": false,
+        "v2_psd_reimport": false
       },
       "backend": "mock"
     }
@@ -97,7 +111,14 @@
         "open_folder": false,
         "path_input": false,
         "ps_mask": false,
-        "agent_approve": false
+        "agent_approve": false,
+        "ui_v2": false,
+        "v2_spec_edit": true,
+        "v2_forge_prompt": false,
+        "v2_auto_prepare": true,
+        "v2_crop_model": false,
+        "v2_postprocess": false,
+        "v2_psd_reimport": false
       },
       "backend": "mock"
     }
@@ -375,6 +396,13 @@
         "path_input": false,
         "ps_mask": false,
         "agent_approve": false,
+        "ui_v2": false,
+        "v2_spec_edit": true,
+        "v2_forge_prompt": true,
+        "v2_auto_prepare": true,
+        "v2_crop_model": false,
+        "v2_postprocess": false,
+        "v2_psd_reimport": false,
         "forge_import": true,
         "forge_save": true
       },

@@ -289,10 +289,14 @@ _STATIC = {"board.html": "text/html", "board.js": "text/javascript", "viewer.js"
            "layout_geom.js": "text/javascript", "rows.js": "text/javascript", "layout_edit.js": "text/javascript", "ref_edit.js": "text/javascript",
            "checklist.js": "text/javascript", "pipeline.js": "text/javascript", "mask_edit.js": "text/javascript", "board.css": "text/css",
            "env.js": "text/javascript", "dialog.js": "text/javascript",
-           "forge_import.js": "text/javascript", "forge-theme.css": "text/css", "forge-fonts.css": "text/css"}  # env·dialog = Forge 이식 F1 공용 객체(DPEnv·DPDialog)
+           "forge_import.js": "text/javascript", "submit.js": "text/javascript", "forge-theme.css": "text/css", "forge-fonts.css": "text/css"}  # env·dialog = Forge 이식 F1 공용 객체(DPEnv·DPDialog)
 
 _STATIC.update({name: "font/woff2" for name in os.listdir(WEB_DIR)
                 if re.fullmatch(r"forge-font-[0-9a-f]{16}\.woff2", name)})
+# UX v2 화면 파일(V2-A D488): 이름을 표에 적지 않고 꼴로 판정한다 — 요청 때 그 파일이 있으면 준다(서버 모드에서만, D491).
+_V2_STATIC = re.compile(r"v2\.(html|css)|v2_[a-z0-9_]{1,40}\.(js)")
+_V2_TYPES = {"html": "text/html", "css": "text/css", "js": "text/javascript"}
+V2_ENTRY = "v2.html"
 
 THUMB_KINDS = ("cand", "before", "ref", "delta", "context")
 THUMB_SIZES = (128, 192, 256, 384, 512, 768, 1024)
@@ -390,6 +394,9 @@ SERVER_ENV = "BMK_DP_SERVER_MODE"  # D339 — 프로세스 플래그는 이 환�
 # 로컬판이 쓸 수 있는 기능 표(GET /env 의 caps — D341). 서버 전용(jobs·export_download)은 로컬에서 false
 LOCAL_CAPS = {"jobs": False, "export_download": False, "sam3": True, "local_qwen": True, "external": True, "open_folder": True,
               "path_input": True, "ps_mask": True, "agent_approve": True}
+# UX v2 기능 플래그(V2-A D490). 로컬판은 모두 false — 서버 모드의 GET /env 가 열린 것만 true 로 바꾼다.
+V2_CAPS = ("ui_v2", "v2_spec_edit", "v2_forge_prompt", "v2_auto_prepare", "v2_crop_model", "v2_postprocess", "v2_psd_reimport")
+LOCAL_CAPS.update({name: False for name in V2_CAPS})
 _SCOPE: contextvars.ContextVar = contextvars.ContextVar("bmk_dp_scope", default=None)
 _ENV_PROVIDER: list = []           # set_env_provider — 서버 모드의 GET /env 본문을 만드는 함수(request → dict)
 _SCOPE_ROOTS: dict = {}            # 정규화한 계정 프로젝트 폴더 → (mtime_ns, {key: root}), 최근 256개
@@ -6855,10 +6862,27 @@ async def board_redirect(request: web.Request) -> web.StreamResponse:
     raise web.HTTPFound(request.path + "/" + (f"?{qs}" if qs else ""))
 
 
+def static_type(name) -> str | None:
+    """화면 파일 이름 → content type(없으면 None). v2 파일(v2.html·v2.css·v2_<이름>.js)은 서버 모드에서만 이름 꼴로 받는다."""
+    ctype = _STATIC.get(name)
+    if ctype is None and server_mode() and isinstance(name, str):
+        m = _V2_STATIC.fullmatch(name)
+        if m:
+            ctype = _V2_TYPES[m.group(1) or m.group(2)]
+    return ctype
+
+
+def v2_available() -> bool:
+    """GET /env 의 caps.ui_v2 와 ?ui=v2 분기가 같이 보는 값: 서버 모드이고 v2.html 이 실제로 있다."""
+    return server_mode() and os.path.isfile(os.path.join(WEB_DIR, V2_ENTRY))
+
+
 @_guard
 async def board_static(request: web.Request) -> web.StreamResponse:
-    name = request.match_info.get("name") or "board.html"
-    ctype = _STATIC.get(name)
+    name = request.match_info.get("name")
+    if not name:  # 화면 주소: ?ui=v2 이고 v2 화면이 있을 때만 v2, 그 밖에는 지금 화면(V2-A D489)
+        name = V2_ENTRY if request.query.get("ui") == "v2" and await asyncio.to_thread(v2_available) else "board.html"
+    ctype = static_type(name)
     if ctype is None:
         raise _Reject(404, "보드 파일이 아닙니다")
     data = await asyncio.to_thread(_read_bytes, os.path.join(WEB_DIR, name))

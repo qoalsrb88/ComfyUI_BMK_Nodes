@@ -6,7 +6,18 @@
 window.DPEnv = (() => {
   // 로컬판의 기능 표(bmk_design_patch_board.LOCAL_CAPS 와 같음 — GET ../env 가 404 인 옛 로컬 서버도 이 표). 서버 전용 둘은 false
   const LOCAL_CAPS = { jobs: false, export_download: false, sam3: true, local_qwen: true, external: true, open_folder: true,
-    path_input: true, ps_mask: true, agent_approve: true };
+    path_input: true, ps_mask: true, agent_approve: true,
+    // UX v2 기능 플래그(로컬판은 모두 false — 서버 모드의 GET ../env 가 열린 것만 true 로 준다)
+    ui_v2: false, v2_spec_edit: false, v2_forge_prompt: false, v2_auto_prepare: false, v2_crop_model: false, v2_postprocess: false,
+    v2_psd_reimport: false };
+  // 서버 응답에 꼭 있어야 하는 키 = v2 플래그를 뺀 나머지. 화면 파일만 새 판이고 서버(파이썬)가 재시작 전의 옛 판이면 응답에 v2 키가 없다 —
+  // 그때 화면 전체를 막지 않고 없는 v2 키를 false 로 본다.
+  const REQUIRED_CAPS = Object.keys(LOCAL_CAPS).filter((key) => key !== "ui_v2" && !key.startsWith("v2_"));
+  const withV2 = (caps) => {
+    const out = Object.assign({}, caps); // 서버가 준 키 순서 그대로, 없는 v2 키만 뒤에 false 로
+    for (const key of Object.keys(LOCAL_CAPS)) if (!REQUIRED_CAPS.includes(key) && typeof out[key] !== "boolean") out[key] = false;
+    return out;
+  };
   // 해시를 다른 모듈·요청이 보기 전에 지운다. 토큰은 세션 교환 뒤 버린다.
   const hash = new URLSearchParams(location.hash.slice(1));
   let token = hash.get("token"), organization = hash.get("organization_id") || "";
@@ -182,7 +193,7 @@ window.DPEnv = (() => {
         const data = fresh.data, caps = data && data.caps;
         if (changed || env.account.tag !== tag || fresh.response.status !== 200 || !object(data) || data.server_mode !== true
             || data.session !== true || !object(data.account) || data.account.tag !== tag
-            || !object(caps) || !Object.keys(LOCAL_CAPS).every((key) => typeof caps[key] === "boolean")
+            || !object(caps) || !REQUIRED_CAPS.every((key) => typeof caps[key] === "boolean")
             || !Array.isArray(caps.models) || (caps.models_error != null && typeof caps.models_error !== "string")) return false;
         const error = caps.models_error ?? null;
         const different = JSON.stringify([env.caps.models, env.caps.models_error ?? null]) !== JSON.stringify([caps.models, error]);
@@ -368,7 +379,8 @@ window.DPEnv = (() => {
       }
       data = result.data;
       if (result.response.status !== 200 || !object(data) || typeof data.server_mode !== "boolean"
-          || !object(data.caps) || !Object.keys(LOCAL_CAPS).every((key) => typeof data.caps[key] === "boolean")) throw new Error("env");
+          || !object(data.caps) || !REQUIRED_CAPS.every((key) => typeof data.caps[key] === "boolean")) throw new Error("env");
+      data.caps = withV2(data.caps);
       sessionUrl = data.server_mode ? endpoint(data.session_url) : null;
       const prefsUrl = data.server_mode ? endpoint(data.prefs_url) : null;
       env.serverMode = data.server_mode;

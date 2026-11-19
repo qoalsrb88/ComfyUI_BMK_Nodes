@@ -1974,6 +1974,7 @@ class BMKDesignPatchPrepare:
         glossary = _glossary(root, m)
         old_jobs = {j["cell_key"]: j for j in m["jobs"]}
         jobs, tiles, warn_lines, dup_lines = [], [], [], []
+        body_crops = blocked_crops = 0
         adopt_pending = False  # 채택 가드가 'Import 가 반영할 차이'로 건너뛴 크롭이 있음 → 입력 지문을 올리지 않는다
         if not m["crops"]:  # 빈 시작(D6): 예외 대신 경고
             warn_lines.append("  크롭 없음 — 작업 없음(Studio 레이아웃 편집에서 크롭을 그린 뒤 다시 큐)")
@@ -1984,6 +1985,9 @@ class BMKDesignPatchPrepare:
             pbar.update(1)
             ov = store.load_spec_override(root, crop["id"])
             spec = dprompt.spec_from_manifest(crop, None, refs_dir, glossary, ov)
+            v2 = dprompt.v2_of(ov)
+            input_roles = dprompt.v2_roles(spec, root) if v2 is not None else None
+            input_layout = dprompt.v2_layout(spec) if v2 is not None else None
             if "ref_style" not in ov:
                 spec["ref_style"] = ref_style
             sha_of: dict[str, str] = {}
@@ -2046,7 +2050,30 @@ class BMKDesignPatchPrepare:
             else:
                 W, H, sinfo = store.gpt_output_size(x1 - x0, y1 - y0, size_rule)
             opts = models.job_opts(model, model_opts, src=(x1 - x0, y1 - y0))
-            chosen = dprompt.select_variants(dprompt.variants(spec), variants)
+            rendered_body = None
+            if v2 is not None:
+                state = dprompt.v2_state(v2, model, input_roles, len(dprompt.render(spec)["images"]))
+                if state["state"] == "body" and dprompt.v2_layout(spec) != input_layout:
+                    # 그림 수가 같아도 자리마다 맡은 역할이 달라졌으면(한쪽이 갈라지고 다른 쪽이 합쳐짐) 글의 @imageN 이 다른 그림이다
+                    state = {"state": "blocked", "why": dprompt.IMAGES_MOVED}
+                if state["state"] == "body":
+                    try:
+                        rendered_body = dprompt.render_body(spec, state["body"])
+                    except ValueError as exc:
+                        state = {"state": "blocked", "why": str(exc)}
+                if state["state"] == "blocked":
+                    blocked_crops += 1
+                    warn_lines.append(f"  {crop['id']} {crop['name']}: 작업 없음 - {state['why']}")
+                    tiles.append(_label_tile([_fit(canvas_rgb, _THUMB)], [_ascii(crop["id"]), "0 jobs: prompt not ready"],
+                                             (255, 140, 120)))
+                    continue
+            if rendered_body is None:
+                template = dprompt.TEMPLATE_VERSION
+                chosen = dprompt.select_variants(dprompt.variants(spec), variants)
+            else:
+                template = dprompt.BODY_TEMPLATE
+                chosen = {dprompt.BODY_VARIANT: {**spec, **rendered_body}}
+                body_crops += 1
             crop_jobs, seen_prompts = [], {}
             for vname, v in chosen.items():
                 same = seen_prompts.get((v["prompt"], tuple(v["images"])))
@@ -2056,7 +2083,7 @@ class BMKDesignPatchPrepare:
                     continue
                 seen_prompts[(v["prompt"], tuple(v["images"]))] = vname
                 shas = [sha_of[p] for p in v["images"]]
-                ck = store.cell_key(model, job_quality, [W, H], _BACKGROUND, v["prompt"], shas, dprompt.TEMPLATE_VERSION, vname,
+                ck = store.cell_key(model, job_quality, [W, H], _BACKGROUND, v["prompt"], shas, template, vname,
                                     complexity=complexity, opts=opts)
                 roles = []
                 for p in v["images"]:
@@ -2072,7 +2099,7 @@ class BMKDesignPatchPrepare:
                 job.update({"cell_key": ck, "crop_id": crop["id"], "tid": ",".join(t["id"] for t in v["targets"]),
                             "variant": vname, "model": model, "quality": job_quality, "size": [W, H], "n": int(n),
                             "reps": int(calls_per_cell), "background": _BACKGROUND, "prompt": v["prompt"],
-                            "inputs": roles, "template_version": dprompt.TEMPLATE_VERSION, "size_info": sinfo})
+                            "inputs": roles, "template_version": template, "size_info": sinfo})
                 if model in store.COMPLEXITY_MODELS:
                     job["complexity"] = complexity
                 else:
@@ -2119,6 +2146,8 @@ class BMKDesignPatchPrepare:
                  f"rev {m['rev']} | {time.time() - t0:.1f}s",
                  "유료 호출 없음. Run 이 approve == pending_hash 일 때만 과금합니다"
                  "(Run 의 retry_failed·retry_orphans·only 가 기본값이면 Run 드라이런의 해시와 같음)."]
+        if body_crops or blocked_crops:
+            lines.append(f"본문 경로(직접 쓴 프롬프트) {body_crops}개 크롭 · 프롬프트 미준비 작업 없음 {blocked_crops}개")
         lines += runner.format_plan(plan, ap).splitlines()
         if n_pruned:  # 배치 10 D161
             lines.append(f"옛 생성 조건의 다시 생성 대기 {n_pruned}건 정리(과금 없음)")
