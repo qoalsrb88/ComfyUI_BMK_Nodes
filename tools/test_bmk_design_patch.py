@@ -62769,6 +62769,18 @@ await scenario("U2 비율 목록 모델의 size_rule 변경은 새 생성 조건
     gptStillChanges:e.h.prepareChanged({model:gpt.name,size_rule:old},{model:gpt.name,size_rule:next}),
     modelStillChanges:e.h.prepareChanged({model:nano[0].name,size_rule:old},{model:nano[1].name,size_rule:next})};e.stop();return r;
 });
+await scenario("U8 크기 규칙은 대상 모델로만 판정",async()=>{
+  const e=await studio(),changed=e.h.prepareChanged;
+  const base={model:nano[0].name,size_rule:"user_k"},oldGpt={...base,model:gpt.name};
+  const next={...base,size_rule:"int_k_2560"};
+  const r={nano:!changed(base,next),gpt:changed(oldGpt,{...next,model:gpt.name}),switchModel:changed(oldGpt,next)};
+  // 모델 변경 자체의 비교는 양쪽이 필요하다. 크기 규칙 차이가 더해져도 저장 모델을 다시 읽을 이유는 없다.
+  let reads=0;
+  const saved={...base,get model(){reads++;return base.model;}};
+  changed(saved,base);const normalReads=reads;
+  reads=0;changed(saved,next);r.targetOnly=reads===normalReads;
+  e.stop();return r;
+});
 for(const m of nano)await scenario("FM2J 승인·진행의 작업 옵션 "+m.name,async()=>{
   const opts={image_size:"4K",...(m.opts.thinking_level?{thinking_level:"high"}:{})};
   const e=await studio({prepare:{model:m.name,...opts},plan:p=>{p.run.prepare={model:m.name,quality:"standard",n:2,opts};}});
@@ -62779,6 +62791,44 @@ for(const m of nano)await scenario("FM2J 승인·진행의 작업 옵션 "+m.nam
     noQuality:!box.textContent.includes("품질")};e.click(e.B("취소",box));await sleep(5);
   e.h.PS.P.settings.prepare.image_size="2K";e.h.PS.P.drift=[];await e.pipe.showTab("generate");
   r.stale=!(e.rows("진행 — Run")[0]||"").includes(" · 모델 ");e.stop();return r;
+});
+for(const last of [gpt,nano[0],nano[2]])await scenario("U7 마지막 실행 모델의 옵션만 채움 "+last.name,async()=>{
+  const e=await studio({prepare:{model:last===nano[0]?gpt.name:nano[0].name,image_size:last===gpt?"4K":"1K",
+    thinking_level:last===nano[0]?"medium":"high"}});
+  const saved=persist(e),base=clone(saved.settings.prepare);
+  saved.derived.settings=clone(saved.settings);
+  Object.assign(saved.derived.settings.prepare,{model:last.name,n:base.n+1,
+    image_size:last===gpt?"2K":"4K",thinking_level:last===nano[0]?"high":"medium"});
+  await e.h.openSettings();
+  if(last!==nano[0]){
+    await e.change("thinking_level","minimal");
+    if(last===gpt)await e.change("image_size","1K");
+    e.doc.activeElement.blur();
+  }
+  e.click(e.B("마지막 실행 값으로 채우기"));await until(()=>!!e.box());
+  const box=e.box(),r={dialog:!!box};
+  if(box){
+    const msg=box.textContent;
+    r.diff=msg.includes("prepare.image_size:")===!!last.opts.image_size
+      &&msg.includes("prepare.thinking_level:")===!!last.opts.thinking_level;
+    e.B("확인",box).onclick({isTrusted:true});
+    await until(()=>e.srv.count("pipeline/settings","POST")>0);await sleep(10);
+  }
+  const edits=e.h.editState().form.prepare||{};
+  r.saved=saved.settings.prepare.n===base.n+1&&saved.settings.prepare.image_size==="4K"
+    &&saved.settings.prepare.thinking_level==="high";
+  r.drafts=last===gpt?edits.image_size==="1K"&&edits.thinking_level==="minimal":
+    last===nano[2]?edits.thinking_level==="minimal"&&!Object.hasOwn(edits,"image_size"):!Object.keys(edits).length;
+  e.stop();return r;
+});
+await scenario("U7 GPT의 유도 기본값만 다르면 저장할 절이 없음",async()=>{
+  const e=await studio({prepare:{model:gpt.name,image_size:"4K",thinking_level:"high"}}),saved=persist(e);
+  saved.derived.settings=clone(saved.settings);
+  Object.assign(saved.derived.settings.prepare,{image_size:"2K",thinking_level:"medium"});
+  await e.h.openSettings();e.click(e.B("마지막 실행 값으로 채우기"));
+  await until(()=>e.box()||e.toast("유도값과 같습니다"));
+  const r=!e.box()&&!!e.toast("유도값과 같습니다")&&!e.srv.count("pipeline/settings","POST");
+  if(e.box())e.B("취소",e.box()).onclick({isTrusted:true});e.stop();return r;
 });
 await scenario("FM2J 비율 차단 사유는 받은 문구 그대로",async()=>{
   const e=await studio(),report=P.paidReport("run",RUN_H({backend:"forge",stopped_reason:"none",approved_now:false,stop_note:IN.problem}));
@@ -62812,7 +62862,7 @@ await scenario("U3 후보 옵션·프롬프트 지연 조회·재사용·옛 기
   r.safe=text.textContent===raw&&!text.children.length;r.open=!text.hidden&&b.attrs["aria-expanded"]==="true";
   const url=new URL(calls[0].url);r.route=url.pathname.endsWith("/prompt")&&eq(Object.fromEntries(url.searchParams),{root:KEY,call:candidate.call_id,slot:"0"});
   b.fire("click");r.close=text.hidden&&b.attrs["aria-expanded"]==="false";b.fire("click");await sleep(5);r.cached=calls.length===1&&text.textContent===raw;
-  draw();toggle().fire("click");await sleep(5);r.redrawCached=calls.length===1&&e.text().textContent===raw;
+  draw();r.redrawCached=!e.text().hidden&&calls.length===1&&e.text().textContent===raw;
   candidate.slot=1;draw();toggle().fire("click");await sleep(5);r.slot=calls.length===2&&new URL(calls[1].url).searchParams.get("slot")==="1";
   delete candidate.prompt_used;draw();r.oldRecord=!toggle()&&nodes.detail.textContent.includes("공급자가 프롬프트를 고쳐 씀");
   candidate.prompt_rewritten=false;candidate.prompt_changed=true;candidate.prompt_used=true;draw();
@@ -62830,11 +62880,39 @@ for(const failure of ["null","http","network","json"])await scenario("U3 원문 
   const b=e.toggle();if(!b)return {button:false};b.fire("click");await sleep(5);
   return {message:e.text()?.textContent==="프롬프트를 불러오지 못했습니다",visible:e.text()?.hidden===false};
 });
+for(const failure of ["null","http","network","json"])await scenario("U6 조회 실패 후 접고 다시 열면 재시도 "+failure,async()=>{
+  let attempts=0;
+  const e=review(async()=>{
+    if(++attempts>1)return {ok:true,json:async()=>({prompt_used:"다시 받은 글"})};
+    if(failure==="network")throw Error("offline");
+    return {ok:failure!=="http",json:async()=>{if(failure==="json")throw Error("bad json");return {prompt_used:null};}};
+  });
+  e.toggle().fire("click");await sleep(5);e.draw();
+  const r={failed:!e.text().hidden&&e.text().textContent==="프롬프트를 불러오지 못했습니다"&&attempts===1};
+  e.toggle().fire("click");e.toggle().fire("click");await sleep(5);
+  r.recovered=attempts===2&&e.text().textContent==="다시 받은 글"&&!e.text().hidden;
+  e.toggle().fire("click");e.toggle().fire("click");await sleep(5);
+  r.cached=attempts===2&&e.text().textContent==="다시 받은 글";return r;
+});
 await scenario("U3 받는 중 접기·중복 요청·다른 후보 격리",async()=>{
   let resolve;const e=review(()=>new Promise(r=>resolve=r)),b=e.toggle();if(!b)return {button:false};
   b.fire("click");b.fire("click");b.fire("click");await sleep(5);const old=e.text(),r={oneRequest:e.calls.length===1};
   b.fire("click");e.candidate.slot=1;e.draw();resolve({ok:true,json:async()=>({prompt_used:"첫 슬롯의 글"})});await sleep(5);
   r.closed=old.hidden;r.isolated=e.text().hidden&&!e.text().textContent;r.noAutoRequest=e.calls.length===1;return r;
+});
+await scenario("U5 상태 갱신 중에도 선택한 후보의 펼침 상태를 유지",async()=>{
+  let resolve;
+  const e=review(()=>new Promise(done=>resolve=done)),raw="조회한 원문";
+  e.toggle().fire("click");e.c.renderDetail();
+  const r={pending:!e.text().hidden&&e.toggle().attrs["aria-expanded"]==="true"&&e.calls.length===1};
+  resolve({ok:true,json:async()=>({prompt_used:raw})});await sleep(5);
+  r.arrived=!e.text().hidden&&e.text().textContent===raw;
+  e.draw();r.immediate=!e.text().hidden&&e.text().textContent===raw&&e.calls.length===1;
+  e.toggle().fire("click");e.draw();r.closed=e.text().hidden&&e.toggle().attrs["aria-expanded"]==="false";
+  e.toggle().fire("click");await sleep(5);
+  e.candidate.key="another";e.draw();r.other=e.text().hidden;
+  e.candidate.key="one";e.draw();r.returned=e.text().hidden&&e.calls.length===1;
+  return r;
 });
 console.log(JSON.stringify(out));process.exit(0);
 '''
