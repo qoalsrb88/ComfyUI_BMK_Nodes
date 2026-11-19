@@ -192,6 +192,17 @@ def routes(accounts, *, model: str | None = None, timeout: float = 90.0, per_min
     """이 앱의 Forge 계정과 부하 한도·지침 캐시를 공유하는 작성 라우트."""
     active, history, cache = set(), {}, {}
 
+    def applied_view(root, crop_id):
+        with store.manifest_lock(root):
+            view = specs.spec_view(root, crop_id)
+            layout = board._layout_or_none(root)
+            pending = board._crop(layout, crop_id) if layout else None
+            if pending is not None:
+                crop = board._crop(store.load_manifest(root), crop_id)
+                if pending["rect"] != crop["rect"]:
+                    raise board._Reject(409, "영역을 옮긴 뒤 아직 반영하지 않았습니다 — 먼저 반영이 필요합니다", reason="apply_needed")
+            return view
+
     def reserve(key):
         now = clock()
         for account, times in list(history.items()):
@@ -324,7 +335,7 @@ def routes(accounts, *, model: str | None = None, timeout: float = 90.0, per_min
         root = await asyncio.to_thread(board._root_param, data["root"])
         if await asyncio.to_thread(backend.backend_name, root) != backend.BACKEND_FORGE:
             raise board._Reject(409, "Forge 생성 백엔드가 연결되지 않았습니다.", reason="no_backend")
-        view = await asyncio.to_thread(specs.spec_view, root, data["crop_id"])
+        view = await asyncio.to_thread(applied_view, root, data["crop_id"])
         if any(data[k] != view[k] for k in ("seen", "crop_sig")):
             raise board._Reject(409, _STALE, reason="stale")
         v2 = view["v2"]

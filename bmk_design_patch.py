@@ -1952,13 +1952,13 @@ class BMKDesignPatchPrepare:
     def run(self, project, model, quality, size_rule, variants, n, ref_style, calls_per_cell=1, complexity="high",
             image_size="2K", thinking_level="medium"):
         t0 = time.time()
-        forge_only = models.is_forge_only(model)
-        if forge_only:
+        if models.is_forge_only(model):
             problem = models.quality_problem(model, quality)
             if problem:
                 raise ValueError(f"{_TAG} {problem}")
-        job_quality = models.job_quality(model, quality)
-        model_opts = models.job_opts(model, {"image_size": image_size, "thinking_level": thinking_level})
+        prepare = {"model": model, "quality": quality, "n": n, "complexity": complexity,
+                   "image_size": image_size, "thinking_level": thinking_level}
+        model_opts = models.job_opts(model, prepare)
         root, m = _open(project)
         before = _snapshot(m)
         if not m["base"]:
@@ -1970,11 +1970,15 @@ class BMKDesignPatchPrepare:
         dprompt.select_variants({}, variants)  # 형식 검사(잘못된 토큰이면 ValueError)
         # 입력 지문은 스펙·용어집을 읽기 전에 — 실행 도중 바뀐 입력은 지금 값과 달라 Studio 에 '반영 필요'로 남는다
         inputs_fp = store.prepare_inputs_fp(root, m)
+        try:
+            gen_entries = store.crop_gen_entries(root)
+        except ValueError as exc:
+            raise ValueError(f"{_TAG} {exc}") from exc
         refs_dir = (m.get("source") or {}).get("refs_dir") or ""
         glossary = _glossary(root, m)
         old_jobs = {j["cell_key"]: j for j in m["jobs"]}
         jobs, tiles, warn_lines, dup_lines = [], [], [], []
-        body_crops = blocked_crops = 0
+        body_crops = blocked_crops = model_overrides = 0
         adopt_pending = False  # 채택 가드가 'Import 가 반영할 차이'로 건너뛴 크롭이 있음 → 입력 지문을 올리지 않는다
         if not m["crops"]:  # 빈 시작(D6): 예외 대신 경고
             warn_lines.append("  크롭 없음 — 작업 없음(Studio 레이아웃 편집에서 크롭을 그린 뒤 다시 큐)")
@@ -1983,6 +1987,18 @@ class BMKDesignPatchPrepare:
         pbar = comfy.utils.ProgressBar(len(m["crops"]))
         for crop in m["crops"]:
             pbar.update(1)
+            try:
+                eff = models.effective_gen(prepare, gen_entries.get(crop["id"]))
+            except models.GenError as exc:
+                warn_lines.append(f"  {crop['id']} {crop['name']}: 작업 없음 - {exc}")
+                thumb = _fit(_load_rgba(root, crop["source"]), _THUMB)
+                tiles.append(_label_tile([thumb], [_ascii(crop["id"]), "0 jobs: patch settings unreadable"], (255, 140, 120)))
+                continue
+            crop_model, job_quality, crop_n = eff["model"], eff["quality"], eff["n"]
+            if not eff["inherit"]["model"]:
+                model_overrides += 1
+            if eff["clamped"] is not None:
+                warn_lines.append(f"  {crop['id']} {crop['name']}: 장 수 {eff['clamped']} → {crop_n}({models.get(crop_model).label} 의 상한)")
             ov = store.load_spec_override(root, crop["id"])
             spec = dprompt.spec_from_manifest(crop, None, refs_dir, glossary, ov)
             v2 = dprompt.v2_of(ov)
@@ -2043,16 +2059,16 @@ class BMKDesignPatchPrepare:
                     t["mode"] = "self_restore"
             probs = dprompt.validate_spec(spec)
             x0, y0, x1, y1 = crop["rect"]
-            if forge_only:
-                W, H, sinfo = models.output_size(model, x1 - x0, y1 - y0, size_rule, opts=model_opts)
+            if models.is_forge_only(crop_model):
+                W, H, sinfo = models.output_size(crop_model, x1 - x0, y1 - y0, size_rule, opts=eff["opts"])
                 if sinfo.get("problem"):
                     spec["warnings"].append(f"출력 크기 {W}x{H}: {sinfo['problem']}")
             else:
                 W, H, sinfo = store.gpt_output_size(x1 - x0, y1 - y0, size_rule)
-            opts = models.job_opts(model, model_opts, src=(x1 - x0, y1 - y0))
+            opts = models.job_opts(crop_model, eff["opts"], src=(x1 - x0, y1 - y0))
             rendered_body = None
             if v2 is not None:
-                state = dprompt.v2_state(v2, model, input_roles, len(dprompt.render(spec)["images"]))
+                state = dprompt.v2_state(v2, crop_model, input_roles, len(dprompt.render(spec)["images"]))
                 if state["state"] == "body" and dprompt.v2_layout(spec) != input_layout:
                     # 그림 수가 같아도 자리마다 맡은 역할이 달라졌으면(한쪽이 갈라지고 다른 쪽이 합쳐짐) 글의 @imageN 이 다른 그림이다
                     state = {"state": "blocked", "why": dprompt.IMAGES_MOVED}
@@ -2083,8 +2099,8 @@ class BMKDesignPatchPrepare:
                     continue
                 seen_prompts[(v["prompt"], tuple(v["images"]))] = vname
                 shas = [sha_of[p] for p in v["images"]]
-                ck = store.cell_key(model, job_quality, [W, H], _BACKGROUND, v["prompt"], shas, template, vname,
-                                    complexity=complexity, opts=opts)
+                ck = store.cell_key(crop_model, job_quality, [W, H], _BACKGROUND, v["prompt"], shas, template, vname,
+                                    complexity=eff["complexity"], opts=opts)
                 roles = []
                 for p in v["images"]:
                     role = ("canvas" if p == spec["canvas"] else "guide" if p == spec.get("guide")
@@ -2094,14 +2110,14 @@ class BMKDesignPatchPrepare:
                 job = dict(old_jobs.get(ck) or {})
                 if not job:
                     n_new += 1
-                elif str(job.get("n")) != str(int(n)):
+                elif str(job.get("n")) != str(crop_n):
                     reset_keys.add(ck)  # 배치 10 D161′: 장 수가 바뀐 셀의 안 쓴 다시 생성 예약은 정리(예약 때 본 비용과 달라짐)
                 job.update({"cell_key": ck, "crop_id": crop["id"], "tid": ",".join(t["id"] for t in v["targets"]),
-                            "variant": vname, "model": model, "quality": job_quality, "size": [W, H], "n": int(n),
+                            "variant": vname, "model": crop_model, "quality": job_quality, "size": [W, H], "n": crop_n,
                             "reps": int(calls_per_cell), "background": _BACKGROUND, "prompt": v["prompt"],
                             "inputs": roles, "template_version": template, "size_info": sinfo})
-                if model in store.COMPLEXITY_MODELS:
-                    job["complexity"] = complexity
+                if crop_model in store.COMPLEXITY_MODELS:
+                    job["complexity"] = eff["complexity"]
                 else:
                     job.pop("complexity", None)
                 if opts:
@@ -2114,7 +2130,7 @@ class BMKDesignPatchPrepare:
                 warn_lines.append(f"  {crop['id']} {crop['name']}: {wmsg}")
             cells = [_fit(canvas_rgb, _THUMB)] + [_fit(rgb, _THUMB) for _, rgb in ref_thumbs[:4]]
             lab = [_ascii(f"{crop['id']}  {x1 - x0}x{y1 - y0} -> {W}x{H} ({sinfo['method']})"),
-                   _ascii(f"{len(crop_jobs)} jobs: {','.join(j['variant'] for j in crop_jobs)}  n{int(n)}  refs {len(ref_thumbs)}"
+                   _ascii(f"{len(crop_jobs)} jobs: {','.join(j['variant'] for j in crop_jobs)}  n{crop_n}  refs {len(ref_thumbs)}"
                           + (f"  fill {finfo['alpha_frac'] * 100:.0f}%" if finfo["method"] != "none" else ""))]
             tiles.append(_label_tile(cells, lab, (255, 140, 120) if (spec["warnings"] or probs) else (220, 220, 220)))
         m["jobs"] = _plain(jobs)
@@ -2139,8 +2155,9 @@ class BMKDesignPatchPrepare:
         plan = runner.plan_calls(m, root)
         mock = runner.mock_enabled(root)  # 해시는 백엔드에 묶인다 — Run 이 지금 쓸 백엔드와 같게
         ap = runner.split_approval(plan, "", backend=runner.backend_name(root))
+        expected = sum(j["n"] * j["reps"] for j in jobs)
         lines = [f"Prepare: 작업 {len(jobs)} (신규 {n_new} · 기존 {len(jobs) - n_new}) · 셀당 호출 {int(calls_per_cell)} · "
-                 f"예상 후보 {len(jobs) * int(n) * int(calls_per_cell)}장 · {model} · {quality} · "
+                 f"예상 후보 {expected}장 · {model} · {quality} · "
                  f"{('복잡도 ' + complexity + ' · ') if model in store.COMPLEXITY_MODELS else ''}{size_rule} · "
                  f"템플릿 {dprompt.TEMPLATE_VERSION} | 승인 해시 {ap['pending_hash'] or '-'}{' (MOCK)' if mock else ''} | "
                  f"rev {m['rev']} | {time.time() - t0:.1f}s",
@@ -2148,6 +2165,8 @@ class BMKDesignPatchPrepare:
                  "(Run 의 retry_failed·retry_orphans·only 가 기본값이면 Run 드라이런의 해시와 같음)."]
         if body_crops or blocked_crops:
             lines.append(f"본문 경로(직접 쓴 프롬프트) {body_crops}개 크롭 · 프롬프트 미준비 작업 없음 {blocked_crops}개")
+        if model_overrides:
+            lines.append(f"패치별 모델 {model_overrides}개 크롭")
         lines += runner.format_plan(plan, ap).splitlines()
         if n_pruned:  # 배치 10 D161
             lines.append(f"옛 생성 조건의 다시 생성 대기 {n_pruned}건 정리(과금 없음)")
