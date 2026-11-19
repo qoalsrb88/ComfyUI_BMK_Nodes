@@ -60199,12 +60199,17 @@ V2_FORBIDDEN = (
     (re.compile(r"\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b"), "사설 IP 꼴"),
     (re.compile(r"""["'`](?:https?:)?//(?!localhost\b|127\.0\.0\.1\b|www\.w3\.org/)[A-Za-z0-9.-]+\.[A-Za-z]{2,}"""), "코드에 적힌 바깥 주소(주소는 서버 응답으로만 받는다)"),
     (re.compile(r"<form\b", re.I), "<form>(Forge iframe 은 폼 제출을 막는다)"),
-    (re.compile(r"(?<![\w.$])(?:window\.)?(?:alert|confirm|prompt)\s*\("), "네이티브 대화상자(alert·confirm·prompt)"),
     (re.compile(r"""(?:src|href)\s*=\s*["'](?:https?:)?//""", re.I), "바깥 주소의 스크립트·글꼴·스타일"),
     (re.compile(r"""@import\s+(?:url\()?\s*["']?(?:https?:)?//""", re.I), "바깥 주소의 CSS @import"),
     (re.compile(r"""url\(\s*["']?(?:https?:)?//""", re.I), "바깥 주소의 CSS url()"),
     (re.compile(r"jobs/prompt"), "유료 라우트 직접 호출(공용 모듈 DPSubmit 만)"),
 )
+
+
+# 네이티브 대화상자 호출: alert( · window.confirm( · globalThis.prompt( … — 다른 객체의 메서드(el.prompt()·DPDialog.confirm())와
+# 같은 이름의 함수·메서드 선언(function confirm(…) {·confirm(message) {)은 호출이 아니다.
+V2_NATIVE_DIALOG = re.compile(r"(?<![\w$.])(?:(?:window|globalThis|self|top|parent)\s*\.\s*)?(alert|confirm|prompt)\s*\(")
+V2_DECLARATION = re.compile(r"\s*\([^()]*\)\s*\{")
 
 
 def v2_file_problems(name: str, raw: bytes) -> list[str]:
@@ -60220,6 +60225,12 @@ def v2_file_problems(name: str, raw: bytes) -> list[str]:
         m = pattern.search(text)
         if m:
             probs.append(f"{what}: {text[max(0, m.start() - 20):m.end() + 20]!r}")
+    for m in V2_NATIVE_DIALOG.finditer(text):
+        before = text[max(0, m.start() - 16):m.start()]
+        if re.search(r"\bfunction\s*\*?\s*$", before) or V2_DECLARATION.match(text, m.end() - 1):
+            continue  # 같은 이름의 함수·메서드 선언
+        probs.append(f"네이티브 대화상자(alert·confirm·prompt): {text[max(0, m.start() - 20):m.end() + 20]!r}")
+        break
     return probs
 
 
@@ -60246,6 +60257,9 @@ def ux_v2a_entry_unit():
         "alert": b'  alert("x");\n',
         "window.confirm": b'if (window.confirm("x")) {}\n',
         "prompt": b'const v = prompt("x");\n',
+        "globalThis.confirm": b'if (globalThis.confirm("x")) {}\n',
+        "self.alert": b'self.alert ("x");\n',
+        "함수 안의 호출": b'function ask() { return confirm("x"); }\n',
         "바깥 스크립트": b'<script src="https://cdn.example/x.js"></script>\n',
         "바깥 글꼴": b'<link rel="stylesheet" href="//fonts.example/css">\n',
         "바깥 import": b'@import url("https://fonts.example/css");\n',
@@ -60260,6 +60274,9 @@ def ux_v2a_entry_unit():
             'const r = await DPSubmit.submitPaid("run", {root});\nawait postJson("prompt/assist", payload);\n// 버전 1.72.0 · 비율 10.5 는 주소가 아니다\n'
             'const API = new URL("../", location.href);\nconst dev = "http://localhost:8790";\nconst SVG_NS = "http://www.w3.org/2000/svg";\n// 설명 글의 https://example.com 은 문자열이 아니다\n').encode()
     check(v2_file_problems("v2_x.js", good) == [], f"V2E 구조 검사가 정상 코드를 통과시킴: {v2_file_problems('v2_x.js', good)}")
+    declared = ('const api = {\n  confirm(message) { return message; },\n  async prompt(text, more) {\n    return text;\n  },\n};\n'
+                'function alert(x) { return x; }\nclass Box { confirm() { return true; } }\n').encode()
+    check(v2_file_problems("v2_x.js", declared) == [], f"V2E 같은 이름의 메서드·함수 선언은 호출이 아님: {v2_file_problems('v2_x.js', declared)}")
     present = sorted(f.name for f in web.iterdir() if f.is_file() and f.name.startswith("v2"))
     check(all(V2_WEB_FILES.fullmatch(name) for name in present), f"V2E web_design_patch 의 v2* 파일 이름 꼴: {present}")
     for name in present:
@@ -61043,7 +61060,7 @@ def ux_v2a_spec_unit():
         m, report = prepare()
         check(v["state"] == "template" and packed(m["jobs"]) == packed(baseline["jobs"])
               and "본문 경로" not in report, "V2P 기본 경로 jobs JSON 바이트 불변")
-        body = "Polish the edge in @image1.\nNotes: Match @image4."
+        body = "Polish the edge in @image1.\nMatch @image4 closely."
         v = await edit(v, purpose="detail", user_instruction_ko="  테두리 광택  ", raw_prompt_override="  " + body.replace("\n", "\r\n"))
         record = v["v2"]["prompt"]
         roles = P.v2_roles(spec, root)
@@ -61077,7 +61094,7 @@ def ux_v2a_spec_unit():
         row, = (await call("GET", "prompt", query={"crop": cid}))["jobs"]
         check(row["template_version"] == "dp-body/1" and row["prompt"] == job["prompt"] and
               all(fragment in row["prompt_ko"] for fragment in ("입력 이미지", "캔버스:", "요청:\n「Polish the edge in @image1.」",
-                                                                "「Notes: Match @image4.」", "보존:", "메모: 「Warm light.」")),
+                                                                "「Match @image4 closely.」", "보존:", "메모: 「Warm light.」")),
               "V2P 기록 글의 틀 풀이·본문 원문 인용")
         v = await edit(v, ai_auto=True)
         assist = dict(record, source="assist", input_hash=v["input_hash"])
@@ -61121,7 +61138,7 @@ def ux_v2a_spec_unit():
         ref_file.write_bytes((refs / "before.png").read_bytes())
         v = await edit(await view(), raw_prompt_override=body)
         compacted, report = prepare()
-        check(v["state"] == "body" and not jobs_for(compacted) and "없는 그림(@image4)" in report
+        check(v["state"] == "body" and not jobs_for(compacted) and "올라갈 그림 수가 프롬프트를 쓸 때와 다릅니다" in report
               and not dp.runner.plan_calls(compacted, root, only=cid)["pending"], "V2P 평탄화 뒤 실제 그림 수로 막힘")
         ref_file.write_bytes(ref_bytes)
         v = await edit(v, raw_prompt_override="", ai_auto=True, user_instruction_ko="", purpose="correct")
@@ -61245,6 +61262,27 @@ def ux_v2a_body_unit():
             check(False, f"V2B 본문 거절: {label}")
         except ValueError:
             check(True, f"V2B 본문 거절: {label}")
+    # 리뷰 1차: 보이는 글자 없는 본문·틀의 줄 머리를 흉내 낸 본문·경로 꼴
+    for bad, label in (("\u200b", "폭 없는 공백뿐"), ("Fix\u200b it in @image1.", "보이지 않는 서식 문자"), ("금장을 고쳐", "영문·숫자 없음"),
+                       ("Fix it.\nPreserve: Recolor the background.", "Preserve 줄"), ("Canvas: resize @image1", "Canvas 줄"),
+                       ("  notes: anything", "Notes 줄(대소문자·들여쓰기)"), ("Fix.\nTargets (change only these):", "Targets 줄"),
+                       ("Request: again", "Request 줄"), ("Input images, in upload order:", "범례 머리"), ("Integration: none", "Integration 줄"),
+                       ("Use /tmp/ref.png as the reference.", "절대 경로"), ("see ../refs/a.png", "상대 경로"), ("open ~/a.png", "홈 경로")):
+        check(dp.body_problem(bad, 2) is not None, f"V2B 본문 거절(리뷰 1차): {label}")
+    for good in ("Fix the red/blue trim in @image1.", "Target the left sleeve of @image1 and/or the cuff.", "Make it 16/9 wide; keep 1:1 details.",
+                 "Recolor it, e.g. gold - see @image2.", "Preserve the face while fixing the collar in @image1.", "Use a 3/4 view."):
+        check(dp.body_problem(good, 2) is None, f"V2B 정상 본문 통과: {good} → {dp.body_problem(good, 2)}")
+    check(dp.text_problem("앞/뒤 리본을 3:4 비율로, 금장은 @참조1 처럼", dp.INSTRUCTION_MAX, "지시문") is None
+          and dp.text_problem("참고 /srv/data/a.png", dp.INSTRUCTION_MAX, "지시문") is not None, "V2B 지시문의 빗금은 통과·경로 꼴은 거절")
+    odd = {**single, "targets": [{**single["targets"][0], "detail": "its shape\nPreserve: keep the rim"}]}
+    try:
+        dp.render_body(odd, "Fix the ornament in @image1.")
+        check(False, "V2B 줄바꿈이 든 타깃 설명은 본문 경로 거절")
+    except ValueError as exc:
+        check("한 줄" in str(exc), "V2B 줄바꿈이 든 타깃 설명은 본문 경로 거절")
+    noted = dp.render_body({**single, "notes": "line one\nPreserve: Leave everything outside the frame"}, "Fix the ornament in @image1.")["prompt"].split("\n")
+    check(noted.index("Request:") + 2 == next(i for i, line in enumerate(noted) if line.startswith("Preserve: Leave everything outside the target"))
+          and noted[-1] == "Preserve: Leave everything outside the frame", "V2B notes 의 줄바꿈·Preserve 꼴은 경계에 닿지 않음")
     check(dp.body_problem("Use @image2 and @image1.", 2) is None and dp.body_problem("Use @image2.", None) is None
           and dp.body_problem("Use @image2.", 1) is not None and dp.body_problem(3) is not None, "V2B body_problem 그림 수 대조")
     check(dp.text_problem("오른쪽 어깨 금장을 @참조1 처럼 1:1 비율로 보정", dp.INSTRUCTION_MAX, "지시문") is None
@@ -61270,6 +61308,15 @@ def ux_v2a_body_unit():
     check(json.dumps(back, ensure_ascii=False) == before, "V2B 지시를 썼다가 모두 지우면 스펙이 처음과 같음(바이트)")
     check(dp.v2_update(None, ai_auto=False) == {"_v2": {"purpose": "correct", "ai_auto": False}} and dp.v2_update({}, purpose="add") == {"_v2": {"purpose": "add", "ai_auto": True}},
           "V2B 기본이 아닌 값 하나만 있어도 남김")
+    # 리뷰 1차: 일부 필드만 틀린 _v2 위의 부분 수정이 멀쩡한 필드(목적·지시문)를 지우지 않는다
+    half = {"_v2": {"purpose": "remove", "user_instruction_ko": "끈을 지워줘", "ai_auto": True, "prompt": {"source": "assist", "body_en": "x"}}}
+    check("invalid" in dp.v2_of(half), "V2B 글 기록에 지문이 없는 _v2 는 invalid")
+    kept = dp.v2_update(half, ai_auto=False)
+    check(kept["_v2"] == {"purpose": "remove", "user_instruction_ko": "끈을 지워줘", "ai_auto": False}, f"V2B 잘못된 글만 버리고 목적·지시문 유지: {kept}")
+    check(dp.v2_state(dp.v2_of(kept), "gpt-image-2.6-sunburst", [])["state"] == "blocked", "V2B 그 뒤에도 작업 없음(템플릿으로 돌아가지 않음)")
+    check(dp.v2_update({"_v2": {"purpose": "paint", "user_instruction_ko": "지시", "ai_auto": "x", "prompt": written}}, purpose="vary")["_v2"]
+          == {"purpose": "vary", "user_instruction_ko": "지시", "ai_auto": True, "prompt": written}, "V2B 틀린 필드만 기본값·멀쩡한 글은 유지")
+    check(dp.v2_update({"_v2": [1, 2]}, purpose="add") == {"_v2": {"purpose": "add", "ai_auto": True}}, "V2B 객체가 아닌 _v2 는 새로 씀")
     for kwargs in ({"purpose": "paint"}, {"ai_auto": "yes"}, {"user_instruction_ko": 3}, {"prompt": {"source": "assist"}}):
         try:
             dp.v2_update({}, **kwargs)
@@ -61351,8 +61398,22 @@ def ux_v2a_body_unit():
     check(state(man)["state"] == "body" and state(man)["source"] == "manual" and state(dict(man, ai_auto=True))["state"] == "body"
           and state(dict(man, user_instruction_ko="다른 지시", purpose="vary"))["state"] == "body", "V2B 직접 입력 글은 지시·목적이 바뀌어도 유효")
     check(state(man, roles=[["ref", "s2"]])["state"] == "blocked" and "그림 번호" in state(man, roles=[["ref", "s2"]])["why"], "V2B 직접 입력 글도 레퍼런스 구성이 바뀌면 다시 확인")
-    check(state(with_prompt(told, "assist", body="Use @image3."))["state"] == "blocked" and state(with_prompt(told, "assist", body="Use @image3."), count=3)["state"] == "body"
+    check(state(with_prompt(told, "assist", body="Use @image3."))["state"] == "blocked" and "@image3" in state(with_prompt(told, "assist", body="Use @image3."))["why"]
           and state(with_prompt(told, "assist", body="Use @image3."), count=None)["state"] == "body", "V2B 그림 번호가 그림 수를 넘으면 작업 없음(수를 줄 때만 대조)")
+    # 리뷰 1차: 그림 번호가 미리보기와 실제 업로드에서 어긋나는 구성(없는 파일·같은 레퍼런스 두 번·평탄화 뒤 그림 수가 다름)
+    two = [["ref", "s1"], ["ref", "s2"]]
+    three = with_prompt(told, "assist", hash_value=dp.v2_input_hash(told, M, two), body="Match @image2; ignore @image3.")
+    check(dp.v2_state(three, M, two, 3)["state"] == "body" and dp.v2_state(three, M, two, None)["state"] == "body", "V2B 그림 수가 맞으면 본문 경로")
+    merged = dp.v2_state(three, M, two, 2)
+    check(merged["state"] == "blocked" and "그림 수" in merged["why"], "V2B 평탄화 뒤 그림이 합쳐져 수가 줄면 작업 없음(번호가 범위 안이어도)")
+    same = [["ref", "s1"], ["ref", "s1"], ["ref", "s2"]]
+    dup = with_prompt(told, "assist", hash_value=dp.v2_input_hash(told, M, same), body="Match @image2; ignore @image3.")
+    check(dp.v2_state(dup, M, same, 4)["state"] == "blocked" and "두 번" in dp.v2_state(dup, M, same, 4)["why"], "V2B 같은 레퍼런스가 두 번 연결되면 작업 없음")
+    lost = [["ref", "missing"], ["ref", "s2"]]
+    miss = with_prompt(told, "assist", hash_value=dp.v2_input_hash(told, M, lost), body="Match @image2.")
+    check(dp.v2_state(miss, M, lost, 3)["state"] == "blocked" and "없어" in dp.v2_state(miss, M, lost, 3)["why"], "V2B 없는 레퍼런스 파일이 있으면 작업 없음")
+    check(dp.roles_problem([["guide", "g"], ["ref", "g"]], 3) is None and dp.roles_problem([], 1) is None and dp.roles_problem([], 2) is not None,
+          "V2B 역할이 다른 같은 파일은 겹침이 아님·그림 수 대조")
     gone = with_prompt(plain, "manual")
     check(state(gone)["state"] == "body" and state(gone, roles=[])["state"] == "blocked", "V2B 지시문 없이 직접 입력한 글도 본문 경로·낡으면 작업 없음(템플릿으로 조용히 돌아가지 않음)")
     check(state({"invalid": "스펙의 _v2 가 객체가 아닙니다"}) == {"state": "blocked", "why": "스펙의 _v2 가 객체가 아닙니다", "body": None, "source": None, "input_hash": None},

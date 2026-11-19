@@ -28,7 +28,7 @@ Design Patch(가제 Multi Layer Crop Edit)는 일러스트의 크롭마다 GPT �
 - flatten_ref(rgba, matte=(128,128,128)) -> rgb HxWx3 uint8
 - spec_from_manifest(crop, target, refs_dir, glossary, overrides) -> spec   매니페스트 crop/target 항목 → 최소 스펙.
 - auto_pick_ref(crop_name, refs_auto) -> str      refs_auto 중 Prepare 가 고르는 1장(아래 refs 규칙 — Studio S2 refs.seed_link 도 이것).
-- UX v2 본문 경로(파일 끝 절): v2_of / v2_update / v2_roles / v2_input_hash / v2_state / render_body / body_problem / text_problem,
+- UX v2 본문 경로(파일 끝 절): v2_of / v2_update / v2_roles / roles_problem / v2_input_hash / v2_state / render_body / body_problem / text_problem,
   BODY_TEMPLATE = "dp-body/1" · BODY_VARIANT = "B1_body". 스펙의 "_v2" 가 없으면 아무것도 바뀌지 않는다.
 
 스펙 형식 (JSON 직렬화 가능 dict — 시제품 docstring 과 같음)
@@ -616,7 +616,11 @@ _TARGET_HEADS = ("Target:", "Targets (change only these):")
 _BODY_TOKEN = re.compile(r"@image(\d+)")
 _BODY_PLAIN = re.compile(r"\bImage \d+\b")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
-_ADDRESS = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://|\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b|[A-Za-z]:[\\/]|\\\\")
+_ADDRESS = re.compile(r"(?im)\b[a-z][a-z0-9+.-]*://|\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b|[A-Za-z]:[\\/]|\\\\"
+                      r"|(?:^|[\s\"'(=\[])(?:\.{1,2}/|~/|/)[A-Za-z0-9_.-]")
+# 본문이 틀의 줄(범례·Canvas·Guide·Target·Integration·Preserve·Notes·Request)을 흉내 내면 뒤의 규칙과 섞인다 — 그런 줄 머리는 받지 않는다.
+_RESERVED_LINE = re.compile(r"(?im)^[ \t]*(?:input images\b|canvas:|guide:|targets?(?: \([^)\n]*\))?:|integration:|preserve:|notes:|request:)")
+_INVISIBLE = re.compile("[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]")  # 보이지 않는 서식 문자
 _FILE_SHA: dict = {}
 
 
@@ -640,6 +644,13 @@ def body_problem(body, image_count: int | None = None) -> str | None:
     problem = text_problem(body, BODY_MAX, "프롬프트 본문", empty_ok=False)
     if problem:
         return problem
+    if not re.search(r"[A-Za-z0-9]", body):
+        return "프롬프트 본문에 읽을 글자가 없습니다"
+    if _INVISIBLE.search(body):
+        return "프롬프트 본문에 보이지 않는 서식 문자가 있습니다 — 빼고 적어 주세요"
+    reserved = _RESERVED_LINE.search(body)
+    if reserved:
+        return f"프롬프트 본문의 줄은 「{reserved.group(0).strip()}」로 시작할 수 없습니다(프롬프트의 틀이 쓰는 줄 머리)"
     if _BODY_PLAIN.search(body):
         return "프롬프트 본문은 그림을 @image1 꼴로 가리켜야 합니다(Image 1 꼴은 쓰지 않음)"
     numbers = [int(n) for n in _BODY_TOKEN.findall(body)]
@@ -679,7 +690,18 @@ def v2_update(overrides, *, purpose=None, user_instruction_ko=None, ai_auto=None
     out = copy.deepcopy(overrides) if isinstance(overrides, dict) else {}
     cur = v2_of(out) or {}
     if "invalid" in cur:
+        # 일부 필드만 틀린 _v2: 멀쩡한 필드는 살린다(AI 자동만 바꾸는 저장이 목적·지시문을 지우지 않게). 틀린 필드만 기본값으로.
+        raw = out.get(V2_KEY) if isinstance(out.get(V2_KEY), dict) else {}
         cur = {}
+        if raw.get("purpose") in PURPOSES:
+            cur["purpose"] = raw["purpose"]
+        if isinstance(raw.get("user_instruction_ko"), str):
+            cur["user_instruction_ko"] = raw["user_instruction_ko"]
+        if type(raw.get("ai_auto")) is bool:
+            cur["ai_auto"] = raw["ai_auto"]
+        one = v2_of({V2_KEY: {"prompt": raw.get("prompt")}}) if raw.get("prompt") is not None else None
+        if one and "invalid" not in one:
+            cur["prompt"] = one["prompt"]
     new = {"purpose": cur.get("purpose", "correct") if purpose is None else purpose,
            "user_instruction_ko": cur.get("user_instruction_ko", "") if user_instruction_ko is None else user_instruction_ko,
            "ai_auto": cur.get("ai_auto", True) if ai_auto is None else ai_auto,
@@ -739,6 +761,20 @@ def v2_roles(spec: dict, root: str = "") -> list:
     return out
 
 
+def roles_problem(roles: list, image_count: int | None = None) -> str | None:
+    """쓴 글의 @imageN 이 가리키는 그림이 실제 업로드와 달라지는 구성 → 문제 문구(없으면 None). Prepare 는 없는 파일을 빼고 같은
+    그림(평탄화한 픽셀이 같은 것)을 하나로 합쳐 올리므로, 그런 구성에서는 번호가 한 칸씩 밀린다 — 번호가 범위 안이어도 다른 그림이다.
+    image_count = 실제로 올라갈 그림 수(Prepare 가 평탄화 뒤에 준다): 크롭 1 + 레퍼런스 구성의 수와 다르면 겹치거나 빠진 것이다."""
+    if any(sha == "missing" for _, sha in roles):
+        return "레퍼런스·가이드 파일이 없어 프롬프트의 그림 번호가 달라집니다 — 레퍼런스 연결을 확인해 주세요"
+    refs = [sha for role, sha in roles if role == "ref"]
+    if len(set(refs)) != len(refs):
+        return "같은 레퍼런스 그림이 두 번 연결되어 프롬프트의 그림 번호가 달라집니다 — 겹친 연결을 정리해 주세요"
+    if image_count is not None and image_count != 1 + len(roles):
+        return "올라갈 그림 수가 프롬프트를 쓸 때와 다릅니다(같은 그림이 겹치거나 빠짐) — 레퍼런스 연결을 정리해 주세요"
+    return None
+
+
 def v2_input_hash(v2: dict, model: str, roles: list, *, manual: bool = False) -> str:
     """쓴 글이 어떤 입력으로 쓰였는지의 지문(sha256 앞 24자). AI 작성본 = 목적·지시문·생성 모델·레퍼런스 구성·판, 직접 입력 글 =
     레퍼런스 구성·판(지시문이 바뀌어도 사람이 쓴 글은 유효 — D505). 생성 서버의 지침 개정은 넣지 않는다."""
@@ -772,7 +808,7 @@ def v2_state(v2, model: str, roles: list, image_count: int | None = None) -> dic
             why = ("레퍼런스 구성이 바뀌어 직접 입력한 프롬프트의 그림 번호를 다시 확인해야 합니다 — 프롬프트를 다시 저장해 주세요" if manual
                    else "지시·모델·레퍼런스가 바뀌어 작성본이 낡았습니다 — 다시 작성해 주세요")
         else:
-            why = body_problem(prompt["body_en"], image_count)
+            why = roles_problem(roles, image_count) or body_problem(prompt["body_en"], image_count)
         if why is None:
             return {"state": "body", "why": None, "body": prompt["body_en"].replace("\r\n", "\n").replace("\r", "\n").strip(),
                     "source": prompt["source"], "input_hash": current}
@@ -788,6 +824,14 @@ def v2_state(v2, model: str, roles: list, image_count: int | None = None) -> dic
 def render_body(spec: dict, body: str) -> dict:
     """본문 경로의 프롬프트 = render(spec) 의 틀 + 본문. Target… 줄부터 Preserve 줄 앞(Integration 줄 포함)까지를 "Request:" 줄과
     본문으로 바꾼다. 반환은 render 와 같은 키(prompt / images / legend) — images·legend 는 render 그대로."""
+    # 틀은 줄 단위로 자른다 — 범례·타깃 줄에 들어가는 글에 줄바꿈이 있으면 경계(Target…·Preserve 줄)를 잘못 짚을 수 있어 받지 않는다.
+    # (preserve·notes 는 Preserve 줄 뒤라 경계에 닿지 않는다.)
+    between = [spec.get("style_note"), spec.get("ref_style")]
+    for t in spec.get("targets") or []:
+        between += [t.get(k) for k in ("name", "detail", "ref_object", "ref_ignore", "location", "occluded_by", "defects", "guide_color")]
+        between += list(t.get("must_not") or [])
+    if any(isinstance(x, str) and ("\n" in x or "\r" in x) for x in between):
+        raise ValueError("타깃 설명에 줄바꿈이 있어 직접 쓴 프롬프트를 넣을 자리를 정할 수 없습니다 — 타깃 설명을 한 줄로 고쳐 주세요")
     rendered = render(spec)
     lines = rendered["prompt"].split("\n")
     start = next((i for i, line in enumerate(lines) if line in _TARGET_HEADS), None)
