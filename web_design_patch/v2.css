@@ -1545,6 +1545,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   flex-direction: column;
   gap: 6px;
 }
+.ai-summary-box.is-template {
+  border-left-color: var(--muted);
+  border-style: dashed;
+  border-left-style: solid;
+}
+.ai-summary-box.is-template .ai-skill-tag {
+  background: var(--panel2);
+  color: var(--dim);
+}
 .ai-summary-head {
   display: flex;
   align-items: center;

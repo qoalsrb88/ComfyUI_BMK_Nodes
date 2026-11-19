@@ -411,6 +411,11 @@ window.DPV2Inspector = (() => {
             style: `--p-col:${pc};--p-soft:${pSoft};--p-border:${pBorder};`,
             onClick: () => {
               if (Store.state.runFlowBusy || Store.state.assistBusy) return;
+              if (!isMulti) {
+                // #C13-11: 단일 선택 목적 변경은 즉시 저장 토스트 + Ctrl+Z 실행 취소를 함께 제공
+                Store.applyQuickSpecChange(patch, "purpose", pr.id);
+                return;
+              }
               for (const sp of selList) {
                 sp.meta.purpose = pr.id;
                 Store.markFieldDirty(sp.meta, "purpose");
@@ -418,9 +423,6 @@ window.DPV2Inspector = (() => {
                 if (!sp.meta.specLoaded && Api.can("v2_spec_edit")) Store.loadSpec(sp.id);
               }
               Store.emit("selection");
-              if (!isMulti && Api.can("v2_spec_edit")) {
-                Store.savePatchSpec(patch).catch((err) => Store.toast(`지시문 저장 실패: ${err.message}`, "err"));
-              }
             },
           }, Data.el("span", { className: "purpose-btn-ico" }, Data.icon(pr.icon, 13)), Data.el("span", { text: pr.label }));
           pg.append(btn);
@@ -544,22 +546,42 @@ window.DPV2Inspector = (() => {
         }
       }
 
-      // AI 요약 박스 (요약/작성본이 있을 때 표시)
+      // #C13-10: AI 요약 박스 — 작성본(body_en)이나 요약(summary_ko)이 있을 때만 「작성된 프롬프트」를 표시하고,
+      //          작성본 없이 기본 템플릿 글(prompt_en)만 있는 영역(template)은 「기본 템플릿」으로 명확히 구분한다.
       const aiBox = $("ai-summary-box");
-      const hasSummaryOrBody = !!(patch.meta.summary_ko || patch.meta.body_en || patch.meta.prompt_en);
+      const hasWrittenPrompt = !!(
+        (patch.meta.summary_ko && patch.meta.summary_ko.trim())
+        || (patch.meta.body_en && patch.meta.body_en.trim())
+      );
+      const isTemplateOnly = !hasWrittenPrompt && !!(patch.meta.prompt_en && patch.meta.prompt_en.trim());
       if (aiBox) {
-        aiBox.classList.toggle("hidden", !hasSummaryOrBody);
-        if (hasSummaryOrBody) {
+        aiBox.classList.toggle("hidden", !hasWrittenPrompt && !isTemplateOnly);
+        aiBox.classList.toggle("is-template", isTemplateOnly);
+        if (hasWrittenPrompt || isTemplateOnly) {
           const tagEl = $("ai-skill-tag");
           if (tagEl) {
-            tagEl.textContent = patch.meta.skill_ids.length
-              ? `Forge AI · ${patch.meta.skill_ids.join(", ")}`
-              : (patch.meta.promptSource === "manual" ? "직접 작성 본문" : "AI 프롬프트");
+            if (isTemplateOnly) {
+              tagEl.textContent = "기본 템플릿";
+            } else {
+              tagEl.textContent = patch.meta.skill_ids.length
+                ? `Forge AI · ${patch.meta.skill_ids.join(", ")}`
+                : (patch.meta.promptSource === "manual" ? "직접 작성 본문" : "AI 프롬프트");
+            }
           }
           const tmEl = $("ai-target-model");
-          if (tmEl) tmEl.textContent = `${patch.modelInfo ? patch.modelInfo.shortName : patch.effectiveModel} 맞춤`;
+          if (tmEl) {
+            tmEl.textContent = isTemplateOnly
+              ? "지시문 미작성"
+              : `${patch.modelInfo ? patch.modelInfo.shortName : patch.effectiveModel} 맞춤`;
+          }
           const koEl = $("ai-summary-ko");
-          if (koEl) koEl.textContent = patch.meta.summary_ko || (patch.meta.promptSource === "manual" ? "직접 수정한 영문 요청 본문이 적용됩니다." : "작성된 프롬프트가 준비되었습니다.");
+          if (koEl) {
+            koEl.textContent = isTemplateOnly
+              ? "기본 프롬프트로 생성됩니다. 수정 지시를 적으면 AI 프롬프트가 맞춤 작성됩니다."
+              : (patch.meta.summary_ko || (patch.meta.promptSource === "manual"
+                ? "직접 수정한 영문 요청 본문이 적용됩니다."
+                : "작성된 프롬프트가 준비되었습니다."));
+          }
         }
       }
       // #C08-3: 원문 프롬프트 칸은 작성본 유무와 무관하게 항상 접근·동기화 가능 (AI 자동 꺼짐 시 자동 펼침)
@@ -865,12 +887,16 @@ window.DPV2Inspector = (() => {
 
     const btnRun = $("btn-run-selected");
     if (btnRun) {
-      btnRun.disabled = targets.length === 0 || running || !!Store.state.runFlowBusy;
+      // #C15-2: AI 프롬프트 작성(assistBusy) 중에도 생성 단추를 비활성화해 이전 글로 승인 상자가 뜨지 않게 막는다
+      const flowBusy = !!(Store.state.runFlowBusy || Store.state.assistBusy);
+      btnRun.disabled = targets.length === 0 || running || flowBusy;
       btnRun.textContent = running
         ? "서버에서 생성 중…"
-        : Store.state.runFlowBusy
-          ? "생성 준비 중…"
-          : targets.length ? `선택 영역 ${targets.length}개 생성 시작` : "생성할 영역을 체크하세요";
+        : Store.state.assistBusy
+          ? "AI 프롬프트 작성 중…"
+          : Store.state.runFlowBusy
+            ? "생성 준비 중…"
+            : targets.length ? `선택 영역 ${targets.length}개 생성 시작` : "생성할 영역을 체크하세요";
     }
 
     const progWrap = $("run-progress-wrap");
@@ -1215,9 +1241,9 @@ window.DPV2Inspector = (() => {
           try {
             saved = await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
           } catch (err) {
-            Store.toast(`${p.name}: ${err.message}`, "err");
+            Store.toast(`${p.name}: ${(err && (err.userMessage || err.message)) || "저장 실패"}`, "err");
             if (!err || !err.status || err.status === 401 || err.status === 403
-                || err.status === 429 || err.status >= 500 || err.data?.reason === "apply_needed") {
+                || err.status === 429 || err.status >= 500 || err.data?.reason === "apply_needed" || err.staleRaw) {
               aborted = true;
               break;
             }
@@ -1356,12 +1382,18 @@ window.DPV2Inspector = (() => {
         }
       }
 
-      // 최신 파이프라인 설정 drift(prepare / import) 검사 — #C13-4: 읽기 실패 시 확인 없이 진행하지 않고 중단
+      // 최신 파이프라인 설정 drift(prepare / import) 검사 — #C13-4 · #C15-7: 읽기 실패·200 error·비정수 rev 시 첫 응답에서 중단
       let drifts = [];
       try {
         const pipe = await Api.getPipeline(root);
         if (!pipe || typeof pipe !== "object") {
           throw new Error("실행 설정 응답이 비어 있습니다");
+        }
+        if (pipe.error) {
+          throw new Error(typeof pipe.error === "string" ? pipe.error : "실행 설정 파일에 오류가 있습니다");
+        }
+        if (typeof pipe.rev !== "number" || !Number.isInteger(pipe.rev)) {
+          throw new Error("실행 설정 판 번호(rev)가 올바르지 않습니다");
         }
         Store.state.P = pipe;
         drifts = Array.isArray(pipe.drift)
@@ -1436,10 +1468,10 @@ window.DPV2Inspector = (() => {
     }
   }
 
-  // ── 7. 선택 영역 생성 실행 (#C06·#C09·#C10·#C11-1·#C13-3 선행 반영·미저장 스펙 저장 → D519 자동 assist → DPSubmit.submitPaid §3.6) ──
+  // ── 7. 선택 영역 생성 실행 (#C06·#C09·#C10·#C11-1·#C13-3·#C15-2 선행 반영·미저장 스펙 저장 → D519 자동 assist → DPSubmit.submitPaid §3.6) ──
   async function runSelectedGeneration(useSelectedOnly = false) {
-    if (Store.state.runFlowBusy) {
-      Store.toast("앞선 제출을 처리하는 중입니다");
+    if (Store.state.runFlowBusy || Store.state.assistBusy) {
+      Store.toast(Store.state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 생성해 주세요." : "앞선 제출을 처리하는 중입니다");
       return;
     }
     const patches = Store.getPatches();
@@ -1491,7 +1523,8 @@ window.DPV2Inspector = (() => {
             try {
               await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
             } catch (err) {
-              Store.toast(`${p.name} 지시문 저장 실패: ${err.message}`, "err");
+              const msg = (err && (err.userMessage || err.message)) || "저장 실패";
+              Store.toast(err && err.staleRaw ? `${p.name}: ${msg}` : `${p.name} 지시문 저장 실패: ${msg}`, "err");
               return;
             }
           }
@@ -1744,14 +1777,16 @@ window.DPV2Inspector = (() => {
     if (chkAuto) chkAuto.addEventListener("change", (e) => {
       if (Store.state.runFlowBusy || Store.state.assistBusy) return;
       const sel = Store.selectedPatches();
+      const p = Store.primaryPatch();
+      if (p && sel.length <= 1) {
+        // #C13-11: 단일 선택 AI 자동 토글도 즉시 저장 토스트 + Ctrl+Z 실행 취소를 함께 제공
+        Store.applyQuickSpecChange(p, "aiAuto", e.target.checked);
+        return;
+      }
       for (const sp of sel) {
         sp.meta.aiAuto = e.target.checked;
         Store.markFieldDirty(sp.meta, "aiAuto");
         if (!sp.meta.specLoaded && Api.can("v2_spec_edit")) Store.loadSpec(sp.id);
-      }
-      const p = Store.primaryPatch();
-      if (p && sel.length <= 1 && Api.can("v2_spec_edit")) {
-        Store.savePatchSpec(p).catch((err) => Store.toast(`지시문 저장 실패: ${err.message}`, "err"));
       }
     });
 
@@ -1780,32 +1815,39 @@ window.DPV2Inspector = (() => {
       if (Store.state.runFlowBusy || Store.state.assistBusy) return;
       const sel = Store.selectedPatches();
       if (!sel.length) return;
-      // #C13-1 · #C13-2: 단일 선택은 그대로 저장(막힌 직접 입력 글 재확인 포함),
-      //                  다중 선택은 고른 영역 중 바뀐 것(또는 막힌 직접 입력 글)을 모두 저장하고 실패한 영역을 알린다
-      const needsSave = (p) => !!(
-        p.meta.dirtySpec
-        || p.meta.rawDirty
-        || (p.meta.promptSource === "manual" && p.meta.specState === "blocked" && !!(p.meta.body_en || "").trim())
+      const isMulti = sel.length > 1;
+      // #C13-1 · #C13-2 · #C15-1:
+      // - 「다시 확인」(원문을 고치지 않고 재전송)은 그 글이 원문 칸에 보이는 단일 선택(!isMulti)으로만 한정한다.
+      // - 다중 선택(isMulti)은 실제로 바뀐 칸(dirtySpec || rawDirty)이 있는 영역만 reconfirmBlockedManual=false 로 저장하고,
+      //   막힌 직접 입력 영역이 섞여 있으면 개별 선택해 확인하도록 별도로 알린다.
+      const isBlockedManual = (p) => !!(
+        p && p.meta && p.meta.promptSource === "manual"
+        && p.meta.specState === "blocked"
+        && !!(p.meta.body_en || "").trim()
       );
-      const targetsToSave = sel.length > 1
-        ? (() => {
-            const changed = sel.filter(needsSave);
-            return changed.length ? changed : [Store.primaryPatch() || sel[0]].filter(Boolean);
-          })()
+      const blockedManualInSel = isMulti ? sel.filter(isBlockedManual) : [];
+      const changed = isMulti ? sel.filter((p) => !!(p.meta.dirtySpec || p.meta.rawDirty)) : [sel[0]];
+      const targetsToSave = isMulti
+        ? (changed.length
+          ? changed
+          : (blockedManualInSel.length ? [] : [Store.primaryPatch() || sel[0]].filter(Boolean)))
         : [sel[0]];
 
       let savedCount = 0;
       const failed = [];
       for (const p of targetsToSave) {
         try {
-          const res = await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty, reconfirmBlockedManual: true });
+          const res = await Store.savePatchSpec(p, {
+            includeRaw: !!p.meta.rawDirty,
+            reconfirmBlockedManual: !isMulti,
+          });
           if (res && res.unsupported) {
             Store.toast(res.reason, "err");
             return;
           }
           if (res && res.ok) savedCount += 1;
         } catch (err) {
-          failed.push({ name: p.name, msg: (err && err.message) || "저장 실패" });
+          failed.push({ name: p.name, msg: (err && (err.userMessage || err.message)) || "저장 실패" });
         }
       }
       if (failed.length) {
@@ -1818,6 +1860,13 @@ window.DPV2Inspector = (() => {
         Store.toast(`${savedCount}개 영역의 지시문을 저장했습니다.`, "ok");
       } else if (savedCount === 1) {
         Store.toast("지시문을 저장했습니다.", "ok");
+      }
+      if (isMulti && blockedManualInSel.length) {
+        const stillBlocked = blockedManualInSel.filter(isBlockedManual);
+        if (stillBlocked.length) {
+          const names = stillBlocked.map((p) => p.name).join(", ");
+          Store.toast(`${names}: 직접 입력한 프롬프트를 다시 확인해야 합니다 — 그 영역을 골라 확인한 뒤 저장해 주세요.`, "err");
+        }
       }
     });
 
@@ -2048,12 +2097,16 @@ window.DPV2Inspector = (() => {
           flip_h: !!prev.flip_h,
           flip_v: !!prev.flip_v,
         });
-        f._touched = {};
-        f._tfTouched = false;
-        f._edgeTouched = false;
+        const appliedAdj = (res && res.adjust && typeof res.adjust === "object")
+          ? res.adjust
+          : { blur: blurVal, dx: dxVal, dy: dyVal, rot: rotVal, sx: sxVal, sy: syVal };
+        // #C15-6: 눈 끄기 후 적용 → 다시 켜기 시 옛 값이 남지 않도록 적용 직후 슬라이더를 서버 응답값으로 맞춘다
+        Store.syncCandidateFiltersFromAdjust(p.id, cand.key, appliedAdj, true);
         if (Store.state.mask && Store.state.mask.key === cand.key && res && res.adjust) {
           Store.state.mask.adjust = res.adjust;
         }
+        Store.emit("filters");
+        renderInspector();
         Store.toast("후보정 변형을 서버에 적용했습니다.", "ok");
         await Store.refreshAll(true);
       } catch (err) {
@@ -2111,6 +2164,16 @@ window.DPV2Inspector = (() => {
       } else if (reason === "prefs") {
         renderPatchList();
         renderInspector();
+      } else if (reason === "filters") {
+        // 캔버스 회전 손잡이 등으로 후보정 값이 바뀔 때 포커스를 깨지 않고 숫자 입력만 동기화한다
+        const p = Store.primaryPatch();
+        const cand = Store.currentCandidate(p);
+        if (p && cand) {
+          const f = Store.getCandidateFilters(p, cand);
+          const rotEl = $("rt-rot");
+          if (rotEl && document.activeElement !== rotEl) rotEl.value = String(f.rot);
+          setFilterCardUI("transform", f.transformEnabled, "");
+        }
       }
     });
   }

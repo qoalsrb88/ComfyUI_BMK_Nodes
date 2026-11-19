@@ -284,6 +284,33 @@ window.DPV2Store = (() => {
     return patch.meta.filtersByCand[key];
   }
 
+  // #C11-3 · #C13-6② · #C15-6: 서버 adjust 응답을 해당 후보 key 의 슬라이더 초안에 동기화한다
+  // forceOverwrite=true([변형 서버 적용] 직후)는 눈 끄기 후 0 적용 포함 모든 축을 서버 확정값으로 맞춘다
+  function syncCandidateFiltersFromAdjust(cropId, candKey, adjust, forceOverwrite = false) {
+    if (!cropId || !candKey || !adjust || typeof adjust !== "object") return null;
+    const pm = ensurePatchMeta(cropId);
+    if (!pm.filtersByCand) pm.filtersByCand = Object.create(null);
+    if (!pm.filtersByCand[candKey]) pm.filtersByCand[candKey] = defaultFilters();
+    const f = pm.filtersByCand[candKey];
+    const t = forceOverwrite ? {} : (f._touched || {});
+    if ((forceOverwrite || !t.feather) && typeof adjust.blur === "number") {
+      f.feather = Math.round(adjust.blur * 10) / 10;
+    }
+    if ((forceOverwrite || !t.dx) && typeof adjust.dx === "number") f.dx = adjust.dx;
+    if ((forceOverwrite || !t.dy) && typeof adjust.dy === "number") f.dy = adjust.dy;
+    if ((forceOverwrite || !t.rot) && typeof adjust.rot === "number") f.rot = adjust.rot;
+    if ((forceOverwrite || !t.scale) && typeof adjust.sx === "number" && typeof adjust.sy === "number"
+        && Math.abs(adjust.sx - adjust.sy) < 0.001) {
+      f.scale = Math.round(adjust.sx * 100);
+    }
+    if (forceOverwrite) {
+      f._touched = {};
+      f._tfTouched = false;
+      f._edgeTouched = false;
+    }
+    return f;
+  }
+
   function markFieldDirty(meta, field) {
     if (!meta) return;
     if (!meta.dirtyFields) {
@@ -483,8 +510,69 @@ window.DPV2Store = (() => {
       if (err && err.status === 409 && err.data && err.data.reason === "stale") {
         m.editBaseSeen = null;
         await loadSpec(patch.id, true);
+        // #C15-4: 미저장 원문을 보내다 레퍼런스 변경 등으로 409(stale) 가 나면 원문 칸을 펼치고 그림 번호 확인을 안내한다
+        if (includeRaw) {
+          const det = document.getElementById("raw-prompt-details");
+          if (det) det.open = true;
+          err.staleRaw = true;
+          err.userMessage = "레퍼런스가 바뀌었습니다 — 그림 번호를 확인해 주세요";
+        }
       }
       throw err;
+    }
+  }
+
+  // #C13-11: 단일 선택에서 목적·AI 자동을 바꿀 때 즉시 저장 토스트와 Ctrl+Z 실행 취소를 함께 제공한다
+  async function applyQuickSpecChange(patch, field, nextVal) {
+    if (!patch || !patch.meta) return null;
+    if (field !== "purpose" && field !== "aiAuto") return null;
+    const m = patch.meta;
+    const prevVal = field === "purpose" ? m.purpose : !!m.aiAuto;
+    const normNext = field === "purpose" ? nextVal : !!nextVal;
+    const wasDirty = !!(m.dirtyFields && m.dirtyFields[field]);
+    if (prevVal === normNext && !wasDirty) return null;
+
+    m[field] = normNext;
+    markFieldDirty(m, field);
+    emit("selection");
+    if (!Api.can("v2_spec_edit")) return null;
+
+    try {
+      const res = await savePatchSpec(patch, { includeRaw: false, reconfirmBlockedManual: false });
+      if (!res || res.unsupported) return res;
+      if (prevVal !== normNext) {
+        const cropId = patch.id;
+        const patchName = patch.name;
+        const restoreField = async (targetVal) => {
+          const curPatch = getPatch(cropId);
+          if (!curPatch) throw new Error("해당 수정 영역을 찾을 수 없습니다.");
+          if (!curPatch.meta.specLoaded) await loadSpec(cropId, true);
+          curPatch.meta[field] = targetVal;
+          markFieldDirty(curPatch.meta, field);
+          await savePatchSpec(curPatch, { includeRaw: false, reconfirmBlockedManual: false });
+          emit("selection");
+        };
+        const label = field === "purpose"
+          ? `목적 변경 (${patchName}: ${Data.purposeInfo(prevVal).short} → ${Data.purposeInfo(normNext).short})`
+          : `AI 자동 ${normNext ? "켜기" : "끄기"} (${patchName})`;
+        pushHistory(label, () => restoreField(prevVal), () => restoreField(normNext));
+        const histEntryId = state.history[state.histIndex] && state.history[state.histIndex].id;
+        const msg = field === "purpose"
+          ? `"${patchName}" 목적을 「${Data.purposeInfo(normNext).label}」(으)로 저장했습니다.`
+          : `"${patchName}" AI 자동 최적화를 ${normNext ? "켰습니다" : "껐습니다"}.`;
+        toast(msg, "ok", {
+          label: "되돌리기",
+          onClick: () => {
+            const top = state.history[state.histIndex];
+            if (top && top.id === histEntryId) undoHistory();
+            else toast("이후 다른 변경이 있어 히스토리 패널에서 되돌려 주세요.");
+          },
+        });
+      }
+      return res;
+    } catch (err) {
+      toast(`지시문 저장 실패: ${(err && (err.userMessage || err.message)) || "저장 실패"}`, "err");
+      return null;
     }
   }
 
@@ -629,24 +717,58 @@ window.DPV2Store = (() => {
     emit("mask");
   }
 
-  function syncMaskWithActiveCandidate() {
+  function restoreSelectionToMask(ms) {
+    if (!ms || !ms.key) return false;
+    for (const p of getPatches()) {
+      for (const tg of (p.targets || [])) {
+        if ((tg.candidates || []).some((c) => c.key === ms.key)) {
+          state.selectedIds = new Set([p.id]);
+          state.primaryId = p.id;
+          state.selectedTargetByCrop.set(p.id, tg.key);
+          state.selectedCandByTarget.set(tg.key, ms.key);
+          emit("selection");
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function askUnsavedMaskChoice() {
+    return Data.askDialogChoice(
+      "이전 후보에 저장하지 않은 마스크 붓 편집이 있습니다. 어떻게 할까요?",
+      [
+        { id: "save", label: "저장하기", primary: true },
+        { id: "discard", label: "버리기", danger: true },
+        { id: "cancel", label: "계속 편집" },
+      ],
+      { title: "마스크 편집 확인", cancelId: "cancel", focusId: "save" }
+    );
+  }
+
+  function syncMaskWithActiveCandidate(opts = {}) {
     if (!state.mask) return;
     const cand = currentCandidate();
     if (cand && cand.key === state.mask.key) return;
-    // #C13-7: 미저장 획이 없으면 즉시 닫고, 있으면 저장이 성공하거나 「버리기」를 고를 때까지 편집 판을 유지한다
+    // #C13-7 · #C15-5: 미저장 획이 없으면 즉시 닫고, 있으면 명시적 「버리기」나 저장 성공 전까지 편집 판을 유지한다
+    //                  Esc/닫기는 「계속 편집(cancel)」으로 처리해 획을 절대 버리지 않는다
     if (!state.mask.dirty) {
       closeMaskSession();
       return;
     }
-    if (maskSwitchAsking) return;
+    if (opts.fromPoll || maskSwitchAsking) return;
     const pendingMask = state.mask;
     maskSwitchAsking = true;
-    Data.askDialogConfirm(
-      "이전 후보에 저장하지 않은 마스크 붓 편집이 있습니다. 지금 저장할까요?",
-      { ok: "저장하기", cancel: "버리기" }
-    ).then(async (ok) => {
-      if (!ok) {
+    askUnsavedMaskChoice().then(async (choice) => {
+      if (choice === "discard") {
         if (state.mask === pendingMask) closeMaskSession();
+        return;
+      }
+      if (choice !== "save") {
+        if (state.mask === pendingMask) {
+          restoreSelectionToMask(pendingMask);
+          toast("마스크 편집을 유지합니다 — 저장하거나 [버리기]를 선택해 주세요.");
+        }
         return;
       }
       const res = await saveMaskSession(pendingMask);
@@ -1038,7 +1160,7 @@ window.DPV2Store = (() => {
           state.selectedIds = new Set([patches[0].id]);
           state.initialSelectionDone = true;
         }
-        syncMaskWithActiveCandidate();
+        syncMaskWithActiveCandidate({ fromPoll: !force });
         if (state.primaryId && Api.can("v2_spec_edit")) {
           const primInManifest = !!(state.S && Array.isArray(state.S.crops) && state.S.crops.some((c) => c.id === state.primaryId));
           await loadSpec(state.primaryId, primInManifest);
@@ -1240,7 +1362,7 @@ window.DPV2Store = (() => {
       if (!state.mask || !state.mask.dirty) closeMaskSession();
       return null;
     }
-    // #C13-7: 다른 후보로 마스크를 열 때 앞 미저장 획이 있으면 저장 성공 또는 「버리기」 전까지 덮어쓰지 않는다
+    // #C13-7 · #C15-5: 다른 후보로 마스크를 열 때 앞 미저장 획이 있으면 저장 성공 또는 명시적 「버리기」 전까지 덮어쓰지 않는다
     if (state.mask && state.mask.dirty && state.mask.key !== candKey) {
       if (maskSwitchAsking) {
         toast("이전 마스크 저장 확인이 끝난 뒤 다시 시도해 주세요.");
@@ -1249,17 +1371,19 @@ window.DPV2Store = (() => {
       const pendingMask = state.mask;
       maskSwitchAsking = true;
       try {
-        const ok = await Data.askDialogConfirm(
-          "이전 후보에 저장하지 않은 마스크 붓 편집이 있습니다. 지금 저장할까요?",
-          { ok: "저장하기", cancel: "버리기" }
-        );
-        if (ok) {
+        const choice = await askUnsavedMaskChoice();
+        if (choice === "save") {
           const saved = await saveMaskSession(pendingMask);
           if (!saved || !saved.ok || saved.conflict || pendingMask.dirty) {
             return null;
           }
+          if (state.mask === pendingMask) closeMaskSession();
+        } else if (choice === "discard") {
+          if (state.mask === pendingMask) closeMaskSession();
+        } else {
+          toast("마스크 편집을 유지합니다 — 저장하거나 [버리기]를 선택해 주세요.");
+          return null;
         }
-        if (state.mask === pendingMask) closeMaskSession();
       } finally {
         maskSwitchAsking = false;
       }
@@ -1303,21 +1427,9 @@ window.DPV2Store = (() => {
         brushHard: 0.65,
         brushFlow: 1,
       };
-      // #C11-3 · #C13-6②: 서버 adjust 값이 있으면 해당 후보 key 의 미수정 슬라이더만 서버 보정값으로 동기화한다
+      // #C11-3 · #C13-6② · #C15-6: 서버 adjust 값이 있으면 해당 후보 key 의 미수정 슬라이더만 서버 보정값으로 동기화한다
       if (info && info.adjust && info.crop_id) {
-        const pm = ensurePatchMeta(info.crop_id);
-        if (!pm.filtersByCand) pm.filtersByCand = Object.create(null);
-        if (!pm.filtersByCand[candKey]) pm.filtersByCand[candKey] = defaultFilters();
-        const f = pm.filtersByCand[candKey];
-        const t = f._touched || {};
-        if (!t.feather && typeof info.adjust.blur === "number") f.feather = info.adjust.blur;
-        if (!t.dx && typeof info.adjust.dx === "number") f.dx = info.adjust.dx;
-        if (!t.dy && typeof info.adjust.dy === "number") f.dy = info.adjust.dy;
-        if (!t.rot && typeof info.adjust.rot === "number") f.rot = info.adjust.rot;
-        if (!t.scale && typeof info.adjust.sx === "number" && typeof info.adjust.sy === "number"
-            && Math.abs(info.adjust.sx - info.adjust.sy) < 0.001) {
-          f.scale = Math.round(info.adjust.sx * 100);
-        }
+        syncCandidateFiltersFromAdjust(info.crop_id, candKey, info.adjust, false);
       }
       emit("mask");
       return state.mask;
@@ -1372,7 +1484,7 @@ window.DPV2Store = (() => {
   return {
     state, subscribe, emit, toast,
     loadPrefs, savePrefs, applyPrefsToDom, activeTheme, activeAccentHex, initForgeThemeListener,
-    ensurePatchMeta, getCandidateFilters, markFieldDirty, loadSpec, savePatchSpec, applySpecResponse, invalidateAllSpecs, projectPrepareRaw, projectPrepare, buildPreparePayload,
+    ensurePatchMeta, getCandidateFilters, syncCandidateFiltersFromAdjust, markFieldDirty, loadSpec, savePatchSpec, applyQuickSpecChange, applySpecResponse, invalidateAllSpecs, projectPrepareRaw, projectPrepare, buildPreparePayload,
     isPatchCheckedForRun, setPatchCheckedForRun, setAllCheckedForRun,
     getPatches, getPatch, primaryPatch, selectedPatches, clearSelection,
     currentCandidate, selectCandidate, selectTargetForCrop, moveCropZ,

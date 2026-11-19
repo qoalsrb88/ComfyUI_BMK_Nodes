@@ -675,15 +675,17 @@ window.DPV2Canvas = (() => {
           style: `--p-col:${pc};--p-soft:${pSoft};--p-border:${pBorder};`,
           onClick: () => {
             if (Store.state.runFlowBusy || Store.state.assistBusy) return;
+            if (!isMulti) {
+              // #C13-11: 단일 선택 목적 변경은 즉시 저장 토스트 + Ctrl+Z 실행 취소를 함께 제공
+              Store.applyQuickSpecChange(patch, "purpose", pr.id);
+              return;
+            }
             for (const sp of selList) {
               sp.meta.purpose = pr.id;
               Store.markFieldDirty(sp.meta, "purpose");
               if (!sp.meta.specLoaded && Api.can("v2_spec_edit")) Store.loadSpec(sp.id);
             }
             Store.emit("selection");
-            if (!isMulti && Api.can("v2_spec_edit")) {
-              Store.savePatchSpec(patch).catch((err) => Store.toast(`지시문 저장 실패: ${err.message}`, "err"));
-            }
           },
         }, Data.el("span", { className: "fb-purpose-ico" }, Data.icon(pr.icon, 12)), pr.short);
         purpHost.append(b);
@@ -784,7 +786,7 @@ window.DPV2Canvas = (() => {
     const runBtn = $("fb-run-btn");
     if (runBtn) {
       runBtn.textContent = isMulti ? `${selList.length}개 생성` : "생성";
-      runBtn.disabled = !!(Store.state.S && Store.state.S.running) || !!Store.state.runFlowBusy;
+      runBtn.disabled = !!(Store.state.S && Store.state.S.running) || !!Store.state.runFlowBusy || !!Store.state.assistBusy;
     }
   }
 
@@ -1026,13 +1028,18 @@ window.DPV2Canvas = (() => {
       if (hit.type === "rotate") {
         const [x1, y1, x2, y2] = hit.patch.rect;
         const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+        // #C15-3: 회전 손잡이는 영역 공통 filters 가 아니라 활성 후보별 초안(getCandidateFilters)에 쓴다
+        const cand = Store.currentCandidate(hit.patch);
+        const filters = Store.getCandidateFilters(hit.patch, cand);
+        filters.transformEnabled = true;
         view.drag = {
           type: "rotate",
           patch: hit.patch,
+          cand,
+          filters,
           startAngle: Math.atan2(pt.y - cy, pt.x - cx),
-          origRot: hit.patch.meta.filters.rot || 0,
+          origRot: filters.rot || 0,
         };
-        hit.patch.meta.filters.transformEnabled = true;
         vp.setPointerCapture(e.pointerId);
         return;
       }
@@ -1094,11 +1101,13 @@ window.DPV2Canvas = (() => {
         return;
       }
 
-      if (dg.type === "rotate" && dg.patch) {
+      if (dg.type === "rotate" && dg.patch && dg.filters) {
         const [x1, y1, x2, y2] = dg.patch.rect;
         const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
         const deg = ((Math.atan2(pt.y - cy, pt.x - cx) - dg.startAngle) * 180) / Math.PI;
-        dg.patch.meta.filters.rot = Math.max(-45, Math.min(45, Math.round((dg.origRot + deg) * 2) / 2));
+        dg.filters.rot = Math.max(-45, Math.min(45, Math.round((dg.origRot + deg) * 2) / 2));
+        if (!dg.filters._touched) dg.filters._touched = {};
+        dg.filters._touched.rot = true;
         renderCandidateOverlay();
         Store.emit("filters");
         return;
@@ -1254,11 +1263,17 @@ window.DPV2Canvas = (() => {
       if (rt && document.activeElement !== rt) rt.value = e.target.value;
     });
     const fbAi = $("fb-ai-btn");
-    if (fbAi) fbAi.addEventListener("click", () => window.DPV2Inspector && window.DPV2Inspector.runAssistForSelection());
+    if (fbAi) fbAi.addEventListener("click", () => {
+      if (Store.state.runFlowBusy || Store.state.assistBusy) return;
+      if (window.DPV2Inspector) window.DPV2Inspector.runAssistForSelection();
+    });
     const fbModel = $("fb-model-btn");
     if (fbModel) fbModel.addEventListener("click", (e) => window.DPV2Inspector && window.DPV2Inspector.openModelPopover(e.currentTarget));
     const fbRun = $("fb-run-btn");
-    if (fbRun) fbRun.addEventListener("click", () => window.DPV2Inspector && window.DPV2Inspector.runSelectedGeneration(true));
+    if (fbRun) fbRun.addEventListener("click", () => {
+      if (Store.state.runFlowBusy || Store.state.assistBusy) return;
+      if (window.DPV2Inspector) window.DPV2Inspector.runSelectedGeneration(true);
+    });
     const fbCmp = $("fb-compare-btn");
     if (fbCmp) fbCmp.addEventListener("click", () => window.DPV2Overlays && window.DPV2Overlays.openCompareOverlay());
     const fbRatio = $("fb-ratio-btn");
