@@ -133,9 +133,11 @@ MEASURED: list[str] = []
 
 def _env_ui_v2(expected: dict, bd) -> dict:
     """env 계약 fixture 의 caps.ui_v2 는 「화면 폴더에 v2.html 이 없음」 기준(false)이다. 서버는 그 파일이 있으면 true 를 준다
-    (board.v2_available) — 그 한 칸만 지금 트리에 맞춘 사본을 돌려준다(새 화면 파일이 들어오기 전·후 모두 같은 시험이 통과하게)."""
+    (board.v2_available) — 그 한 칸만 지금 트리에 맞춘 사본을 돌려준다(새 화면 파일이 들어오기 전·후 모두 같은 시험이 통과하게).
+    기준값이 false 로 적혀 있을 때만 맞춘다 — 그 칸이 빠졌거나 다른 값이면 그대로 두어 비교가 실패하게 한다."""
     out = copy.deepcopy(expected)
-    out["caps"]["ui_v2"] = os.path.isfile(os.path.join(bd.WEB_DIR, bd.V2_ENTRY))
+    if out["caps"].get("ui_v2") is False:
+        out["caps"]["ui_v2"] = os.path.isfile(os.path.join(bd.WEB_DIR, bd.V2_ENTRY))
     return out
 
 
