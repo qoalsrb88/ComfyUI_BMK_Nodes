@@ -984,6 +984,7 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
         size_rule_changed = target["size_rule"] != rec.get("size_rule", before["size_rule"])
         kept_overrides = set()
         reset = set()
+        preview_jobs = []
         for job in mm.get("jobs") or []:
             crop_id = job.get("crop_id")
             try:
@@ -1021,7 +1022,9 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
             job["cell_key"] = ck
             if ck in old_jobs and str(old_jobs[ck].get("n")) != str(job["n"]):
                 reset.add(ck)
-        keep = {j["cell_key"] for j in mm.get("jobs") or []}
+            preview_jobs.append(job)
+        mm["jobs"] = preview_jobs
+        keep = {j["cell_key"] for j in preview_jobs}
         pruned = 0
         # D161 과 같은 정리, 사본만 변경(갈래 B 의 prune_stale_rerolls 공용 자리는 아직 빈 몸통이어도 추정 가능).
         for ck, count in list((mm.get("rerolls") or {}).items()):

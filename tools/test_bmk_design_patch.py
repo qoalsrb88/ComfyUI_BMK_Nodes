@@ -62538,8 +62538,8 @@ def ux_v2b_gen_unit():
               "V2BG3 장 수만 덮어쓴 패치는 모델만 전환")
         store.update_crop_gen(root, lambda crops: crops.update({counted: {"model": "unknown"}}), expect_rev=1)
         preview, switched = simulated()
-        check(preview["need"] == 1 and preview["kept_overrides"] == 1 and switched[counted] == jobs[counted],
-              "V2BG4 읽지 못한 항목은 완료된 작업의 키·장 수·호출 수 모두 보존")
+        check(preview["need"] == 1 and preview["kept_overrides"] == 1 and counted not in switched,
+              "V2BG4 읽지 못한 항목의 완료된 작업도 전환 계획에서 제외")
         inexact = pl.switch_preview(root, m, settings, prepare=dict(target, variants="V1,V4"))
         check(inexact["exact"] is False and "kept_overrides" not in inexact, "V2BG4 추정 불가 응답에는 유지 크롭 수 없음")
         Path(root, store.CROP_GEN_NAME).write_bytes(b"{")
@@ -62547,19 +62547,73 @@ def ux_v2b_gen_unit():
         check(set(broken) == {"prepare", "uncertain", "error"} and broken["uncertain"] and broken["prepare"] == target
               and store.CROP_GEN_NAME in broken["error"], "V2BG4 깨진 파일은 전환 미리 보기 오류")
 
+        for reserved in (0, 1):
+            h, root = _fx_project(dp, out, f"invalid-{reserved}", V2B_RECTS[:2], texture(344, 448, 7))
+            values = _v2b_args(pl, project_model, variants="V1")
+            pre.run(h, **values)
+            m = store.load_manifest(root)
+            invalid = m["jobs"][0]
+            ck = invalid["cell_key"]
+            if reserved:
+                m["rerolls"] = {ck: reserved}
+                store.save_manifest(root, m)
+            store.update_crop_gen(root, lambda crops: crops.update({invalid["crop_id"]: {"model": "unknown-model"}}), expect_rev=0)
+            preview = pl.switch_preview(root, m, pl.derive(root, m)["settings"], prepare=values)
+            pre.run(h, **values)
+            applied = store.load_manifest(root)
+            actual = rn.split_approval(rn.plan_calls(applied, root), "", backend=rn.BACKEND_MOCK)
+            pruned = reserved - applied.get("rerolls", {}).get(ck, 0)
+            check(preview["need"] == len(actual["needs_approval"]) == 1 and preview["pruned"] == pruned == reserved
+                  and preview["pending_preapproved"] == len(actual["preapproved"]) == 0 and preview["est_usd"] == list(actual["est_usd"]),
+                  f"V2BG9 손상된 미완료 작업 제외(예약 {reserved}건) — 미리 보기 need/pruned {preview['need']}/{preview['pruned']}, "
+                  f"반영 후 {len(actual['needs_approval'])}/{pruned}")
+
+    with _v2b_env(dp, out), patch.object(rn, "mock_enabled", return_value=False):
+        for overrides in (False, True):
+            h, root = _fx_project(dp, out, f"size-rule-{overrides}", [V2B_RECTS[0], ("002_tall", [256, 0, 400, 256])],
+                                  texture(256, 400, 8))
+            m = store.load_manifest(root)
+            own, counted = [c["id"] for c in m["crops"]]
+            if overrides:
+                entries = {own: dp.models.gen_bundle(target_model), counted: {"n": 10}}
+                store.update_crop_gen(root, lambda crops: crops.update(entries), expect_rev=0)
+            values = _v2b_args(pl, project_model, size_rule="user_k", variants="V1")
+            target = dict(values, model="nano-banana-2.1", size_rule="int_k_2560")
+            pre.run(h, **values)
+            m = store.load_manifest(root)
+            for job in m["jobs"]:
+                rn._write_json(rn._lpath(root, job["cell_key"], 0, "done"), {"slots": []})
+            with patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plan:
+                preview = pl.switch_preview(root, m, pl.derive(root, m)["settings"], prepare=target)
+            simulated_jobs = {j["crop_id"]: j for j in plan.call_args.args[0]["jobs"]}
+            pre.run(h, **target)
+            actual = rn.split_approval(rn.plan_calls(store.load_manifest(root), root), "", backend=rn.BACKEND_FORGE)
+            need = {e["crop_id"]: e["job"] for e in actual["needs_approval"]}
+            check(preview["exact"] and preview["need"] == len(actual["needs_approval"]) == 2 and need.keys() == {own, counted}
+                  and all(simulated_jobs[cid]["cell_key"] == need[cid]["cell_key"] for cid in need)
+                  and preview["kept_overrides"] == int(overrides), f"V2BG10 크기 규칙 전환 미리 보기와 실제 승인 셀 일치(덮어쓰기 {overrides})")
+            if overrides:
+                old = next(j for j in m["jobs"] if j["crop_id"] == own)
+                check(simulated_jobs[own]["model"] == old["model"] == target_model and simulated_jobs[own]["size"] != old["size"]
+                      and simulated_jobs[own]["size"] == need[own]["size"], "V2BG10 완료된 GPT 패치는 크기 규칙이 바뀌면 다시 승인")
+                check(simulated_jobs[counted]["n"] == need[counted]["n"] == 8 and simulated_jobs[counted]["model"] == target["model"]
+                      and preview["need"] == len(actual["needs_approval"]), "V2BG11 장 수만 10으로 덮어쓴 패치는 나노 전환 시 8장")
+
     async def spec_and_assist():
         scope = _fj_scope(out)
-        _, root, ids = _v2b_project(dp, out, "spec-assist", project_model)
-        pl.update(root, 0, "prepare", _v2b_args(pl, project_model))
+        h, root, ids = _v2b_project(dp, out, "spec-assist", project_model)
+        values = _v2b_args(pl, project_model)
+        pl.update(root, 0, "prepare", values)
         ai, manual = ids["004_panel"], ids["002_tall"]
         fake = dev.FakeForge()
         client = assist.forge.ForgeClient(assist.forge.ForgeConfig("https://forge.test"), transport=fake.handle)
         accounts = types.SimpleNamespace(ensure_access=AsyncMock(), context=lambda s: {
             "client": client, "token_of": lambda: dev.issue_token(s["account"])})
+        now = 0
         routes = {(method, path): handler for method, path, handler in
-                  (*assist.specs.routes(), *assist.routes(accounts, per_minute=1))}
+                  (*assist.specs.routes(), *assist.routes(accounts, per_minute=1, clock=lambda: now))}
 
-        async def call(method, path, crop_id, *, view=None, status=200, **fields):
+        async def call(method, path, crop_id, *, view=None, status=200, label="V2BG5", **fields):
             path = bd.API + "/" + path
             data = {"root": store.root_key(root), "crop_id": crop_id, **fields}
             if view:
@@ -62568,7 +62622,7 @@ def ux_v2b_gen_unit():
             req = make_mocked_request(method, url, headers={"Content-Type": "application/json"})
             req.read = AsyncMock(return_value=json.dumps(data).encode())
             res = await routes[method, path](req)
-            check(res.status == status, f"V2BG5 {method} {path} HTTP {res.status} (기대 {status})")
+            check(res.status == status, f"{label} {method} {path} HTTP {res.status} (기대 {status})")
             return json.loads(res.body)
 
         scope_token = bd.set_scope(scope)
@@ -62617,6 +62671,45 @@ def ux_v2b_gen_unit():
                   "V2BG7 이름만 바뀌면 첫 작성 한도가 남고 2.6 패치에 맞는 2.5 지침으로 작성")
             check(saved["model"] == target_model and saved["state"] == "body" and written["input_hash"] == record["input_hash"]
                   == view["input_hash"] == expected_hash, "V2BG7 작성본에 효과 모델의 입력 해시 저장")
+            _, _, report = pre.run(h, **values)
+            jobs = [j for j in store.load_manifest(root)["jobs"] if j["crop_id"] == ai]
+            check(len(jobs) == 1 and jobs[0]["template_version"] == P.BODY_TEMPLATE and jobs[0]["prompt"] == written["prompt_en"]
+                  and jobs[0]["model"] == target_model and not any(ai in line and "작업 없음" in line for line in report.splitlines()),
+                  "V2BG12 덮어쓴 모델로 AI 작성 직후 Prepare에서 같은 본문으로 작업 생성")
+
+            other = ids["003_wide"]
+            other_view = await call("GET", "spec", other)
+            path = Path(root, "specs", other + ".json")
+            before = path.read_bytes()
+            prepare_prompt = client.prepare_prompt
+
+            async def move_during_guidance(*args, **kwargs):
+                response = await prepare_prompt(*args, **kwargs)
+                x0, y0, x1, y1 = bd._crop(m, other)["rect"]
+                store.update_layout(root, lambda doc: bd._crop(doc, other).update(rect=[x0 + 1, y0, x1 + 1, y1]), expect_rev=None)
+                return response
+
+            now += 61
+            with patch.object(client, "prepare_prompt", side_effect=move_during_guidance) as guidance, \
+                    patch.object(client, "prompt_assist", wraps=client.prompt_assist) as writer:
+                rejected = await call("POST", "prompt/assist", other, view=other_view, status=409, label="V2BG8")
+            check(rejected.get("reason") == "apply_needed" and guidance.await_count == 1 and writer.await_count == 0
+                  and path.read_bytes() == before, f"V2BG8 지침 응답 중 영역 이동 — 글쓰기 {writer.await_count}회, 스펙 바이트 보존")
+
+            # 반영된 레이아웃과 사각형·이름을 맞추고 대상 문구만 바꾼 뒤, 같은 크롭을 삭제한 경우와 파일이 없는 경우도 검사한다.
+            layout = store.layout_from_manifest(m)
+            bd._crop(layout, ai)["targets"][0]["text"] = "trim"
+            store.update_layout(root, lambda doc: doc.update(crops=layout["crops"]), expect_rev=None)
+            for case in ("대상 문구만 변경", "레이아웃에서 크롭 삭제", "레이아웃 파일 없음"):
+                if case == "레이아웃에서 크롭 삭제":
+                    store.update_layout(root, lambda doc: doc["crops"].remove(bd._crop(doc, ai)), expect_rev=None)
+                elif case == "레이아웃 파일 없음":
+                    Path(root, store.LAYOUT_NAME).unlink()
+                now += 61
+                view = await call("GET", "spec", ai)
+                result = await call("POST", "prompt/assist", ai, view=view, force=True, label="V2BG13")
+                check(result.get("status") == "written" and result["cached"] is False and result["forge_calls"] >= 1,
+                      f"V2BG13 {case}에도 글쓰기 허용")
             Path(root, store.CROP_GEN_NAME).write_bytes(b"{")
             err = await call("GET", "spec", ai, status=422)
             check(store.CROP_GEN_NAME in err["error"], "V2BG6 깨진 파일의 /spec 422")
