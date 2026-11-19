@@ -58,6 +58,7 @@ window.DPV2Inspector = (() => {
         const r = await sendLinkOp(rev, { op: "add", crop_id: p.id, name: fileName });
         if (r && r.cancelled) continue;
         if (r && typeof r.rev === "number") rev = r.rev;
+        if (p.meta) p.meta.specLoaded = false; // 레퍼런스 구성 변경 시 /spec seen 지문이 달라짐
         linked += 1;
       }
       if (linked > 0) {
@@ -80,6 +81,7 @@ window.DPV2Inspector = (() => {
     try {
       const r = await sendLinkOp(Store.state.R?.rev ?? null, { op: "remove", crop_id: patch.id, name: fileName });
       if (r && r.cancelled) return;
+      if (patch.meta) patch.meta.specLoaded = false; // 레퍼런스 구성 변경 시 /spec seen 지문이 달라짐
       Store.toast(`"${fileName}" 연결을 해제했습니다.`);
       await Store.refreshAll(true);
     } catch (err) {
@@ -1288,6 +1290,19 @@ window.DPV2Inspector = (() => {
         await Store.refreshAll(true);
       } else if (res && res.reason === "cancelled") {
         Store.toast("생성을 취소했습니다.");
+      } else if (res && res.reason === "nothing_to_approve") {
+        const noJobs = res.summary && Array.isArray(res.summary.no_job) ? res.summary.no_job : [];
+        const names = noJobs.map((id) => (Store.getPatch(id)?.name || id)).join(", ");
+        Store.toast(
+          names
+            ? `승인할 작업이 없습니다 (작업 없음: ${names}) — 지시문 작성 상태를 확인해 주세요.`
+            : (res.error || "승인할 생성 작업이 없습니다."),
+          "err"
+        );
+        await Store.refreshAll(true);
+      } else if (res && (res.reason === "stale" || res.reason === "stale_settings")) {
+        await Store.refreshAll(true);
+        Store.toast(res.error || "설정 또는 계획이 변경되었습니다 — 최신 상태로 갱신했으니 다시 눌러 주세요.", "err");
       } else if (res) {
         Store.toast(res.error || res.message || res.reason || "생성을 시작하지 못했습니다.", "err");
       }

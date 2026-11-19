@@ -662,6 +662,10 @@ window.DPV2Overlays = (() => {
 
       const saved = await sendSave(saveBody);
       if (saved && saved.cancelled) return;
+      if (cropId) {
+        const linkedPatch = Store.getPatch(cropId);
+        if (linkedPatch && linkedPatch.meta) linkedPatch.meta.specLoaded = false; // 레퍼런스 구성 변경 시 /spec seen 지문이 달라짐
+      }
       closeSheetOverlay();
       Store.toast(cropId ? "시트 컷을 저장하고 선택한 영역에 연결했습니다." : "시트 컷을 레퍼런스 보관함에 저장했습니다.", "ok");
       await Store.refreshAll(true);

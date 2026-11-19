@@ -375,6 +375,17 @@
       $("projects-view").classList.add("hidden");
       $("studio-view").classList.remove("hidden");
       await Store.refreshAll(true);
+      // 새 프로젝트 첫 진입(가져오기 전 — S.canvas 없음)이면 무료 반영(apply)을 자동 1회 실행해 원화 캔버스를 준비한다
+      if (Store.state.S && !Store.state.S.canvas && !Store.state.S.running && Api.submitAdapter()) {
+        Store.toast("새 프로젝트 원화를 불러오는 중입니다 (무료 초기 반영)…");
+        try {
+          const applied = await Api.submitStage("apply", { root });
+          if (applied && applied.ok && applied.prompt_id) {
+            await Api.waitJob(root, applied.prompt_id);
+            await Store.refreshAll(true);
+          }
+        } catch (_) { /* 수동 [합성 적용] 으로 재시도 가능 */ }
+      }
       Store.startPolling();
       updateTopbarState();
     }
