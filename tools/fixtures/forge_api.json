@@ -1130,5 +1130,241 @@
         "error_category": "ailabs"
       }
     }
+  },
+  "prompt": {
+    "_comment": "프롬프트 작성(UX v2 Phase V2-A)이 부르는 생성 서버의 공개 API 넷. 키 이름·값 형식이 계약이고 값(지침 글·모델 id)은 예시다. 지침 글은 서버가 가진 원문이 아니라 같은 자리의 대역 문장이다.",
+    "source": {
+      "checked": "2026-11-19",
+      "forge_commit": "0333f11eb",
+      "note": "게이트웨이의 요청 모델(받는 키·상한)과 이미지 서비스의 처리 코드를 읽어 확인한 모양. 운영의 기본 글쓰기 모델·지침 사용 여부는 실호출 전 GET 두 번으로 확인한다."
+    },
+    "capabilities": {
+      "method": "GET",
+      "path": "/api/image/assistant/prompt-capabilities",
+      "_comment": "로그인만 필요. LLM 호출 없음. profiles = 지침이 있는 모델만(checkpoint → 프로필) — 여기에 없는 checkpoint 는 prepare 가 unsupported. catalogs = 프로필마다 같은 id 집합(31개). 정본의 response.catalogs 는 줄인 예시다 — 실제 응답은 profiles 의 프로필마다 skill_ids 전부를 {id, description} 으로 싣는다(가짜 서버는 description_format 으로 채운다).",
+      "skill_ids": [
+        "background-edit",
+        "camera-view-edit",
+        "canvas-extension",
+        "color-palette-edit",
+        "content-removal",
+        "decal-mark-asset",
+        "detail-repair",
+        "effect-state-edit",
+        "element-add-replace",
+        "expression-gaze-edit",
+        "garment-edit",
+        "graphic-layout",
+        "infographic-diagram",
+        "lighting-atmosphere-edit",
+        "logo-design",
+        "material-finish-edit",
+        "multi-panel-layout",
+        "parts-inventory-sheet",
+        "pose-action-edit",
+        "rough-completion",
+        "same-subject-sheet",
+        "scene-design",
+        "scoped-component-edit",
+        "style-conversion",
+        "subject-design",
+        "subject-isolation",
+        "technical-map-derivation",
+        "text-rendering",
+        "texture-extraction",
+        "texture-generation",
+        "ui-mockup"
+      ],
+      "description_format": "Rewrite requests of the {id} kind.",
+      "response": {
+        "profiles": {
+          "gpt_image_25_sunburst": "gpt_image_25",
+          "gpt_image_25_flare": "gpt_image_25",
+          "seedream_5_5": "seedream_5_5",
+          "ideogram_4_5": "ideogram_4_5",
+          "gemini-nano-banana-2.1": "gemini-nano-banana-2.1",
+          "gemini_flash2": "gemini_flash2",
+          "gemini3": "gemini3"
+        },
+        "catalogs": {
+          "gpt_image_25": [
+            {
+              "id": "background-edit",
+              "description": "Rewrite requests of the background-edit kind."
+            }
+          ]
+        },
+        "guidance_revision": "5d0c9a4e7b1f38626a0d94c1e2f7b3a85c6d9e0f1a2b3c4d5e6f708192a3b4c5",
+        "skills_available": true
+      },
+      "response_unavailable": {
+        "profiles": {},
+        "catalogs": {},
+        "guidance_revision": null,
+        "skills_available": false,
+        "reason": "guidance_unavailable"
+      },
+      "reasons": [
+        "workspace_not_supported",
+        "checkpoint_registry_unavailable",
+        "model_not_supported",
+        "guidance_unavailable"
+      ]
+    },
+    "prepare": {
+      "method": "POST",
+      "path": "/api/image/assistant/prepare-prompt",
+      "_comment": "skill_ids 를 주면 LLM 호출 없이 지침 글만 돌려준다(request_brief·conversation 은 형식 검사만 받고 읽히지 않는다). skill_ids 가 없으면 분류용 LLM 이 한 번 돈다 — 스튜디오는 늘 skill_ids 를 준다.",
+      "request": {
+        "checkpoint": "gpt_image_25_sunburst",
+        "task_type": "image",
+        "request_brief": {
+          "request": "오른쪽 어깨 금장을 레퍼런스처럼 보정"
+        },
+        "conversation": [
+          {
+            "entry_id": "dp-1",
+            "role": "user",
+            "text": "오른쪽 어깨 금장을 레퍼런스처럼 보정"
+          }
+        ],
+        "image_count": 2,
+        "has_mask": false,
+        "skill_ids": [
+          "scoped-component-edit",
+          "element-add-replace"
+        ]
+      },
+      "request_rules": {
+        "required": [
+          "checkpoint",
+          "request_brief",
+          "conversation"
+        ],
+        "request_brief.request": "1–6000자",
+        "conversation": "1–200개, role = user·question·assistant, text 합 64000자 이하(넘으면 failed conversation_over_length)",
+        "image_count": "0–100",
+        "skill_ids": "게이트웨이 상한 4개 — 넘으면 422",
+        "ignored": "모델에 없는 키는 조용히 버려진다"
+      },
+      "response": {
+        "status": "prepared",
+        "profile": "gpt_image_25",
+        "selected_skill_ids": [
+          "scoped-component-edit",
+          "element-add-replace"
+        ],
+        "guidance_revision": "5d0c9a4e7b1f38626a0d94c1e2f7b3a85c6d9e0f1a2b3c4d5e6f708192a3b4c5",
+        "policy_status": {},
+        "guidance": {
+          "rewrite": "Write one final image prompt from the user's complete request under the supplied guidance. Do not decide visual properties the user has not specified.",
+          "global": "# Shared rewrite guidance\n\n- Preserve input language unless translation is explicitly requested.\n- Retain attachment order as `@image1`, `@image2`.",
+          "model": "# Model rewrite guidance\n\n- For edits, name the concrete change and relevant continuity.",
+          "skills": [
+            {
+              "id": "scoped-component-edit",
+              "body": "# Rewrite a scoped component edit\n\n- Name the component and the requested change."
+            },
+            {
+              "id": "element-add-replace",
+              "body": "# Rewrite an element addition or replacement\n\n- Name the incoming element and where it goes."
+            }
+          ],
+          "mask": null
+        }
+      },
+      "unsupported": {
+        "status": "unsupported",
+        "reason": "model_not_supported"
+      },
+      "failed": {
+        "status": "failed",
+        "reason": "unknown_skill"
+      },
+      "failed_reasons": [
+        "unknown_skill",
+        "conversation_over_length",
+        "guidance_unavailable",
+        "preparation_timeout"
+      ]
+    },
+    "assist": {
+      "method": "POST",
+      "path": "/api/image/prompt/assist",
+      "_comment": "mode chat 이면 system 이 시스템 글로, prompt 가 사용자 글로 그대로 간다. 게이트웨이를 통과하는 키는 passed_keys 가 전부다 — images·files·max_tokens·reasoning_effort·idempotency_key 는 버려진다(그림은 image 한 장). 실패는 HTTP 200 + success false + error_message. 응답에 토큰 수·금액·모델 이름은 없다.",
+      "passed_keys": [
+        "mode",
+        "provider",
+        "model",
+        "system",
+        "prompt",
+        "words",
+        "image",
+        "instruction",
+        "analyze_output",
+        "response_format",
+        "feature"
+      ],
+      "request": {
+        "mode": "chat",
+        "system": "<지침 묶음 + 출력 계약>",
+        "prompt": "<user_prompt>…</user_prompt>",
+        "image": "data:image/jpeg;base64,…",
+        "response_format": "json_object"
+      },
+      "request_rules": {
+        "response_format": "json_object 뿐(다른 값은 422)",
+        "feature": "prompt_studio·tag_studio 뿐 — 스튜디오는 보내지 않는다",
+        "model": "선택 — 없으면 서버 기본 모델",
+        "image": "data URL 또는 base64 — 서버가 긴 변 1536 JPEG 로 줄인다"
+      },
+      "response": {
+        "request_id": "7f6f6f3a-8a0c-4a1e-9a55-0d5a3d1b2c4e",
+        "success": true,
+        "text": "{\"body_en\": \"Correct the gold shoulder ornament in @image1 to match the design in @image2.\", \"summary_ko\": \"오른쪽 어깨 금장을 레퍼런스 디자인에 맞춰 보정합니다.\"}",
+        "tags": null,
+        "positive": null,
+        "negative": null,
+        "error_message": null,
+        "processing_time": 2.4
+      },
+      "response_failed": {
+        "request_id": "7f6f6f3a-8a0c-4a1e-9a55-0d5a3d1b2c4e",
+        "success": false,
+        "text": null,
+        "tags": null,
+        "positive": null,
+        "negative": null,
+        "error_message": "프롬프트 개선 응답이 올바른 JSON 객체가 아닙니다.",
+        "processing_time": 3.1
+      }
+    },
+    "models": {
+      "method": "GET",
+      "path": "/api/image/prompt/models",
+      "_comment": "프롬프트 도구가 보이는 글쓰기 모델 목록(공급자별 첫 항목이 그 공급자의 기본). 값은 예시다.",
+      "response": {
+        "providers": {
+          "gemini": [
+            {
+              "id": "vendor-a/fast-model",
+              "label": "Fast Model",
+              "provider": "gemini"
+            }
+          ],
+          "chatgpt": [
+            {
+              "id": "vendor-b/large-model",
+              "label": "Large Model",
+              "provider": "chatgpt"
+            }
+          ],
+          "grok": [],
+          "claude": []
+        },
+        "translate_model": "vendor-b/large-model",
+        "tag_studio": []
+      }
+    }
   }
 }

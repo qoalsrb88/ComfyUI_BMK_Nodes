@@ -60358,6 +60358,27 @@ def ux_v2a_entry_unit():
           "V2E --web-dir 는 개발 모드에서만·board.html 이 있는 폴더만")
 
 
+def ux_v2a_dev_unit():
+    """UX v2-A 가짜 Forge 의 프롬프트 API 흉내 + Forge 호출 창구(명세 §1.1·D511–D512). --quick 포함."""
+    section("UX v2-A — 가짜 Forge 프롬프트 API · 호출 창구 (ux_v2a_dev_unit)")
+
+
+def ux_v2a_submit_unit():
+    """UX v2-A 유료 제출 공용 모듈 DPSubmit + 무료 반영 요약(명세 D523–D525). --quick 포함."""
+    section("UX v2-A — 공용 모듈 DPSubmit · 반영 요약 (ux_v2a_submit_unit)")
+
+
+def ux_v2a_spec_unit():
+    """UX v2-A 지시문 저장 GET·POST /spec + 본문 경로의 프롬프트·생성 조건 키(명세 D495–D509). --quick 포함."""
+    section("UX v2-A — 지시문 저장 · 프롬프트 재료 (ux_v2a_spec_unit)")
+
+
+def ux_v2a_assist_unit():
+    """UX v2-A Forge 프롬프트 브릿지 POST /prompt/assist(명세 D510–D522). --quick 포함."""
+    section("UX v2-A — 프롬프트 브릿지 (ux_v2a_assist_unit)")
+
+
+
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -72544,6 +72565,14 @@ if __name__ == "__main__":
         forge_import1_js_unit()
     if want("ux_v2a_entry_unit"):
         ux_v2a_entry_unit()
+    if want("ux_v2a_dev_unit"):
+        ux_v2a_dev_unit()
+    if want("ux_v2a_submit_unit"):
+        ux_v2a_submit_unit()
+    if want("ux_v2a_spec_unit"):
+        ux_v2a_spec_unit()
+    if want("ux_v2a_assist_unit"):
+        ux_v2a_assist_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
