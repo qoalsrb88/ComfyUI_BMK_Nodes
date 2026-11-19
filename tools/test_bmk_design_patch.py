@@ -61304,7 +61304,7 @@ def forge_models_unit():
     row = dpm.describe("ideogram-4.5", catalog, checked=True)
     check(row == {"name": "ideogram-4.5", "label": "Ideogram 4.5", "kind": "ideogram", "available": True, "why": None,
                   "qualities": ["low", "medium", "high"], "default_quality": "high", "opts": {}, "opt_defaults": {},
-                  "ratios": [], "ratio_tolerance": None, "family": None, "fallback": None, "max_inputs": 5, "max_n": 8,
+                  "ratios": [], "ratio_sizes": {}, "ratio_tolerance": None, "family": None, "fallback": None, "max_inputs": 5, "max_n": 8,
                   "fan_out": False}, f"FM7 화면용 모델 한 줄 {row}")
     row = dpm.describe("seedream-5.5", gone, checked=True)
     check(row["available"] is False and row["why"] and row["qualities"] == [] and row["default_quality"] is None and row["fan_out"] is True
@@ -61344,13 +61344,17 @@ def forge_models2_unit():
               f"FN1 품질은 고정값·장마다 따로 부르는 모델의 부하 상한 {name}")
     check(all(abs((a / b) / (int(label.split(":")[0]) / int(label.split(":")[1])) - 1) < 0.011 for label, (a, b) in dpm.RATIO_SIZES.items()),
           "FN1 예상 크기의 비율은 이름의 비율과 1.1% 안")
+    check(all(dpm.match_ratio(name, a * k, b * k) == label for name in names for label, (a, b) in dpm.RATIO_SIZES.items() for k in (1, 2, 4)),
+          "FN1 예상 크기 그대로의 크롭은 그 비율과 맞는다")
 
     # ── 비율 맞춤 ──
-    for (w, h), want_match, want_near in (((1000, 1000), "1:1", "1:1"), ((800, 1000), "4:5", "4:5"), ((807, 1000), "4:5", "4:5"),
-                                          ((809, 1000), None, "4:5"), ((793, 1000), "4:5", "4:5"), ((791, 1000), None, "4:5"),
-                                          ((1920, 1080), "16:9", "16:9"), ((2100, 900), "21:9", "21:9"), ((900, 2100), None, "9:16"),
-                                          ((300, 900), None, "9:16"), ((3000, 300), None, "21:9"), ((750, 1000), "3:4", "3:4"),
-                                          ((770, 1000), None, "3:4"), ((776, 1000), None, "4:5"), ((1, 1), "1:1", "1:1")):
+    # 맞춤의 기준은 이름의 비율이 아니라 예상 출력 크기의 비율이다: 4:5 = 928/1152 = 0.80556 · 21:9 = 1584/672 = 2.35714
+    for (w, h), want_match, want_near in (((1000, 1000), "1:1", "1:1"), ((800, 1000), "4:5", "4:5"), ((813, 1000), "4:5", "4:5"),
+                                          ((815, 1000), None, "4:5"), ((798, 1000), "4:5", "4:5"), ((796, 1000), None, "4:5"),
+                                          ((1920, 1080), "16:9", "16:9"), ((2122, 900), "21:9", "21:9"), ((2100, 900), None, "21:9"),
+                                          ((900, 2100), None, "9:16"), ((300, 900), None, "9:16"), ((3000, 300), None, "21:9"),
+                                          ((750, 1000), "3:4", "3:4"), ((770, 1000), None, "3:4"), ((780, 1000), None, "4:5"),
+                                          ((815, 1012), "4:5", "4:5"), ((503, 900), "9:16", "9:16"), ((1, 1), "1:1", "1:1")):
         got = (dpm.match_ratio("nano-banana-2.1", w, h), dpm.nearest_ratio("nano-banana-2.1", w, h))
         check(got == (want_match, want_near), f"FN2 비율 맞춤 {w}x{h} → {got} (기대 {want_match}, {want_near})")
     check(dpm.match_ratio("seedream-5.5", 800, 1000) is None and dpm.nearest_ratio("gpt-image-2.6-sunburst", 800, 1000) is None
@@ -61365,7 +61369,7 @@ def forge_models2_unit():
           == {"image_size": "4K", "thinking_level": "high", "aspect_ratio": "4:5"}
           and dpm.job_opts("nano-banana-2", {"image_size": "8K", "thinking_level": "medium"}) == {"image_size": "2K", "thinking_level": "minimal"}
           and dpm.job_opts("nano-banana-pro", {"thinking_level": "high", "image_size": 2}) == {"image_size": "2K"}
-          and "aspect_ratio" not in dpm.job_opts("nano-banana-2.1", None, src=(809, 1000))
+          and "aspect_ratio" not in dpm.job_opts("nano-banana-2.1", None, src=(815, 1000))
           and dpm.job_opts("nano-banana-2.1", {"aspect_ratio": "1:1"}) == {"image_size": "2K", "thinking_level": "medium"},
           "FN3 선택지 밖 값은 그 모델의 기본값으로, 비율은 크롭에서만 정해진다(받은 값을 믿지 않음)")
     good = dpm.job_opts("nano-banana-2.1", None, src=(800, 1000))
@@ -61387,13 +61391,14 @@ def forge_models2_unit():
 
     # ── 예상 크기 ──
     for name in names:
-        for w, h in ((1000, 1000), (800, 1000), (1920, 1080), (640, 480), (2100, 900), (512, 768)):
+        for w, h in ((1000, 1000), (800, 1000), (1920, 1080), (640, 480), (2122, 900), (512, 768)):
             for tier, mult in dpm.IMAGE_SIZES.items():
                 W, H, info = dpm.output_size(name, w, h, "user_k", {"image_size": tier})
                 ratio = dpm.match_ratio(name, w, h)
                 check(ratio is not None and (W, H) == tuple(side * mult for side in dpm.RATIO_SIZES[ratio]) and info["ratio"] == ratio
                       and info["nearest"] == ratio and info["image_size"] == tier and info["method"] == "ratio" and info["src"] == [w, h]
-                      and info["pixels"] == W * H and info["model"] == name and "problem" not in info and abs(info["aspect_err"]) <= 0.02
+                      and info["pixels"] == W * H and info["model"] == name and "problem" not in info
+                      and abs(info["aspect_err"]) <= dpm.RATIO_TOLERANCE + 1e-9
                       and dpm.size_problem(name, [W, H]) is None and not dpm.ratio_off([W, H], [W // 2, H // 2]),
                       f"FN4 예상 크기 {name} {w}x{h} {tier} → {W}x{H}")
     W, H, info = dpm.output_size("nano-banana-2.1", 815, 1000)
@@ -61415,6 +61420,9 @@ def forge_models2_unit():
             key("nano-banana-2", good), key("nano-banana-2.1", None)}
     check(len(keys) == 6 and key("nano-banana-2.1", good) == key("nano-banana-2.1", dict(reversed(list(good.items())))),
           "FN5 해상도·추론·비율·모델이 다르면 다른 키, 이름 순서와 무관")
+    pinned = key("nano-banana-2.1", good)
+    check(good == {"image_size": "2K", "thinking_level": "medium", "aspect_ratio": "4:5"} and pinned == "45d3aca0d5a4c115b323d552",
+          f"FN5 나노바나나 생성 조건 키 고정값(예상 크기 표·옵션 이름이 키의 재료다 — 바뀌면 같은 요청이 다시 과금 대상) {pinned}")
 
     # ── 계열 대체·화면용 한 줄 ──
     catalog = {row.get("checkpoint") or row.get("id"): row.get("max_input_images") for row in spec["catalog"]["response"]["models"]}
@@ -61432,7 +61440,8 @@ def forge_models2_unit():
     check(row == {"name": "nano-banana-2.1", "label": "나노바나나 2.1", "kind": "gemini", "available": False, "why": row["why"],
                   "qualities": [], "default_quality": None,
                   "opts": {"image_size": ["1K", "2K", "4K"], "thinking_level": ["minimal", "medium", "high"]},
-                  "opt_defaults": {"image_size": "2K", "thinking_level": "medium"}, "ratios": list(dpm.RATIOS), "ratio_tolerance": 0.01,
+                  "opt_defaults": {"image_size": "2K", "thinking_level": "medium"}, "ratios": list(dpm.RATIOS),
+                  "ratio_sizes": {k: list(v) for k, v in dpm.RATIO_SIZES.items()}, "ratio_tolerance": 0.01,
                   "family": "nano-banana",
                   "fallback": "nano-banana-2", "max_inputs": 14, "max_n": 8, "fan_out": True} and "Forge 에 없습니다" in row["why"],
           f"FN6 화면용 한 줄(빠진 모델 — 대체 모델 이름) {row}")
