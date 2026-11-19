@@ -49980,7 +49980,7 @@ def forge_f2_session_unit():
         async with serving(http, forge=False) as (app, call):
             response, value = await call(bd.API + "/env")
             legacy = {"server_mode": True, "session": False, "account": None, "session_url": "/api/session", "prefs_url": "/api/preferences",
-                      "caps": {name: name in (*srv.SERVER_CAPS, "v2_crop_model") for name in bd.LOCAL_CAPS}, "backend": "mock"}
+                      "caps": {name: name in srv.SERVER_CAPS for name in bd.LOCAL_CAPS}, "backend": "mock"}
             legacy = _env_ui_v2(legacy, bd)  # 키 순서는 그대로 — 아래의 바이트 비교도 같은 순서로 본다
             check(value == legacy and responses[-1].startswith(json.dumps(legacy)), "F2S Forge 없는 env 기존 바이트")
             response, _ = await call("/api/session/token", "POST", {})
@@ -60349,8 +60349,8 @@ def ux_v2a_entry_unit():
         async with serve(plain) as client:
             r = await client.get(bd.API + "/env")
             caps = (await r.json())["caps"]
-            check({n: caps[n] for n in bd.V2_CAPS} == {n: n in ("v2_spec_edit", "v2_auto_prepare", "v2_crop_model") for n in bd.V2_CAPS},
-                  f"V2E v2 파일 없음 → ui_v2 false · 지시문 저장·자동 반영·패치별 모델 true: {caps}")
+            check({n: caps[n] for n in bd.V2_CAPS} == {n: n in ("v2_spec_edit", "v2_auto_prepare") for n in bd.V2_CAPS},
+                  f"V2E v2 파일 없음 → ui_v2 false · 지시문 저장·자동 반영만 true: {caps}")
             check(srv.SERVER_CAPS == ("jobs", "export_download", "v2_spec_edit", "v2_auto_prepare"), "V2E 서버 모드에서 늘 열린 기능")
             for url in ("/board/", "/board/?ui=v2", "/board/?ui=v2&root=abc", "/board/?ui=V2", "/board/?ui="):
                 r = await client.get(bd.API + url)
@@ -60372,7 +60372,7 @@ def ux_v2a_entry_unit():
             r = await client.get(bd.API + "/env")
             body = await r.json()
             check(body["caps"]["ui_v2"] is True, "V2E v2.html 있음 → caps.ui_v2 true")
-            check(all(body["caps"][n] is False for n in ("v2_postprocess", "v2_psd_reimport", "v2_forge_prompt")),
+            check(all(body["caps"][n] is False for n in ("v2_crop_model", "v2_postprocess", "v2_psd_reimport", "v2_forge_prompt")),
                   "V2E 아직 없는 기능·Forge 연결 없는 서버의 프롬프트 작성 플래그는 false")
             check(body["caps"]["v2_spec_edit"] is True and body["caps"]["v2_auto_prepare"] is True, "V2E 서버 모드는 지시문 저장·자동 반영이 늘 true")
             r = await client.get(bd.API + "/board/?ui=v2&root=abc")
@@ -63006,8 +63006,126 @@ def ux_v2b_route_unit():
     def by_id(view):
         return {row["crop_id"]: row for row in view["crops"]}
 
+    async def review_cases(app):
+        second = dict(_fj_scope(out / "second"), account="b", org="org2")
+        token = bd.set_scope(second)
+        try:
+            _, root, ids = _v2b_project(dp, second["input"], "review", project)
+            prepare = _v2b_args(pl, project)
+            pl.update(root, 0, "prepare", prepare)
+        finally:
+            bd.reset_scope(token)
+        square, manual, wide, ai = (ids[name] for name, _ in V2B_RECTS)
+        root_key = store.root_key(root)
+        path = Path(root, store.CROP_GEN_NAME)
+
+        async def get():
+            return await call(app, "GET", "/crop_gen?root=" + root_key, account=second)
+
+        async def post(seen, *changes, status=200):
+            data = {"root": root_key, "seen": seen, "changes": changes}
+            return await call(app, "POST", "/crop_gen", data, account=second, status=status)
+
+        catalog_key = (second["org"], second["account"])
+        with patch.object(backend, "cached_catalog", wraps=backend.cached_catalog) as cached:
+            second_view = await get()
+            check(bd.current_scope() == scope and square in by_id(second_view) and cached.call_count == 1
+                  and cached.call_args.args == (catalog_key,), "V2BR 둘째 계정 요청의 스레드에서 둘째 목록 조회")
+
+        # 두 AI 작성본의 스펙은 한 판으로 읽고, 해시와 렌더는 그 판의 잠금을 놓고 계산한다.
+        Path(root, "specs", square + ".json").write_bytes(Path(root, "specs", ai + ".json").read_bytes())
+        cropgen = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_cropgen")
+        original_lock = bd.store.manifest_lock
+        depth = 0
+
+        @contextlib.contextmanager
+        def tracked_lock(folder):
+            nonlocal depth
+            with original_lock(folder):
+                depth += 1
+                try:
+                    yield
+                finally:
+                    depth -= 1
+
+        for label in ("GET", "POST", "409"):
+            calls = {}
+            def observe(module, name):
+                original = getattr(module, name)
+                def tracked(*args, **kwargs):
+                    calls.setdefault(name, []).append(depth > 0)
+                    return original(*args, **kwargs)
+                return patch.object(module, name, tracked)
+
+            with contextlib.ExitStack() as patches:
+                patches.enter_context(patch.object(bd.store, "manifest_lock", tracked_lock))
+                for module, name in ((bd.store, "project_glossary"), (bd._vlm(), "_load_spec"),
+                                     (cropgen.dprompt, "v2_roles"), (cropgen.dprompt, "render")):
+                    patches.enter_context(observe(module, name))
+                if label == "GET":
+                    await get()
+                else:
+                    await post(0, change([manual], count=1), status=409 if label == "409" else 200)
+            check(calls.get("project_glossary") == [True], f"V2BR {label} 용어집 한 번 읽기")
+            check(calls.get("_load_spec") and all(calls["_load_spec"]), f"V2BR {label} 스펙 내용은 잠금 안에서 읽기")
+            check(all(calls.get(name) == [False, False] for name in ("v2_roles", "render")),
+                  f"V2BR {label} 두 작성본의 해시·렌더는 잠금 밖")
+
+        before = path.read_bytes()
+        for fields, bad_key in (({"model_id": []}, "model_id"), ({"model_id": {}}, "model_id"),
+                                ({"model_id": gpt, "quality": {}}, "quality"), ({"model_id": nano, "opts": []}, "opts"),
+                                ({"model_id": nano, "opts": "2K"}, "opts"), ({"model_id": nano, "opts": {"image_size": ["2K"]}}, "opts"),
+                                ({"model_id": gpt, "complexity": []}, "complexity"),
+                                ({"count": 0}, "count"), ({"count": -1}, "count"), ({"count": 10**30}, "count")):
+            bad = await post(1, change([square], **fields), status=400)
+            check([(r["crop_id"], r["key"]) for r in bad["rejected"]] == [(square, bad_key)] and path.read_bytes() == before,
+                  f"V2BR 잘못된 타입·범위 거절과 파일 보존 {fields}")
+        boundary = [change([f"absent_{i}_{j}" for j in range(10)], count=1) for i in range(20)]
+        missing = await post(1, *boundary, status=404)
+        check(missing["crop_id"] == "absent_0_0" and path.read_bytes() == before, "V2BR 변경 20개·대상 200개 형식 통과")
+
+        remembered = {models.get(project).checkpoint: 4}
+        with patch.dict(backend._CATALOG, {catalog_key: (time.monotonic(), remembered)}), patch.dict(backend._CATALOG_FAILED):
+            backend.mark_catalog_failed(catalog_key)
+            saved = await post(1, change([square, wide], model_id=nano))
+            check(saved["changed"] and saved["seen"] == 2 and by_id(saved)[square]["available"],
+                  "V2BR 목록 실패 표지가 있으면 옛 목록에서 빠진 모델도 저장")
+
+        m = store.load_manifest(root)
+        opts = by_id(saved)[square]["effective"]["opts"]
+        job = {"model": nano, "quality": models.FIXED_QUALITY, "n": prepare["n"]}
+        m.update(prepare_settings=prepare, jobs=[dict(job, crop_id=square, opts=dict(opts, aspect_ratio="1:1")),
+                                                 dict(job, crop_id=wide, opts=opts)])
+        store.save_manifest(root, m)
+        layout = store.layout_from_manifest(m)
+        layout_path = str(Path(root, store.LAYOUT_NAME))
+        store.write_json_atomic(layout_path, layout)
+        rows = by_id(await get())
+        check(rows[square]["ratio"]["matched"] == "1:1" and rows[square]["applied"], "V2BR 같은 사각형의 작업 비율 일치")
+        check(rows[wide]["ratio"]["matched"] is None and rows[wide]["applied"], "V2BR 비율을 맞출 수 없는 사각형과 비율 키 없는 작업")
+        next(c for c in layout["crops"] if c["id"] == square)["rect"] = [0, 0, 192, 344]
+        store.write_json_atomic(layout_path, layout)
+        moved = by_id(await get())[square]
+        check(moved["ratio"]["matched"] == "9:16" and not moved["applied"], "V2BR 작업 1:1에서 레이아웃 9:16 변경")
+
+        invalid = {manual: {"model": ["x"]}, ai: {"model": nano, "opts": {"image_size": {}}}}
+        _, rev, _ = store.update_crop_gen(root, lambda entries: entries.update(invalid), expect_rev=2)
+        rows = by_id(await get())
+        check({cid for cid, r in rows.items() if r["error"]} == set(invalid)
+              and all(rows[cid]["effective"] is None for cid in invalid), "V2BR 저장된 모델·옵션 타입 오류의 행 격리")
+        repaired = await post(rev, change(list(invalid), count=3))
+        check(all(by_id(repaired)[cid]["error"] is None and store.crop_gen_entries(root)[cid] == {"n": 3} for cid in invalid),
+              "V2BR 잘못된 모델·옵션 항목 다시 저장")
+        _, rev, _ = store.update_crop_gen(root, lambda entries: entries.update({manual: {"n": True}}), expect_rev=repaired["seen"])
+        repaired = await post(rev, change([manual], count=1))
+        disk = json.loads(path.read_bytes())
+        count = disk["crops"][manual]["n"]
+        check(repaired["changed"] and repaired["seen"] == disk["rev"] == rev + 1 and type(count) is int and count == 1
+              and type(by_id(repaired)[manual]["gen"]["n"]) is int, "V2BR 불리언 장 수를 정수 1로 복구·파일과 판 갱신")
+
     async def run():
-        async with serve(forge=forge.ForgeConfig("https://forge.example", media_origins=("https://media.example",))) as app:
+        async with serve(crop_model=True, forge=forge.ForgeConfig("https://forge.example", media_origins=("https://media.example",))) as app:
+            await review_cases(app)
             _, root, ids = _v2b_project(dp, scope["input"], "patches", project)
             square, manual, wide, ai = (ids[name] for name, _ in V2B_RECTS)
             prepare = _v2b_args(pl, project)
@@ -63167,14 +63285,15 @@ def ux_v2b_route_unit():
             path.write_bytes(b"{")
             for broken_response in (await get(status=422), await post(8, clear, status=422)):
                 check(broken_response["error"] and root not in str(broken_response) and path.read_bytes() == b"{", "V2BR 깨진 파일 보존·경로 가림")
-        async with serve() as app:
+        async with serve(crop_model=True) as app:
             check((await call(app, "GET", "/env"))["caps"]["v2_crop_model"] is True, "V2BR Forge 연결 없는 서버 플래그")
+        async with serve() as app:
             expected_env = _env_ui_v2(_server_api()["env_server_no_session"]["response"], bd)
             check(await call(app, "GET", "/env", account=None) == expected_env, "V2BR 세션 없는 mock 서버의 env 정본")
-        async with serve(crop_model=False) as app:
-            check((await call(app, "GET", "/env"))["caps"]["v2_crop_model"] is False, "V2BR 꺼진 서버 플래그")
+            check((await call(app, "GET", "/env"))["caps"]["v2_crop_model"] is False, "V2BR 서버 기본 플래그 꺼짐")
             for method in ("GET", "POST"):
-                await call(app, method, "/crop_gen", status=404)
+                match = await app.router.resolve(make_mocked_request(method, bd.API + "/crop_gen", app=app))
+                check(getattr(match.http_exception, "status", None) == 404, f"V2BR 기본 서버 {method} 라우트 미등록 404")
         check(bd.LOCAL_CAPS["v2_crop_model"] is False and all(p != bd.API + "/crop_gen" for _, p, _ in bd._ROUTES),
               "V2BR 로컬판 플래그·라우트")
         check(not transport.called, "V2BR 조회·저장 전체 Forge 전송 0회")

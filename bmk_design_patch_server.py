@@ -644,7 +644,7 @@ class ServerConfig:
     trusted_proxies: tuple = ()                # 주소·CIDR. 오른쪽부터 신뢰한 프록시를 건너뛴다
     forge: object | None = None                # bmk_design_patch_forge.ForgeConfig — 있으면 실제 검증기·Forge 생성 백엔드(F2), 없으면 F1 그대로(mock)
     assist_model: str | None = None
-    crop_model: bool = True                    # 패치별 생성 모델·장 수 설정
+    crop_model: bool = False                   # 새 화면이 /crop_gen 계약에 맞춘 뒤 켠다.
 
 
 class DevVerifier:
@@ -1169,7 +1169,7 @@ def main(argv=None) -> int:
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--forge-api")
     parser.add_argument("--assist-model")
-    parser.add_argument("--no-crop-model", action="store_true")
+    parser.add_argument("--crop-model", action="store_true")
     parser.add_argument("--forge-media-origin", action="append")
     parser.add_argument("--forge-access-key", action="append")
     parser.add_argument("--forge-concurrency", type=int)
@@ -1205,7 +1205,7 @@ def main(argv=None) -> int:
                           parent_origins=tuple(dict.fromkeys(parents)), allowed_hosts=tuple(args.allowed_host),
                           dev_handoff=args.dev_handoff, dev_parent_port=args.dev_parent_port,
                           cookie_samesite=args.cookie_samesite, workers=args.workers, trusted_proxies=tuple(args.trusted_proxy),
-                          forge=forge_config, assist_model=args.assist_model, crop_model=not args.no_crop_model)
+                          forge=forge_config, assist_model=args.assist_model, crop_model=args.crop_model)
     try:
         config = _validate_config(config)
     except ValueError as e:
