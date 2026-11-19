@@ -1987,6 +1987,7 @@ class BMKDesignPatchPrepare:
             spec = dprompt.spec_from_manifest(crop, None, refs_dir, glossary, ov)
             v2 = dprompt.v2_of(ov)
             input_roles = dprompt.v2_roles(spec, root) if v2 is not None else None
+            input_layout = dprompt.v2_layout(spec) if v2 is not None else None
             if "ref_style" not in ov:
                 spec["ref_style"] = ref_style
             sha_of: dict[str, str] = {}
@@ -2052,6 +2053,9 @@ class BMKDesignPatchPrepare:
             rendered_body = None
             if v2 is not None:
                 state = dprompt.v2_state(v2, model, input_roles, len(dprompt.render(spec)["images"]))
+                if state["state"] == "body" and dprompt.v2_layout(spec) != input_layout:
+                    # 그림 수가 같아도 자리마다 맡은 역할이 달라졌으면(한쪽이 갈라지고 다른 쪽이 합쳐짐) 글의 @imageN 이 다른 그림이다
+                    state = {"state": "blocked", "why": dprompt.IMAGES_MOVED}
                 if state["state"] == "body":
                     try:
                         rendered_body = dprompt.render_body(spec, state["body"])

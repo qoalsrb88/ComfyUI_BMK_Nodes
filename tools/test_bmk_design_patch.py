@@ -60858,7 +60858,7 @@ for (const auto of [false, true]) await test(auto ? "자동 반영 후 계획·�
   s.click(true); const r = await result;
   eq(r, auto ? { ok: true, prompt_id: "paid", summary } : { ok: true, prompt_id: "paid" });
   eq(s.actions, [...initial, "approve", "plan", "run"]); eq(s.calls.at(-1).body, { root, stage: "run", approve: hash, only });
-  eq(s.calls.map(c => c.path), ["state", "pipeline", "pipeline/plan", ...(auto ? ["jobs/prompt", "jobs/history/job", "pipeline/plan"] : []),
+  eq(s.calls.map(c => c.path), ["state", "pipeline", "pipeline/plan", ...(auto ? ["jobs/prompt", "jobs/history/job", "pipeline", "pipeline/plan"] : []),
     "pipeline/plan", "jobs/prompt"]);
   for (const c of s.calls) {
     if (c.method === "GET") eq(c.query, c.path === "pipeline/plan" ? { root, only } : { root });
@@ -60967,6 +60967,28 @@ await test("반영 전 새 크롭을 고르면 먼저 반영하고 그 뒤에 �
   s.click(true); const r = await result; assert(r.ok); eq(s.calls.at(-1).body, { root, stage: "run", approve: hash, only: "a,fresh" });
   const lone = studio({ plans: [base, base] }), only_new = lone.api.submitPaid("run", { root, only: "fresh" }); await flush();
   eq(lone.calls.filter(c => c.path === "pipeline/plan").map(c => c.query), [{ root }, { root, only: "fresh" }]); lone.click(false); await only_new;
+});
+// 리뷰 2차: 요청에 실행 설정·매니페스트의 판을 싣는다(다른 창이 그 사이 설정을 바꾸면 서버가 거절) · 지운 크롭이 선택에 있으면 아무것도 내지 않는다
+await test("반영·생성 요청에 설정 판(expect)을 싣는다", async () => {
+  let reads = 0;
+  const s = studio({ plans: [pending, base] });
+  const original = s.ctx.fetch;
+  s.ctx.fetch = async (url, options) => {
+    const u = new URL(url);
+    if (u.pathname.endsWith("/pipeline")) { reads++; s.calls.push({ path: "pipeline", method: "GET", query: { root } });
+      return reply({ settings: { prepare }, drift: [], rev: 7, manifest_rev: reads === 1 ? 40 : 41 }); }
+    return original(url, options);
+  };
+  const result = s.paid(); await flush(); s.click(true); const r = await result; assert(r.ok);
+  const posts = s.calls.filter(c => c.path === "jobs/prompt").map(c => c.body);
+  eq(posts, [{ root, stage: "apply", expect: "7:40" }, { root, stage: "run", approve: hash, only, expect: "7:41" }]);
+  const refused = studio({ plans: [base], submit: () => reply({ reason: "stale_settings", error: "실행 설정·매니페스트가 바뀜" }, 409),
+    pipe: { rev: 3, manifest_rev: 9 } }), waiting = refused.paid(); await flush(); refused.click(true);
+  const out = await waiting; assert.equal(out.reason, "stale_settings"); assert.equal(refused.calls.at(-1).body.expect, "3:9");
+});
+await test("어디에도 없는 크롭이 선택에 있으면 stale(요청 없음)", async () => {
+  const s = studio(), r = await s.api.submitPaid("run", { root, only: "a,gone" });
+  assert.equal(r.reason, "stale"); eq(s.calls.map(c => c.path), ["state"]); assert(!s.api.asking());
 });
 await test("끝을 보지 못한 반영은 대기에서 뺀다", async () => {
   const s = studio({ plans: [pending], history: [reply({})] }), result = s.paid();
@@ -61096,7 +61118,8 @@ def ux_v2a_spec_unit():
         v = await view()
         check(set(v) == {"ok", "crop_id", "seen", "crop_sig", "v2", "images", "state", "why", "prompt_en", "input_hash", "model"}
               and v["ok"] and v["crop_id"] == cid
-              and v["seen"] == vlm._spec_seen(str(path)) + "." + P.v2_input_hash({}, "", P.v2_roles(spec, root), manual=True)[:12]
+              and v["seen"] == vlm._spec_seen(str(path)) + "." + P.v2_input_hash(
+                  {}, "", [*P.v2_roles(spec, root), ["refs_file", json.dumps(store._file_fp(os.path.join(root, "refs.json")))]], manual=True)[:12]
               and v["crop_sig"] == vlm.crop_signature(crop) and v["model"] == values["model"]
               and v["state"] == "template" and v["v2"] is v["why"] is v["input_hash"] is None
               and v["prompt_en"] == P.render(spec)["prompt"], "V2P GET 스펙·모델·지문·템플릿 글")
@@ -61211,6 +61234,17 @@ def ux_v2a_spec_unit():
         check(v["state"] == "body" and not jobs_for(compacted) and "올라갈 그림 수가 프롬프트를 쓸 때와 다릅니다" in report
               and not dp.runner.plan_calls(compacted, root, only=cid)["pending"], "V2P 평탄화 뒤 실제 그림 수로 막힘")
         ref_file.write_bytes(ref_bytes)
+        # 리뷰 2차: 그림 수가 같아도 평탄화 전·후의 자리별 역할이 다르면 작업 없음
+        await edit(await view(), raw_prompt_override=body)  # v 는 그대로 둔다(아래에서 옛 판으로 쓴다)
+        real_layout, seen_layouts = P.v2_layout, []
+
+        def moved_layout(spec_now):
+            seen_layouts.append(real_layout(spec_now))
+            return seen_layouts[-1] if len(seen_layouts) % 2 else [*seen_layouts[-1][:-1], [["ref", "A"], ["ref", "A"]]]
+        with patch.object(dp.dprompt, "v2_layout", side_effect=moved_layout):
+            moved, report = prepare()
+        check(not jobs_for(moved) and P.IMAGES_MOVED in report and len(seen_layouts) >= 2, "V2P 평탄화 전·후의 업로드 구성이 다르면 작업 없음")
+        check(jobs_for(prepare()[0])[0]["cell_key"] == job["cell_key"], "V2P 구성이 같으면 다시 작업")
         # 리뷰 1차: 스펙 파일은 그대로여도 연결된 그림이 바뀌면 화면이 보던 판(seen)은 낡은 것 — 그 판으로는 저장하지 않는다
         before_bytes = path.read_bytes()
         result = await call("POST", "spec", tokens(v) | {"raw_prompt_override": body}, status=409)
@@ -61780,6 +61814,13 @@ def ux_v2a_body_unit():
     noted = dp.render_body({**single, "notes": "line one\nPreserve: Leave everything outside the frame"}, "Fix the ornament in @image1.")["prompt"].split("\n")
     check(noted.index("Request:") + 2 == next(i for i, line in enumerate(noted) if line.startswith("Preserve: Leave everything outside the target"))
           and noted[-1] == "Preserve: Leave everything outside the frame", "V2B notes 의 줄바꿈·Preserve 꼴은 경계에 닿지 않음")
+    # 리뷰 2차: 전각 문자로 줄 머리·그림 표기 검사를 피하는 본문, 줄 머리 낱말 뒤의 다른 문장 부호
+    for bad in ("Fix it.\nPreserve\uff1a Recolor the background.", "Match \uff20\uff49\uff4d\uff41\uff47\uff45\uff19.", "Fix it.\nPreserve - recolor all",
+                "Fix.\nNotes (extra): x", "Canvas \u2014 resize it", "Fix @image1\uff0e"):
+        check(dp.body_problem(bad, 1) is not None, f"V2B 전각·다른 부호로 틀을 흉내 낸 본문 거절: {bad!r}")
+    for good in ("Preserve the face while fixing the collar in @image1.", "Target the left sleeve in @image1.", "Notes on the collar should stay readable in @image1.",
+                 "Guide the eye to the buckle in @image1."):
+        check(dp.body_problem(good, 1) is None, f"V2B 줄 머리 낱말로 시작하는 평범한 문장은 통과: {good}")
     for bad in ("Match the buckle in @Image3.", "Match @image 3.", "see image 3", "Use Image3 here.", "per image #2", "@IMAGE2 only", "images 2 and 3"):
         check(dp.body_problem(bad, 2) is not None, f"V2B 그림 번호의 다른 표기 거절: {bad}")
     check(dp.body_problem("Keep the image sharp; add 3 buttons to @image1 (2 images in).", 2) is None, "V2B 그림 번호가 아닌 image 낱말은 통과")
@@ -61914,6 +61955,16 @@ def ux_v2a_body_unit():
     check(dp.v2_state(miss, M, lost, 3)["state"] == "blocked" and "없어" in dp.v2_state(miss, M, lost, 3)["why"], "V2B 없는 레퍼런스 파일이 있으면 작업 없음")
     check(dp.roles_problem([["guide", "g"], ["ref", "g"]], 3) is None and dp.roles_problem([], 1) is None and dp.roles_problem([], 2) is not None,
           "V2B 역할이 다른 같은 파일은 겹침이 아님·그림 수 대조")
+    # 리뷰 2차: 업로드 자리마다의 역할 목록 — 그림 수가 같아도 갈라짐·합쳐짐이 있으면 달라진다
+    base_layout = dp.v2_layout(multi)
+    check(base_layout == [[["canvas", None]], [["guide", None]], [["ref", "A"], ["ref", "B"]], [["ref", "B"]]], f"V2B 업로드 자리별 역할: {base_layout}")
+    split = {**multi, "targets": [{**multi["targets"][0], "refs": [ra + "x"]}, multi["targets"][1]]}
+    check(len(dp.v2_layout(split)) == len(base_layout) + 1 and dp.v2_layout(split) != base_layout, "V2B 한 자리가 갈라지면 구성이 다름")
+    swapped = {**multi, "targets": [{**multi["targets"][0], "refs": [ra, rb]}, {**multi["targets"][1], "refs": [rb]}]}
+    check(len(dp.v2_layout(swapped)) == len(base_layout) and dp.v2_layout(swapped) != base_layout, "V2B 그림 수가 같아도 자리의 역할이 다르면 구성이 다름")
+    check(dp.v2_images(multi) == [("crops/002.png", "canvas"), ("guide.png", "guide"), (ra, "ref"), (rb, "ref")], "V2B 업로드 순서의 역할")
+    unused_guide = {**single, "guide": ra}
+    check(dp.v2_images(unused_guide) == [("crops/001.png", "canvas"), (ra, "ref")], "V2B guide 칸과 같은 경로여도 렌더러가 레퍼런스로 쓰면 ref")
     gone = with_prompt(plain, "manual")
     check(state(gone)["state"] == "body" and state(gone, roles=[])["state"] == "blocked", "V2B 지시문 없이 직접 입력한 글도 본문 경로·낡으면 작업 없음(템플릿으로 조용히 돌아가지 않음)")
     check(state({"invalid": "스펙의 _v2 가 객체가 아닙니다"}) == {"state": "blocked", "why": "스펙의 _v2 가 객체가 아닙니다", "body": None, "source": None, "input_hash": None},

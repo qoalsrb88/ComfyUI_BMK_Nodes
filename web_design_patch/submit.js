@@ -184,8 +184,14 @@ window.DPSubmit = (() => {
       if (nameError) return failed("unnamed", nameError);
       // 아직 반영 전인 새 크롭이 선택에 있으면 계획 라우트는 그 id 를 모른다 — 먼저 반영한 뒤에 그 크롭까지 넣어 계획을 받는다.
       const known = new Set((state.crops || []).map((c) => c.id));
+      const added = new Set((state.layout_added || []).map((c) => c.id));
+      // 어디에도 없는 크롭(다른 창에서 지움 등)이 선택에 있으면 아무것도 내지 않는다 — 화면이 낡았다.
+      if ([...ids].some((id) => !known.has(id) && !added.has(id))) return failed("stale", "선택한 크롭이 지금 프로젝트에 없습니다 — 화면을 새로 고쳐 주세요");
       const fresh = [...ids].some((id) => !known.has(id));
-      const pipe = (await read("pipeline", { root })).data;
+      let pipe = (await read("pipeline", { root })).data;
+      // 요청에 실어 보내는 표지: 서버는 실행 설정·매니페스트가 이 판과 다르면 받지 않는다(다른 창이 그 사이 설정을 바꾼 경우).
+      const sigOf = (p) => (Number.isInteger(p?.rev) && Number.isInteger(p?.manifest_rev) ? `${p.rev}:${p.manifest_rev}` : undefined);
+      const stamped = (body, p) => (sigOf(p) ? { ...body, expect: sigOf(p) } : body);
       // 실행 설정이 마지막 반영과 다름(모델·장 수 같은 Prepare 설정, 가져오기 설정) — 계획의 apply_pending 에는 없지만 서버는 생성을 막는다.
       const drifted = (pipe?.drift || []).some((d) => d.section === "prepare" || d.kind === "import");
       const notes = (p) => (Array.isArray(p.notes) ? p.notes : []);
@@ -203,7 +209,7 @@ window.DPSubmit = (() => {
           ...notes(current), "계속할까요?"], [], "반영 확인")) {
           return failed("cancelled", "반영을 취소했습니다");
         }
-        const job = await post({ root, stage: "apply" });
+        const job = await post(stamped({ root, stage: "apply" }, pipe));
         if (!job.ok) return failed("apply_failed", `${job.reason} · ${job.error}`);
         const result = await wait(root, job.prompt_id);
         if (!result.done || !result.ok) {
@@ -216,6 +222,7 @@ window.DPSubmit = (() => {
           return { ...failed("apply_failed", detail || `무료 반영을 완료하지 못했습니다 (${result.reason || "작업 실패"})`), prompt_id: job.prompt_id };
         }
         summary = result.record.apply_summary;
+        pipe = (await read("pipeline", { root })).data;  // 반영으로 매니페스트가 바뀌었다 — 승인 상자의 모델·장 수와 제출 표지는 이 판으로
         current = await plan(root, only);
         bad = trouble(current);
         if (bad) return { ...bad, summary };
@@ -248,7 +255,8 @@ window.DPSubmit = (() => {
           || (latest.run.backend && latest.run.backend !== backend)) {
         return { ...failed("stale", "계획이 바뀌었습니다 — 다시 눌러 주세요"), summary };
       }
-      return { ...await post({ root, stage, approve: hash, only }), summary };
+      // 승인 상자가 보인 설정(pipe)과 같은 판일 때만 서버가 받는다 — 그 사이 모델·장 수가 바뀌었으면 409(stale_settings).
+      return { ...await post(stamped({ root, stage, approve: hash, only }, pipe)), summary };
     } catch (e) { return { ...failed("plan_error", e?.message || String(e)), summary }; }
     finally { paying = false; }
   }

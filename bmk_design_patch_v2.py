@@ -1,7 +1,9 @@
 """서버 모드의 크롭별 지시문 편집·프롬프트 미리보기."""
 
 import asyncio
+import json
 import ntpath
+import os
 from datetime import datetime, timezone
 
 try:
@@ -44,7 +46,10 @@ def _inputs(root, m, crop, ov):
 def _token(vlm, root, crop_id, roles):
     """화면이 본 판의 표지 = 스펙 파일 지문 + 레퍼런스 구성 지문. 스펙 파일이 그대로여도 연결된 그림이 바뀌면(다른 창의 레퍼런스 편집·
     반영) 화면이 보던 @imageN 이 다른 그림이 된다 — 그 판에서 쓴 글을 저장하지 않게 표지에 함께 넣는다."""
-    return vlm._spec_seen(vlm._spec_path(root, crop_id)) + "." + dprompt.v2_input_hash({}, "", roles, manual=True)[:12]
+    # 레퍼런스 연결 파일(refs.json)의 지문도 넣는다 — 연결을 바꿨지만 아직 반영 전이면 매니페스트의 구성은 그대로라 roles 만으로는 모른다.
+    linked = store._file_fp(os.path.join(root, store._REFS_FILE))
+    return (vlm._spec_seen(vlm._spec_path(root, crop_id)) + "."
+            + dprompt.v2_input_hash({}, "", [*roles, ["refs_file", json.dumps(linked)]], manual=True)[:12])
 
 
 def spec_view(root: str, crop_id: str) -> dict:
@@ -68,8 +73,7 @@ def spec_view(root: str, crop_id: str) -> dict:
         except ValueError as exc:
             state.update(state="blocked", why=str(exc))
     images = []
-    for i, path in enumerate(rendered["images"], 1):
-        role = next((k for k in ("canvas", "guide", "before_paste") if path == spec.get(k)), "ref")
+    for i, (path, role) in enumerate(dprompt.v2_images(spec), 1):
         images.append({"token": f"@image{i}", "role": role,
                        "label": crop["name"] if role == "canvas" else ntpath.basename(path)})
     return {"ok": True, "crop_id": crop_id, "seen": seen, "crop_sig": vlm.crop_signature(crop),
