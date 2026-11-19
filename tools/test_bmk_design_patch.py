@@ -131,6 +131,14 @@ SKIPS: list[str] = []
 MEASURED: list[str] = []
 
 
+def _env_ui_v2(expected: dict, bd) -> dict:
+    """env 계약 fixture 의 caps.ui_v2 는 「화면 폴더에 v2.html 이 없음」 기준(false)이다. 서버는 그 파일이 있으면 true 를 준다
+    (board.v2_available) — 그 한 칸만 지금 트리에 맞춘 사본을 돌려준다(새 화면 파일이 들어오기 전·후 모두 같은 시험이 통과하게)."""
+    out = copy.deepcopy(expected)
+    out["caps"]["ui_v2"] = os.path.isfile(os.path.join(bd.WEB_DIR, bd.V2_ENTRY))
+    return out
+
+
 def check(cond, msg):
     global PASSES
     if cond:
@@ -49858,7 +49866,7 @@ def forge_f2_session_unit():
             check(response.status == 200 and sessions.token_for("org1", "alice") == first
                   and sessions.access_at("org1", "alice") == now[0], "F2S 로그인 토큰 보관·권한 확인 시각")
             response, value = await call(bd.API + "/env", sid=sid)
-            expected_env = copy.deepcopy(api["env_server_forge"]["response"])
+            expected_env = _env_ui_v2(api["env_server_forge"]["response"], bd)
             expected_env["account"]["tag"] = tag
             expected_env["parent_origins"] = list(base.parent_origins)
             env_models = value["caps"].pop("models", None)  # 2단계: Forge 연결이 있는 서버의 env 에만 실린다(내용은 forge_models_backend_unit)
@@ -49971,6 +49979,7 @@ def forge_f2_session_unit():
             response, value = await call(bd.API + "/env")
             legacy = {"server_mode": True, "session": False, "account": None, "session_url": "/api/session", "prefs_url": "/api/preferences",
                       "caps": {name: name in srv.SERVER_CAPS for name in bd.LOCAL_CAPS}, "backend": "mock"}
+            legacy = _env_ui_v2(legacy, bd)  # 키 순서는 그대로 — 아래의 바이트 비교도 같은 순서로 본다
             check(value == legacy and responses[-1].startswith(json.dumps(legacy)), "F2S Forge 없는 env 기존 바이트")
             response, _ = await call("/api/session/token", "POST", {})
             check(response.status == 404, "F2S Forge 없는 갱신 라우트 404")
@@ -70862,7 +70871,7 @@ def forge_server_unit():
             check(response.status == 302 and "parent_origin=" in response.headers["Location"] and "x=1" in response.headers["Location"],
                   "FS4 첫 리다이렉트 쿼리 보존")
             response, data = await call("GET", api_path + "/env")
-            check(data == api["env_server_no_session"]["response"], "FS3 서버 비로그인 env 계약")
+            check(data == _env_ui_v2(api["env_server_no_session"]["response"], bd), "FS3 서버 비로그인 env 계약")
             response, data = await call("GET", api_path + "/state")
             check(response.status == 401 and data == api["no_session"]["response"] and "Cookie" in response.headers.get("Vary", ""),
                   "FS4 보호 경로 세션 없음·캐시 분리")
@@ -70888,7 +70897,7 @@ def forge_server_unit():
             check(response.status == 200 and set(data) == set(api["session_get"]["response"]), "FS5 GET 세션 계약")
             response, data = await call("GET", api_path + "/env", sid=alice)
             check(set(data) == set(api["env_server"]["response"]) and data["account"] == {"name": "alice", "tag": atag}
-                  and data["caps"] == api["env_server"]["response"]["caps"], "FS3 서버 로그인 env 계약·ID/경로 비공개")
+                  and data["caps"] == _env_ui_v2(api["env_server"]["response"], bd)["caps"], "FS3 서버 로그인 env 계약·ID/경로 비공개")
             bob, btag = await login("bob")
             same_acct, _ = await login("alice")
             different_org, orgtag = await login("alice", org="org2")
