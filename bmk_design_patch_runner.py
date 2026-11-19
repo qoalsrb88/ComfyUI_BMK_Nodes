@@ -395,7 +395,8 @@ def approval_id(e: dict) -> str:
 
 
 def _job_view(job: dict) -> dict:
-    v = {k: job.get(k) for k in _JOB_FIELDS if k not in ("complexity", "opts") or job.get(k) is not None}
+    v = {k: job.get(k) for k in _JOB_FIELDS
+         if (k != "complexity" or job.get(k) is not None) and (k != "opts" or job.get(k))}
     v["inputs"] = [{"role": i.get("role"), "file": i.get("file"), "sha": i.get("sha")}
                    | ({"source": i["source"]} if i.get("source") else {})  # canvas 의 평탄화 전 크롭 소스(원장에 남김)
                    for i in (job.get("inputs") or []) if isinstance(i, dict)]
@@ -1313,7 +1314,8 @@ def _begin_call(root: str, e: dict, backend_name: str) -> dict:
         history.append(prev)
     job = e["job"]
     req = {"schema": LEDGER_SCHEMA, "call_id": e["call_id"], "cell_key": ck, "rep": rep,
-            **{k: job.get(k) for k in _JOB_FIELDS if k != "cell_key" and (k not in ("complexity", "opts") or job.get(k) is not None)},
+            **{k: job.get(k) for k in _JOB_FIELDS
+               if k != "cell_key" and (k != "complexity" or job.get(k) is not None) and (k != "opts" or job.get(k))},
            "backend": backend_name, "approved_by": e.get("approved_by"), "kind": e["kind"],
            "attempt": len(history) + 1, "history": history, "time": _now()}
     _write_json(_lpath(root, ck, rep, "req"), req)
@@ -1430,7 +1432,7 @@ def _add_candidates(m: dict, req: dict, done: dict, warns: list[str]) -> list[st
                 "origin_info": {"call_id": req.get("call_id"), "cell_key": ck, "rep": rep, "slot": s["slot"],
                                 "variant": req.get("variant"), "model": req.get("model"), "quality": req.get("quality"),
                                  **({"complexity": req["complexity"]} if req.get("complexity") is not None else {}),
-                                 **({"opts": req["opts"]} if req.get("opts") is not None else {}),
+                                 **({"opts": req["opts"]} if req.get("opts") else {}),
                                 "backend": req.get("backend"), "tids": tids},
                 "quad": _quad(crop["rect"]), "picked": False, "z": None, "hand_mask": None,
             })

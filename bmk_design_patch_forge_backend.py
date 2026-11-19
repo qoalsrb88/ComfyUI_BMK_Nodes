@@ -717,7 +717,7 @@ class ForgeBackend:
             text = item.get("prompt_used") if isinstance(item, dict) else None
             changed = isinstance(text, str) and _normalized_prompt(text) != normalized
             side["prompt_changed"].append(changed)
-            side["prompt_used"].append(text[:10000] if changed and not _PRIVATE_TEXT.search(text) else None)
+            side["prompt_used"].append(text[:10000] if changed and not re.search(r"://|data:", text, re.I) else None)
         side["result_ids"] = [value for value in result.get("result_ids") or []
                               if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,256}", value)]
         self._save(ck, rep, side)

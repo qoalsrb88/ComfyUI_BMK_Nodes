@@ -61489,21 +61489,23 @@ def forge_models2_backend_unit():
                         "template_version": "dp-prompt/1"}
             if "2.6" in name:
                 expected["complexity"] = "medium"
-            for explicit_none in (False, True):
-                root = str(out / (name + str(explicit_none)))
+            for opts_case in ("missing", "none", "empty"):
+                root = str(out / (name + "-" + opts_case))
                 job = copy.deepcopy(expected)
                 job.update(reps=1, size_info={"method": "k"})
                 job["inputs"][0]["ignored"] = True
                 job["inputs"][1]["source"] = ""
-                if explicit_none:
+                if opts_case == "none":
                     job["opts"] = None
                     if "2.6" not in name:
                         job["complexity"] = None
+                elif opts_case == "empty":
+                    job["opts"] = {}
                 view = rn._job_view(job)
                 check(set(view) == set(expected) and view == expected and json_bytes(view) == json_bytes(expected),
-                      "FM2B 옵션 없는 작업 보기 키·값·바이트 불변 " + name)
+                      f"FM2B 옵션 없는 작업 보기 키·값·바이트 불변 {name}/{opts_case}")
                 entry = {"cell_key": cell, "rep": 0, "call_id": cell + "_r0", "kind": "pending",
-                         "approved_by": "hash:fixture", "job": view}
+                         "approved_by": "hash:fixture", "job": dict(view, opts={}) if opts_case == "empty" else view}
                 expected_req = {"schema": "bmk.design_patch.call/1", "call_id": cell + "_r0", "cell_key": cell, "rep": 0,
                                 **{k: v for k, v in expected.items() if k != "cell_key"},
                                 "backend": "forge", "approved_by": "hash:fixture", "kind": "pending",
@@ -61512,11 +61514,11 @@ def forge_models2_backend_unit():
                     req = rn._begin_call(root, entry, "forge")["req"]
                 check(set(req) == set(expected_req) and req == expected_req
                       and Path(rn._lpath(root, cell, 0, "req")).read_bytes() == json_bytes(expected_req),
-                      "FM2B 옵션 없는 req.json 키·값·바이트 불변 " + name)
+                      f"FM2B 옵션 없는 req.json 키·값·바이트 불변 {name}/{opts_case}")
                 manifest = {"crops": [{"id": "001_000000", "rect": [0, 0, 32, 24], "targets": [{"tid": "A"}]}]}
                 done = {"slots": [{"slot": 0, "file": "cands/result.png", "size": [32, 24]}]}
                 warnings = []
-                rn._add_candidates(manifest, req, done, warnings)
+                rn._add_candidates(manifest, dict(req, opts={}) if opts_case == "empty" else req, done, warnings)
                 origin = {"call_id": cell + "_r0", "cell_key": cell, "rep": 0, "slot": 0, "variant": "V1_standard",
                           "model": name, "quality": quality}
                 if "2.6" in name:
@@ -61524,7 +61526,7 @@ def forge_models2_backend_unit():
                 origin.update(backend="forge", tids=["A"])
                 actual = manifest["candidates"][0]["origin_info"]
                 check(not warnings and set(actual) == set(origin) and actual == origin and json_bytes(actual) == json_bytes(origin),
-                      "FM2B 옵션 없는 origin_info 키·값·바이트 불변 " + name)
+                      f"FM2B 옵션 없는 origin_info 키·값·바이트 불변 {name}/{opts_case}")
                 check("모델 옵션" not in rn._change_reason(view, expected_req), "FM2B 양쪽 옵션 없음은 변경 사유 아님")
 
     def project(name=names[0], *, n=2, reps=1):
@@ -61733,8 +61735,10 @@ def forge_models2_backend_unit():
                  (sent, sent.replace("\n", "\r"), False, None), (sent, rewritten, True, rewritten),
                  (sent, sent.replace("second line", "second  line"), True, sent.replace("second line", "second  line")),
                  (sent, "A" * 10001, True, "A" * 10000), (sent, None, False, None), (sent, 12, False, None)]
-        for private in ("https://forge.example/private", "data:image/png;base64,fixture", r"C:\private\image.png",
-                        "host.example:1234", "192.0.2.1", "2001:db8::1", "A" * 10001 + " https://forge.example/private"):
+        for kept in ("aspect 16:9, at 3:30", r"C:\private\image.png", "host.example:1234", "192.0.2.1", "2001:db8::1"):
+            cases.append((sent, kept, True, kept))
+        for private in ("https://forge.example/private", "data:image/png;base64,fixture", "DATA:image/png;base64,fixture",
+                        "A" * 10001 + " https://forge.example/private", "A" * 10001 + " DATA:image/png;base64,fixture"):
             cases.append((sent, private, True, None))
         for original, used, changed, kept in cases:
             side = {"schema": fb.SIDECAR_SCHEMA, "requests": []}
@@ -61743,7 +61747,7 @@ def forge_models2_backend_unit():
             actual = fb.read_sidecar(root, ck, 0)
             check(actual["schema"] == "dp-forge/1" and actual["prompt_changed"] == [changed]
                   and actual["prompt_used"] == [kept] and fb.prompt_changed(root, call_id) == [changed]
-                  and fb.prompt_used(root, call_id) == [kept], "FM2B 프롬프트 정규화·원문 보존·길이 상한·사적인 글자 검사")
+                  and fb.prompt_used(root, call_id) == [kept], "FM2B 프롬프트 정규화·원문 보존·길이 상한·주소/data 검사")
             if changed and kept is None:
                 check(str(used).encode() not in Path(rn._lpath(root, ck, 0, "forge")).read_bytes(),
                       "FM2B 사적인 프롬프트는 디스크에 남기지 않음")
@@ -61763,6 +61767,24 @@ def forge_models2_backend_unit():
             rn._write_json(rn._lpath(root, ck, 0, "forge"), dict(old, prompt_used=malformed))
             expect_raises(lambda: fb.read_sidecar(root, ck, 0), "FM2B 사이드카 prompt_used 형식 검사")
             check(fb.prompt_used(root, call_id) == [], "FM2B 손상된 사이드카는 원문을 노출하지 않음")
+
+    async def all_model_prompt_cases():
+        rewritten = "서버가 바꾼 프롬프트"
+        for name in (*models.LOCAL_MODELS, "seedream-5.5"):
+            root, job, _ = project(name)
+            class Rewritten(Client):
+                async def job(self, token, job_id):
+                    result = await super().job(token, job_id)
+                    result["metadata"] = [{"prompt_used": job["prompt"]}, {"prompt_used": rewritten}]
+                    return result
+            client = Rewritten()
+            with active(root, client) as backend:
+                report = await run_plan(root, backend)
+            check(report.done == 1 and len(client.submissions) == 1 and not models.get(name).prompt_used,
+                  "B3 prompt_used 표지가 없는 모델도 서버 프롬프트를 받음 " + name)
+            call_id = rn.call_id_for(job["cell_key"], 0)
+            check(fb.prompt_changed(root, call_id) == [False, True] and fb.prompt_used(root, call_id) == [None, rewritten],
+                  "B3 모든 모델에서 슬롯별 프롬프트 변경 판정·원문 기록 " + name)
 
     async def retry_case():
         root, job, paths = project()
@@ -61787,6 +61809,7 @@ def forge_models2_backend_unit():
             asyncio.run(blocked_cases())
             asyncio.run(request_cases())
             prompt_cases()
+            asyncio.run(all_model_prompt_cases())
             asyncio.run(retry_case())
         raw = b"\n".join(path.read_bytes() for path in out.rglob("*.json"))
         check(secret.encode() not in raw and org.encode() not in raw and b"https://forge.example" not in raw,
