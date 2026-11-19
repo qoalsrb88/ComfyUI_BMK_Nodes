@@ -226,6 +226,200 @@ window.DPV2Canvas = (() => {
     }
   }
 
+  // ── 다중 격자 스냅(1/16/32/64/128px) + 지정 비율 모델 자동 비율 흡착 ──
+  function getActiveSnapStep(e = null) {
+    if (e && (e.ctrlKey || e.metaKey)) return 1;
+    const step = Number(Store.state.prefs.snapStep);
+    if ([1, 16, 32, 64, 128].includes(step)) return step;
+    return Store.state.prefs.snapGrid === false ? 1 : 128;
+  }
+
+  function activeModelInfo(patch = null) {
+    const p = patch || Store.primaryPatch();
+    if (p && p.modelInfo) return p.modelInfo;
+    return Data.findModel(Store.projectPrepare().model);
+  }
+
+  function rndQ(v, q) {
+    return Math.floor(v / q + 0.5) * q;
+  }
+
+  function placeRectWithStep(ax, ay, mx, my, w, h, bounds, step) {
+    const RATIO = 3;
+    const q = Math.max(1, step);
+    const down = q > 1 ? (v) => Math.floor(v / q) * q || Math.floor(v) : Math.floor;
+    const up = q > 1 ? (v) => Math.ceil(v / q) * q : Math.ceil;
+    if (Math.max(w, h) > RATIO * Math.min(w, h)) {
+      if (mx && my) {
+        if (w > h) w = down(RATIO * h);
+        else h = down(RATIO * w);
+      } else if (mx) {
+        w = w > h ? down(RATIO * h) : up(h / RATIO);
+      } else {
+        h = h > w ? down(RATIO * w) : up(w / RATIO);
+      }
+    }
+    let [x0, x1] = mx < 0 ? [ax - w, ax] : [ax, ax + w];
+    let [y0, y1] = my < 0 ? [ay - h, ay] : [ay, ay + h];
+    if (mx > 0) x1 = Math.min(x1, bounds[0]);
+    else if (mx < 0) x0 = Math.max(x0, 0);
+    if (my > 0) y1 = Math.min(y1, bounds[1]);
+    else if (my < 0) y0 = Math.max(y0, 0);
+    if (x1 - x0 > RATIO * (y1 - y0)) {
+      if (mx < 0) x0 = x1 - RATIO * (y1 - y0);
+      else x1 = x0 + RATIO * (y1 - y0);
+    } else if (y1 - y0 > RATIO * (x1 - x0)) {
+      if (my < 0) y0 = y1 - RATIO * (x1 - x0);
+      else y1 = y0 + RATIO * (x1 - x0);
+    }
+    return [Math.round(x0), Math.round(y0), Math.round(x1), Math.round(y1)];
+  }
+
+  function applyModelRatioSnap(rect, handle, bounds, step, modelInfo) {
+    if (!modelInfo || !Array.isArray(modelInfo.ratios) || !modelInfo.ratios.length) {
+      return { rect, ratioMatched: null };
+    }
+    const G = window.DPLayoutGeom;
+    const [x0, y0, x1, y1] = rect;
+    const w = x1 - x0, h = y1 - y0;
+    if (w <= 0 || h <= 0) return { rect, ratioMatched: null };
+    const already = G ? G.ratioMatch(w, h, modelInfo.ratios, 0.01, Data.RATIO_SIZES) : null;
+    if (already) return { rect, ratioMatched: already };
+
+    // 가장 가까운 허용 비율 탐색
+    let bestLabel = null, bestVal = 1, bestErr = Infinity;
+    for (const label of modelInfo.ratios) {
+      const sz = Data.RATIO_SIZES[label];
+      if (!sz || !sz[0] || !sz[1]) continue;
+      const val = sz[0] / sz[1];
+      const err = Math.abs(Math.log((w / h) / val));
+      if (err < bestErr) { bestErr = err; bestLabel = label; bestVal = val; }
+    }
+    if (!bestLabel) return { rect, ratioMatched: null };
+
+    const mx = handle ? (handle.includes("e") ? 1 : handle.includes("w") ? -1 : 0) : 1;
+    const my = handle ? (handle.includes("s") ? 1 : handle.includes("n") ? -1 : 0) : 1;
+    const ax = mx < 0 ? x1 : x0;
+    const ay = my < 0 ? y1 : y0;
+    const maxW = mx < 0 ? ax : bounds[0] - ax;
+    const maxH = my < 0 ? ay : bounds[1] - ay;
+    const minSide = Math.min(step === 128 ? 128 : Math.max(32, step), maxW, maxH);
+
+    // 주 축 기준으로 목표 비율에 맞는 정수 크기(가능하면 step 배수 우선, 아니면 1px 정밀) 계산
+    let nw = w, nh = h;
+    const snapQ = step >= 16 ? Math.min(step, 16) : 1;
+    if (mx && !my) {
+      nh = Math.max(minSide, Math.min(maxH, rndQ(w / bestVal, snapQ) || Math.round(w / bestVal)));
+      nw = Math.max(minSide, Math.min(maxW, Math.round(nh * bestVal)));
+    } else if (my && !mx) {
+      nw = Math.max(minSide, Math.min(maxW, rndQ(h * bestVal, snapQ) || Math.round(h * bestVal)));
+      nh = Math.max(minSide, Math.min(maxH, Math.round(nw / bestVal)));
+    } else {
+      // 모서리 드래그: 더 긴 축 유지하며 반대 축을 목표 비율에 맞춤
+      if (w >= h * bestVal) {
+        nw = Math.max(minSide, Math.min(maxW, w));
+        nh = Math.max(minSide, Math.min(maxH, Math.round(nw / bestVal)));
+        nw = Math.min(maxW, Math.round(nh * bestVal));
+      } else {
+        nh = Math.max(minSide, Math.min(maxH, h));
+        nw = Math.max(minSide, Math.min(maxW, Math.round(nh * bestVal)));
+        nh = Math.min(maxH, Math.round(nw / bestVal));
+      }
+    }
+    let nx0 = mx < 0 ? ax - nw : ax;
+    let ny0 = my < 0 ? ay - nh : ay;
+    nx0 = Math.max(0, Math.min(bounds[0] - nw, nx0));
+    ny0 = Math.max(0, Math.min(bounds[1] - nh, ny0));
+    const cand = [Math.round(nx0), Math.round(ny0), Math.round(nx0 + nw), Math.round(ny0 + nh)];
+    const matched = G ? G.ratioMatch(cand[2] - cand[0], cand[3] - cand[1], [bestLabel], 0.01, Data.RATIO_SIZES) : bestLabel;
+    return matched ? { rect: cand, ratioMatched: matched } : { rect, ratioMatched: null };
+  }
+
+  function snapMoveRect(origRect, dx, dy, bounds, step) {
+    const G = window.DPLayoutGeom;
+    if (G && (step === 128 || step === 1)) {
+      return G.move(origRect, dx, dy, bounds, step === 128);
+    }
+    const [x0, y0, x1, y1] = origRect;
+    const w = x1 - x0, h = y1 - y0;
+    const q = step <= 1 ? 1 : Math.min(16, step);
+    const nx = Math.min(Math.max(rndQ(x0 + dx, q), 0), Math.max(0, bounds[0] - w));
+    const ny = Math.min(Math.max(rndQ(y0 + dy, q), 0), Math.max(0, bounds[1] - h));
+    return [nx, ny, nx + w, ny + h];
+  }
+
+  function snapResizeRect(origRect, handle, dx, dy, bounds, step, keep, modelInfo = null, useRatioSnap = false) {
+    const G = window.DPLayoutGeom;
+    let rect;
+    if (G && step === 128) {
+      rect = G.resize(origRect, handle, dx, dy, bounds, true, keep);
+    } else {
+      const [x0, y0, x1, y1] = origRect;
+      const w0 = x1 - x0, h0 = y1 - y0;
+      const mx = handle.includes("e") ? 1 : handle.includes("w") ? -1 : 0;
+      const my = handle.includes("s") ? 1 : handle.includes("n") ? -1 : 0;
+      const minSide = step === 1 ? 32 : Math.max(32, step);
+      const q = Math.max(1, step);
+      const szFn = (raw) => Math.max(minSide, q > 1 ? rndQ(raw, q) : Math.round(raw));
+      let w = mx ? szFn(w0 + mx * dx) : w0;
+      let h = my ? szFn(h0 + my * dy) : h0;
+      if (keep && mx && my) {
+        if (Math.abs(w - w0) * h0 >= Math.abs(h - h0) * w0) h = szFn((w * h0) / Math.max(1, w0));
+        else w = szFn((h * w0) / Math.max(1, h0));
+      }
+      rect = placeRectWithStep(mx < 0 ? x1 : x0, my < 0 ? y1 : y0, mx, my, w, h, bounds, q);
+    }
+    if (useRatioSnap && !keep && step > 1 && modelInfo && modelInfo.ratios && modelInfo.ratios.length) {
+      return applyModelRatioSnap(rect, handle, bounds, step, modelInfo);
+    }
+    const matched = G && modelInfo && modelInfo.ratios && modelInfo.ratios.length
+      ? G.ratioMatch(rect[2] - rect[0], rect[3] - rect[1], modelInfo.ratios, 0.01, Data.RATIO_SIZES)
+      : null;
+    return { rect, ratioMatched: matched };
+  }
+
+  function snapNewRect(sx, sy, dx, dy, bounds, step, keep, modelInfo = null, useRatioSnap = false) {
+    const G = window.DPLayoutGeom;
+    let rect;
+    if (G && step === 128) {
+      rect = G.newRect(sx, sy, dx, dy, bounds, true, keep);
+    } else {
+      const qPos = step <= 1 ? 1 : Math.min(16, step);
+      const qSz = Math.max(1, step);
+      const minSide = step === 1 ? 32 : Math.max(32, step);
+      const ax = Math.min(Math.max(rndQ(sx, qPos), 0), bounds[0]);
+      const ay = Math.min(Math.max(rndQ(sy, qPos), 0), bounds[1]);
+      let mx = dx >= 0 ? 1 : -1;
+      let my = dy >= 0 ? 1 : -1;
+      let w = Math.max(minSide, qSz > 1 ? rndQ(mx * dx, qSz) : Math.round(mx * dx));
+      let h = Math.max(minSide, qSz > 1 ? rndQ(my * dy, qSz) : Math.round(my * dy));
+      if (keep) w = h = Math.max(w, h);
+      if ((mx > 0 ? bounds[0] - ax : ax) < minSide) mx = -mx;
+      if ((my > 0 ? bounds[1] - ay : ay) < minSide) my = -my;
+      rect = placeRectWithStep(ax, ay, mx, my, w, h, bounds, qSz);
+    }
+    const handle = `${dy >= 0 ? "s" : "n"}${dx >= 0 ? "e" : "w"}`;
+    if (useRatioSnap && !keep && step > 1 && modelInfo && modelInfo.ratios && modelInfo.ratios.length) {
+      return applyModelRatioSnap(rect, handle, bounds, step, modelInfo);
+    }
+    const matched = G && modelInfo && modelInfo.ratios && modelInfo.ratios.length
+      ? G.ratioMatch(rect[2] - rect[0], rect[3] - rect[1], modelInfo.ratios, 0.01, Data.RATIO_SIZES)
+      : null;
+    return { rect, ratioMatched: matched };
+  }
+
+  function estimateSvgTextWidth(str, fontSize) {
+    let units = 0;
+    for (const ch of String(str || "")) {
+      const code = ch.charCodeAt(0);
+      if (code >= 0xac00 && code <= 0xd7a3) units += 0.96;
+      else if (code > 127) units += 0.9;
+      else if (ch === " " || ch === "." || ch === "[" || ch === "]") units += 0.42;
+      else units += 0.6;
+    }
+    return units * fontSize;
+  }
+
   // ── SVG 오버레이 (Focus Dim · 8핸들 · 자동 크롭 틀 · 멀티타깃 focus_box · 이음새) ──
   function getHandles(rect) {
     const [x1, y1, x2, y2] = rect;
@@ -319,26 +513,78 @@ window.DPV2Canvas = (() => {
         }));
       }
 
-      // 상단 라벨 태그
+      // 상단 라벨 태그 (안 A: 선택 포인트 컬러 유지 + 시안처럼 [번호] [목적 컬러 아이콘 칩] [목적] 이름)
       const purp = Data.purposeInfo(p.meta.purpose);
-      const labelText = `${p.index}. [${purp.short}] ${p.name}${p.locked ? " (잠금)" : ""}`;
+      const themeMode = isLight ? "light" : "dark";
+      const purpCol = Data.purposeColor(p.meta.purpose, themeMode);
+      const numText = `${p.index}.`;
+      const bodyText = `[${purp.short}] ${p.name}${p.locked ? " (잠금)" : ""}`;
       const padX = 7 * inv;
-      const labelH = 21 * inv;
-      const labelW = Math.max(80 * inv, (labelText.length * 8.4 + 16) * inv);
-      const ly = Math.max(0, y1 - labelH - 2 * inv);
+      const gap = 5 * inv;
+      const labelH = 22 * inv;
+      const icoBox = 16 * inv;
+      const icoSz = 11.5 * inv;
+      const numW = estimateSvgTextWidth(numText, fontSz);
+      const bodyW = estimateSvgTextWidth(bodyText, fontSz);
+      const labelW = Math.max(92 * inv, padX + numW + gap + icoBox + gap + bodyW + padX);
+      const ly = Math.max(0, y1 - labelH - 3 * inv);
 
       svg.append(Data.svgEl("rect", {
-        x: x1, y: ly, width: labelW, height: labelH, rx: 2 * inv,
-        fill: isSel ? accent : "rgba(9, 9, 11, 0.86)",
-        stroke: col, "stroke-width": strokeW * 0.6,
+        x: x1, y: ly, width: labelW, height: labelH, rx: 4 * inv,
+        fill: isSel ? accent : "rgba(14, 14, 18, 0.9)",
+        stroke: isSel ? accent : col, "stroke-width": strokeW * 0.65,
       }));
-      const txt = Data.svgEl("text", {
-        x: x1 + padX, y: ly + labelH * 0.72,
+
+      // 비선택 박스는 좌측 목적 컬러 악센트 바를 은은하게 표시
+      if (!isSel) {
+        svg.append(Data.svgEl("rect", {
+          x: x1 + 1 * inv, y: ly + 3 * inv, width: 2.5 * inv, height: labelH - 6 * inv, rx: 1.2 * inv,
+          fill: purpCol,
+        }));
+      }
+
+      // 1) 번호 (1.)
+      const numX = x1 + padX + (isSel ? 0 : 2 * inv);
+      const numEl = Data.svgEl("text", {
+        x: numX, y: ly + labelH * 0.7,
         fill: isSel ? onAccent : "#f4f4f5",
         "font-size": fontSz, "font-weight": "700",
       });
-      txt.textContent = labelText;
-      svg.append(txt);
+      numEl.textContent = numText;
+      svg.append(numEl);
+
+      // 2) 목적 시맨틱 컬러 아이콘 배지 (고대비 백킹 + 고유 컬러 벡터 아이콘)
+      const icoBoxX = numX + numW + gap;
+      const icoBoxY = ly + (labelH - icoBox) / 2;
+      svg.append(Data.svgEl("rect", {
+        x: icoBoxX, y: icoBoxY, width: icoBox, height: icoBox, rx: 3.5 * inv,
+        fill: isSel
+          ? (isLight ? "#ffffff" : "rgba(9, 9, 11, 0.88)")
+          : Data.hexToRgba(purpCol, 0.18),
+        stroke: isSel ? "none" : Data.hexToRgba(purpCol, 0.55),
+        "stroke-width": strokeW * 0.45,
+      }));
+      const iconStrokeCol = isSel
+        ? Data.purposeColor(p.meta.purpose, isLight ? "light" : "dark")
+        : Data.purposeColor(p.meta.purpose, "dark");
+      Data.appendSvgIcon(
+        svg,
+        purp.icon,
+        icoBoxX + (icoBox - icoSz) / 2,
+        icoBoxY + (icoBox - icoSz) / 2,
+        icoSz,
+        iconStrokeCol,
+        2.2,
+      );
+
+      // 3) [목적] 영역 이름
+      const bodyEl = Data.svgEl("text", {
+        x: icoBoxX + icoBox + gap, y: ly + labelH * 0.7,
+        fill: isSel ? onAccent : "#f4f4f5",
+        "font-size": fontSz, "font-weight": "600",
+      });
+      bodyEl.textContent = bodyText;
+      svg.append(bodyEl);
 
       // 주 선택 영역 8방향 리사이즈 핸들
       if (isPrimary && !p.locked) {
@@ -353,7 +599,7 @@ window.DPV2Canvas = (() => {
     }
 
     // 드로잉 중인 새 사각형
-    if (view.drag && view.drag.type === "draw-rect" && view.drag.tempRect) {
+    if (view.drag && view.drag.type === "draw-rect" && view.drag.tempRect && view.drag.moved) {
       const [x1, y1, x2, y2] = view.drag.tempRect;
       svg.append(Data.svgEl("rect", {
         x: x1, y: y1, width: Math.max(1, x2 - x1), height: Math.max(1, y2 - y1),
@@ -361,9 +607,42 @@ window.DPV2Canvas = (() => {
         "stroke-width": strokeW * 1.4, "stroke-dasharray": `${5 * inv} ${4 * inv}`,
       }));
     }
+
+    // 이동 · 크기조절 · 새 영역 드래그 중 실시간 치수 · 스냅 · 비율 배지 HUD
+    const activeRect = (view.drag && view.drag.type === "draw-rect" && view.drag.moved && view.drag.tempRect)
+      ? view.drag.tempRect
+      : (view.drag && (view.drag.type === "move" || view.drag.type === "resize") && view.drag.moved && view.drag.patch)
+        ? view.drag.patch.rect
+        : null;
+    if (activeRect) {
+      const [rx1, ry1, rx2, ry2] = activeRect;
+      const rw = Math.round(rx2 - rx1), rh = Math.round(ry2 - ry1);
+      const step = view.drag.snapStep ?? getActiveSnapStep();
+      const ratioTag = view.drag.ratioMatched ? ` · 비율 ${view.drag.ratioMatched} ✓` : "";
+      const snapLabel = step <= 1 ? "1px 자유" : `스냅 ${step}px`;
+      const hudText = `${rw} × ${rh} px · ${snapLabel}${ratioTag}`;
+      const hudH = 22 * inv;
+      const hudFont = Math.round(11 * inv);
+      const hudW = Math.max(132 * inv, estimateSvgTextWidth(hudText, hudFont) + 20 * inv);
+      const hx = Math.max(0, Math.min(view.imgW - hudW, (rx1 + rx2) / 2 - hudW / 2));
+      const hy = ry2 + 6 * inv + hudH <= view.imgH ? ry2 + 6 * inv : Math.max(0, ry1 - hudH - 6 * inv);
+      svg.append(Data.svgEl("rect", {
+        x: hx, y: hy, width: hudW, height: hudH, rx: 4 * inv,
+        fill: "rgba(9, 9, 11, 0.9)",
+        stroke: view.drag.ratioMatched ? "#34d399" : accent,
+        "stroke-width": strokeW * 0.75,
+      }));
+      const htxt = Data.svgEl("text", {
+        x: hx + hudW / 2, y: hy + hudH * 0.68,
+        fill: "#fafafa", "font-size": hudFont, "font-weight": "600",
+        "text-anchor": "middle",
+      });
+      htxt.textContent = hudText;
+      svg.append(htxt);
+    }
   }
 
-  // ── 2단 리치 플로팅 컨텍스트 바 (목업 100% 복원) ──
+  // ── 2단 리치 플로팅 컨텍스트 바 (목업 100% 복원 + 목적 시맨틱 컬러) ──
   function renderFloatingBar() {
     const fb = $("floating-bar");
     if (!fb) return;
@@ -378,14 +657,19 @@ window.DPV2Canvas = (() => {
     const selList = Store.selectedPatches();
     const isMulti = selList.length > 1;
     const purpHost = $("fb-purposes");
+    const themeMode = Store.activeTheme().mode;
     if (purpHost) {
       purpHost.innerHTML = "";
       const commonPurp = Store.getCommonOrMixed(selList, (p) => p.meta.purpose);
       for (const pr of Data.PURPOSES) {
+        const pc = Data.purposeColor(pr.id, themeMode);
+        const pSoft = Data.hexToRgba(pc, themeMode === "light" ? 0.13 : 0.18);
+        const pBorder = Data.hexToRgba(pc, themeMode === "light" ? 0.55 : 0.62);
         const b = Data.el("button", {
           type: "button",
           className: "fb-purpose-chip" + (!commonPurp.mixed && commonPurp.value === pr.id ? " on" : ""),
           title: pr.hint,
+          style: `--p-col:${pc};--p-soft:${pSoft};--p-border:${pBorder};`,
           onClick: () => {
             for (const sp of selList) {
               sp.meta.purpose = pr.id;
@@ -396,7 +680,7 @@ window.DPV2Canvas = (() => {
               Store.savePatchSpec(patch).catch((err) => Store.toast(`지시문 저장 실패: ${err.message}`, "err"));
             }
           },
-        }, Data.icon(pr.icon, 12), pr.short);
+        }, Data.el("span", { className: "fb-purpose-ico" }, Data.icon(pr.icon, 12)), pr.short);
         purpHost.append(b);
       }
     }
@@ -680,7 +964,14 @@ window.DPV2Canvas = (() => {
       const pt = screenToImage(e.clientX, e.clientY);
 
       if (Store.state.tool === "rect") {
-        view.drag = { type: "draw-rect", x0: pt.x, y0: pt.y, tempRect: [pt.x, pt.y, pt.x + 1, pt.y + 1] };
+        view.drag = {
+          type: "draw-rect",
+          x0: pt.x,
+          y0: pt.y,
+          tempRect: [pt.x, pt.y, pt.x + 1, pt.y + 1],
+          moved: false,
+          snapped: Store.state.prefs.snapGrid !== false && !(e.ctrlKey || e.metaKey),
+        };
         vp.setPointerCapture(e.pointerId);
         return;
       }
@@ -756,11 +1047,25 @@ window.DPV2Canvas = (() => {
       }
 
       if (dg.type === "draw-rect") {
-        const x1 = Math.max(0, Math.min(view.imgW, dg.x0));
-        const y1 = Math.max(0, Math.min(view.imgH, dg.y0));
-        const x2 = Math.max(0, Math.min(view.imgW, pt.x));
-        const y2 = Math.max(0, Math.min(view.imgH, pt.y));
-        dg.tempRect = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+        const step = getActiveSnapStep(e);
+        dg.snapStep = step;
+        const dist = Math.hypot(pt.x - dg.x0, pt.y - dg.y0);
+        if (dist >= 6 / Math.max(0.2, view.zoom)) dg.moved = true;
+        if (!dg.moved) return;
+        const mi = activeModelInfo();
+        const useRatio = Store.state.prefs.snapRatio !== false;
+        if (view.imgW && view.imgH) {
+          const res = snapNewRect(dg.x0, dg.y0, pt.x - dg.x0, pt.y - dg.y0, [view.imgW, view.imgH], step, e.shiftKey, mi, useRatio);
+          dg.tempRect = res.rect;
+          dg.ratioMatched = res.ratioMatched;
+        } else {
+          const x1 = Math.max(0, Math.min(view.imgW, dg.x0));
+          const y1 = Math.max(0, Math.min(view.imgH, dg.y0));
+          const x2 = Math.max(0, Math.min(view.imgW, pt.x));
+          const y2 = Math.max(0, Math.min(view.imgH, pt.y));
+          dg.tempRect = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+          dg.ratioMatched = null;
+        }
         renderOverlaySvg();
         return;
       }
@@ -783,23 +1088,24 @@ window.DPV2Canvas = (() => {
       if ((dg.type === "move" || dg.type === "resize") && dg.patch) {
         const dx = pt.x - dg.startPt.x;
         const dy = pt.y - dg.startPt.y;
-        const [ox1, oy1, ox2, oy2] = dg.origRect;
-        const ow = ox2 - ox1, oh = oy2 - oy1;
-        let nx1 = ox1, ny1 = oy1, nx2 = ox2, ny2 = oy2;
+        const step = getActiveSnapStep(e);
+        dg.snapStep = step;
+        const bounds = [view.imgW, view.imgH];
+        let next;
         if (dg.type === "move") {
-          nx1 = Math.max(0, Math.min(view.imgW - ow, Math.round(ox1 + dx)));
-          ny1 = Math.max(0, Math.min(view.imgH - oh, Math.round(oy1 + dy)));
-          nx2 = nx1 + ow; ny2 = ny1 + oh;
+          next = snapMoveRect(dg.origRect, dx, dy, bounds, step);
+          dg.ratioMatched = null;
         } else {
-          const h = dg.handle;
-          if (h.includes("w")) nx1 = Math.max(0, Math.min(ox2 - 48, Math.round(ox1 + dx)));
-          if (h.includes("e")) nx2 = Math.min(view.imgW, Math.max(ox1 + 48, Math.round(ox2 + dx)));
-          if (h.includes("n")) ny1 = Math.max(0, Math.min(oy2 - 48, Math.round(oy1 + dy)));
-          if (h.includes("s")) ny2 = Math.min(view.imgH, Math.max(oy1 + 48, Math.round(oy2 + dy)));
+          const mi = activeModelInfo(dg.patch);
+          const useRatio = Store.state.prefs.snapRatio !== false;
+          const res = snapResizeRect(dg.origRect, dg.handle, dx, dy, bounds, step, e.shiftKey, mi, useRatio);
+          next = res.rect;
+          dg.ratioMatched = res.ratioMatched;
         }
-        dg.patch.rect[0] = nx1; dg.patch.rect[1] = ny1; dg.patch.rect[2] = nx2; dg.patch.rect[3] = ny2;
+        dg.patch.rect[0] = next[0]; dg.patch.rect[1] = next[1]; dg.patch.rect[2] = next[2]; dg.patch.rect[3] = next[3];
         dg.moved = true;
         renderOverlaySvg();
+        updateFooterInfo(pt);
       }
     });
 
@@ -810,7 +1116,7 @@ window.DPV2Canvas = (() => {
       vp.classList.remove("panning");
       try { vp.releasePointerCapture(e.pointerId); } catch (_) {}
 
-      if (dg.type === "draw-rect" && dg.tempRect) {
+      if (dg.type === "draw-rect" && dg.moved && dg.tempRect) {
         const [x1, y1, x2, y2] = dg.tempRect;
         renderOverlaySvg();
         if (x2 - x1 >= 24 && y2 - y1 >= 24) {
@@ -988,6 +1294,102 @@ window.DPV2Canvas = (() => {
       });
     }
 
+    // 격자 · 비율 스냅 설정 팝오버 (1px / 16px / 32px / 64px / 128px + 모델 지정 비율 자동 스냅)
+    const renderSnapPopover = () => {
+      const listEl = $("snap-step-list");
+      const curStep = getActiveSnapStep();
+      if (listEl) {
+        listEl.innerHTML = "";
+        for (const item of Data.SNAP_STEPS) {
+          const isOn = curStep === item.val;
+          listEl.append(Data.el("button", {
+            type: "button",
+            className: "sp-item" + (isOn ? " on" : ""),
+            onClick: (e) => {
+              e.stopPropagation();
+              Store.savePrefs({ snapStep: item.val, snapGrid: item.val > 1 });
+              updateSnapButton();
+              renderSnapPopover();
+              Store.toast(item.val <= 1
+                ? "격자 스냅: 1px 자유 조절"
+                : `격자 스냅: ${item.val}px 배수 (${item.tag})`);
+            },
+          },
+            Data.el("div", { className: "sp-item-main" },
+              Data.el("strong", { text: item.label }),
+              Data.el("small", { text: item.desc }),
+            ),
+            Data.el("span", { className: "sp-tag", text: item.tag }),
+          ));
+        }
+      }
+      const chkRatio = $("chk-snap-ratio");
+      if (chkRatio) chkRatio.checked = Store.state.prefs.snapRatio !== false;
+      const hint = $("snap-ratio-hint");
+      if (hint) {
+        const mi = activeModelInfo();
+        const hasRatios = !!(mi && Array.isArray(mi.ratios) && mi.ratios.length);
+        hint.textContent = hasRatios
+          ? `현재 모델(${mi.shortName}) 지원 비율 ${mi.ratios.length}종에 자동 흡착`
+          : "나노바나나 등 지정 비율 모델 선택 시 허용 비율(1% 오차)로 자동 흡착";
+      }
+    };
+
+    const updateSnapButton = () => {
+      const btn = $("btn-toggle-snap");
+      if (!btn) return;
+      const step = getActiveSnapStep();
+      const mi = activeModelInfo();
+      const hasRatios = !!(mi && Array.isArray(mi.ratios) && mi.ratios.length);
+      const ratioOn = hasRatios && Store.state.prefs.snapRatio !== false && step > 1;
+      btn.classList.toggle("on", step > 1);
+      btn.innerHTML = "";
+      const txt = step <= 1
+        ? "1px 자유 ▾"
+        : (ratioOn ? `스냅 ${step}px·비율 ▾` : `스냅 ${step}px ▾`);
+      btn.append(Data.icon("gridSnap", 12), txt);
+    };
+
+    const positionSnapPopover = () => {
+      const pop = $("snap-popover"), btn = $("btn-toggle-snap");
+      if (!pop || !btn) return;
+      const r = btn.getBoundingClientRect();
+      const pr = pop.getBoundingClientRect();
+      const pw = pr.width || 276, ph = pr.height || 290;
+      const left = Math.max(12, Math.min(window.innerWidth - pw - 12, r.right - pw));
+      const top = Math.max(54, r.top - ph - 8);
+      pop.style.left = `${Math.round(left)}px`;
+      pop.style.top = `${Math.round(top)}px`;
+    };
+
+    const snapBtn = $("btn-toggle-snap");
+    const snapPop = $("snap-popover");
+    if (snapBtn && snapPop) {
+      updateSnapButton();
+      snapBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const willOpen = snapPop.classList.contains("hidden");
+        snapPop.classList.toggle("hidden", !willOpen);
+        if (willOpen) {
+          renderSnapPopover();
+          positionSnapPopover();
+          requestAnimationFrame(positionSnapPopover);
+        }
+      });
+      const chkRatio = $("chk-snap-ratio");
+      if (chkRatio) chkRatio.addEventListener("change", (e) => {
+        Store.savePrefs({ snapRatio: e.target.checked });
+        updateSnapButton();
+        renderSnapPopover();
+      });
+      snapPop.addEventListener("click", (e) => e.stopPropagation());
+      document.addEventListener("click", (e) => {
+        if (!snapPop.classList.contains("hidden") && !snapPop.contains(e.target) && !snapBtn.contains(e.target)) {
+          snapPop.classList.add("hidden");
+        }
+      });
+    }
+
     // 리사이즈 대응
     if (typeof ResizeObserver !== "undefined") {
       new ResizeObserver(() => {
@@ -996,17 +1398,44 @@ window.DPV2Canvas = (() => {
     }
 
     Store.subscribe((reason) => {
-      if (reason === "state") syncCanvasImages();
-      else if (reason === "selection" || reason === "prefs" || reason === "filters") {
+      if (reason === "state") {
+        syncCanvasImages();
+        updateSnapButton();
+      } else if (reason === "selection" || reason === "prefs" || reason === "filters") {
         renderOverlaySvg();
         renderCandidateOverlay();
         renderSplitView();
         renderFloatingBar();
         updateFooterInfo();
+        updateSnapButton();
+        if (snapPop && !snapPop.classList.contains("hidden")) renderSnapPopover();
       } else if (reason === "mask") {
         renderMaskPreview();
       }
     });
+  }
+
+  // 화살표 키 미세 이동 (현재 snapStep 연동 · Ctrl 1px · 디바운스 커밋)
+  let nudgeTimer = null;
+  function nudgeSelectedPatch(dx, dy, stepOrSnap = 16) {
+    const selList = Store.selectedPatches();
+    if (selList.length !== 1) return false;
+    const p = selList[0];
+    if (!p || p.locked || !view.imgW || !view.imgH) return false;
+    const step = typeof stepOrSnap === "number" ? stepOrSnap : (stepOrSnap ? getActiveSnapStep() : 1);
+    const bounds = [view.imgW, view.imgH];
+    const next = snapMoveRect(p.rect, dx, dy, bounds, step);
+    if (next.every((v, i) => v === p.rect[i])) return true;
+    p.rect[0] = next[0]; p.rect[1] = next[1]; p.rect[2] = next[2]; p.rect[3] = next[3];
+    renderOverlaySvg();
+    updateFooterInfo();
+    if (nudgeTimer) clearTimeout(nudgeTimer);
+    const id = p.id, name = p.name, rectCopy = next.slice();
+    nudgeTimer = setTimeout(() => {
+      nudgeTimer = null;
+      Store.updateCrop(id, { rect: rectCopy }, `영역 이동 (${name})`);
+    }, 280);
+    return true;
   }
 
   return {
@@ -1021,6 +1450,10 @@ window.DPV2Canvas = (() => {
     renderSplitView,
     renderCandidateOverlay,
     renderFloatingBar,
+    nudgeSelectedPatch,
+    snapResizeRect,
+    snapNewRect,
+    getActiveSnapStep,
     bindEvents,
   };
 })();

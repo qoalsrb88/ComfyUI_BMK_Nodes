@@ -44,7 +44,12 @@ window.DPV2Overlays = (() => {
     });
   }
 
-  // ==================== 1. 50/50 분할 레퍼런스 시트 오리기 & 4점 원근 (버그 1 영구 해결) ====================
+  // ==================== 1. 50/50 분할 레퍼런스 시트 오리기 & 4점 원근 ====================
+  const SHEET_HANDLE_CURSORS = {
+    n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
+    nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize",
+  };
+
   const sheetState = {
     open: false,
     sheetPath: "",
@@ -63,6 +68,8 @@ window.DPV2Overlays = (() => {
     panY: 0,
     maximized: false,
     drag: null,
+    hoverHit: null,
+    warpHover: null,
     lastCutReq: null,
   };
 
@@ -73,6 +80,85 @@ window.DPV2Overlays = (() => {
       { x: 0.84, y: 0.84 },
       { x: 0.16, y: 0.84 },
     ];
+  }
+
+  function sheetHandlesPx(w, h) {
+    const r = sheetState.cutRect;
+    const x1 = r.x * w, y1 = r.y * h, x2 = (r.x + r.w) * w, y2 = (r.y + r.h) * h;
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    return [
+      { id: "nw", x: x1, y: y1, corner: true },
+      { id: "n", x: mx, y: y1, corner: false },
+      { id: "ne", x: x2, y: y1, corner: true },
+      { id: "e", x: x2, y: my, corner: false },
+      { id: "se", x: x2, y: y2, corner: true },
+      { id: "s", x: mx, y: y2, corner: false },
+      { id: "sw", x: x1, y: y2, corner: true },
+      { id: "w", x: x1, y: my, corner: false },
+    ];
+  }
+
+  function sheetHitTest(px, py) {
+    const img = sheetState.sheetImg;
+    if (!img) return null;
+    const w = img.naturalWidth, h = img.naturalHeight;
+    const inv = 1 / Math.max(0.15, sheetState.zoom);
+    const tol = 11 * inv;
+    for (const hp of sheetHandlesPx(w, h)) {
+      if (Math.abs(px - hp.x) <= tol && Math.abs(py - hp.y) <= tol) {
+        return { kind: "handle", handle: hp.id };
+      }
+    }
+    const r = sheetState.cutRect;
+    const x1 = r.x * w, y1 = r.y * h, x2 = (r.x + r.w) * w, y2 = (r.y + r.h) * h;
+    if (px >= x1 && px <= x2 && py >= y1 && py <= y2) {
+      return { kind: "body" };
+    }
+    return null;
+  }
+
+  function pointInQuad(pt, q) {
+    let inside = false;
+    for (let i = 0, j = q.length - 1; i < q.length; j = i++) {
+      const xi = q[i].x, yi = q[i].y, xj = q[j].x, yj = q[j].y;
+      const intersect = ((yi > pt.y) !== (yj > pt.y))
+        && (pt.x < ((xj - xi) * (pt.y - yi)) / ((yj - yi) || 1e-9) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  function distToSegment(pt, a, b) {
+    const vx = b.x - a.x, vy = b.y - a.y;
+    const len2 = vx * vx + vy * vy || 1e-9;
+    const t = Math.max(0, Math.min(1, ((pt.x - a.x) * vx + (pt.y - a.y) * vy) / len2));
+    return Math.hypot(pt.x - (a.x + t * vx), pt.y - (a.y + t * vy));
+  }
+
+  function warpHitTest(x, y) {
+    const q = sheetState.quad;
+    let nearest = -1, bestD = 0.055;
+    q.forEach((pt, idx) => {
+      const d = Math.hypot(pt.x - x, pt.y - y);
+      if (d < bestD) { bestD = d; nearest = idx; }
+    });
+    if (nearest >= 0) return { kind: "corner", idx: nearest };
+    let bestEdge = -1, bestEd = 0.032;
+    for (let i = 0; i < 4; i++) {
+      const d = distToSegment({ x, y }, q[i], q[(i + 1) % 4]);
+      if (d < bestEd) { bestEd = d; bestEdge = i; }
+    }
+    if (bestEdge >= 0) return { kind: "edge", idx: bestEdge };
+    if (pointInQuad({ x, y }, q)) return { kind: "body", idx: -1 };
+    return null;
+  }
+
+  function isQuadConvex(q) {
+    for (let k = 0; k < 4; k++) {
+      const a = q[k], b = q[(k + 1) % 4], c = q[(k + 2) % 4];
+      if ((b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x) <= 0) return false;
+    }
+    return true;
   }
 
   function applySheetTransform() {
@@ -134,21 +220,105 @@ window.DPV2Overlays = (() => {
     const r = sheetState.cutRect;
     const rx = r.x * cv.width, ry = r.y * cv.height;
     const rw = r.w * cv.width, rh = r.h * cv.height;
+    const inv = 1 / Math.max(0.2, sheetState.zoom);
+    const accent = Store.activeAccentHex();
+    const isLight = Store.activeTheme().mode === "light";
+    const onAccent = isLight ? "#ffffff" : "#09090b";
 
-    ctx.fillStyle = "rgba(0, 0, 0, 0.52)";
+    // 바깥 어둡게 딤
+    ctx.fillStyle = "rgba(0, 0, 0, 0.54)";
     ctx.fillRect(0, 0, cv.width, ry);
     ctx.fillRect(0, ry + rh, cv.width, cv.height - (ry + rh));
     ctx.fillRect(0, ry, rx, rh);
     ctx.fillRect(rx + rw, ry, cv.width - (rx + rw), rh);
 
-    ctx.strokeStyle = Store.activeAccentHex();
-    ctx.lineWidth = Math.max(2, 2.2 / Math.max(0.2, sheetState.zoom));
+    // 3분할 구도 가이드선 (드래그 중 선명, 평상시 은은하게)
+    const isEditing = !!(sheetState.drag && sheetState.drag.kind !== "pan");
+    ctx.save();
+    ctx.strokeStyle = isEditing ? "rgba(255, 255, 255, 0.34)" : "rgba(255, 255, 255, 0.14)";
+    ctx.lineWidth = Math.max(0.8, 1 * inv);
+    ctx.setLineDash([4 * inv, 4 * inv]);
+    ctx.beginPath();
+    ctx.moveTo(rx + rw / 3, ry); ctx.lineTo(rx + rw / 3, ry + rh);
+    ctx.moveTo(rx + (rw * 2) / 3, ry); ctx.lineTo(rx + (rw * 2) / 3, ry + rh);
+    ctx.moveTo(rx, ry + rh / 3); ctx.lineTo(rx + rw, ry + rh / 3);
+    ctx.moveTo(rx, ry + (rh * 2) / 3); ctx.lineTo(rx + rw, ry + (rh * 2) / 3);
+    ctx.stroke();
+    ctx.restore();
+
+    // 주 선택 테두리
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = Math.max(1.5, 2 * inv);
     ctx.strokeRect(rx, ry, rw, rh);
+
+    // 8방향 리사이즈 핸들 (모서리 4개 + 변 중점 4개 · 줌 보정 크기)
+    const activeHandle = (sheetState.drag && sheetState.drag.kind === "resize")
+      ? sheetState.drag.handle
+      : (sheetState.hoverHit && sheetState.hoverHit.kind === "handle" ? sheetState.hoverHit.handle : null);
+    for (const hp of sheetHandlesPx(cv.width, cv.height)) {
+      const isHot = activeHandle === hp.id;
+      const baseSz = (hp.corner ? 9.5 : 8) * inv * (isHot ? 1.24 : 1);
+      ctx.save();
+      ctx.fillStyle = isHot ? onAccent : accent;
+      ctx.strokeStyle = isHot ? accent : onAccent;
+      ctx.lineWidth = Math.max(1.2, 1.8 * inv);
+      if (hp.corner) {
+        ctx.fillRect(hp.x - baseSz / 2, hp.y - baseSz / 2, baseSz, baseSz);
+        ctx.strokeRect(hp.x - baseSz / 2, hp.y - baseSz / 2, baseSz, baseSz);
+      } else {
+        const horiz = hp.id === "n" || hp.id === "s";
+        const hw = (horiz ? 14 : 6.5) * inv * (isHot ? 1.15 : 1);
+        const hh = (horiz ? 6.5 : 14) * inv * (isHot ? 1.15 : 1);
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(hp.x - hw / 2, hp.y - hh / 2, hw, hh, 3 * inv);
+        else ctx.rect(hp.x - hw / 2, hp.y - hh / 2, hw, hh);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // 실시간 픽셀 치수 라벨
+    const pxW = Math.round(rw), pxH = Math.round(rh);
+    const pxX = Math.round(rx), pxY = Math.round(ry);
+    const label = `${pxW} × ${pxH} px`;
+    ctx.save();
+    const fsz = Math.max(10, Math.round(11.5 * inv));
+    ctx.font = `600 ${fsz}px ui-monospace, SFMono-Regular, Menlo, Consolas, sans-serif`;
+    const tw = ctx.measureText(label).width;
+    const padX = 7 * inv, boxH = 20 * inv, boxW = tw + padX * 2;
+    const bx = Math.max(2 * inv, Math.min(cv.width - boxW - 2 * inv, rx));
+    const by = ry - boxH - 6 * inv >= 2 * inv ? ry - boxH - 6 * inv : ry + 6 * inv;
+    ctx.fillStyle = "rgba(9, 9, 11, 0.88)";
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = Math.max(1, 1.2 * inv);
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bx, by, boxW, boxH, 4 * inv);
+    else ctx.rect(bx, by, boxW, boxH);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#fafafa";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, bx + padX, by + boxH / 2 + 0.5 * inv);
+    ctx.restore();
 
     const szEl = $("sheet-cut-size");
     if (szEl) {
-      szEl.textContent = `선택 영역: ${Math.round(r.w * img.naturalWidth)} × ${Math.round(r.h * img.naturalHeight)} px`;
+      szEl.textContent = `오리기 영역: ${pxW} × ${pxH} px (${pxX}, ${pxY})`;
     }
+  }
+
+  function nudgeSheetCut(dxPx, dyPx) {
+    const img = sheetState.sheetImg;
+    if (!sheetState.open || !img) return false;
+    const w = img.naturalWidth || 1, h = img.naturalHeight || 1;
+    const r = sheetState.cutRect;
+    r.x = Math.max(0, Math.min(1 - r.w, r.x + dxPx / w));
+    r.y = Math.max(0, Math.min(1 - r.h, r.y + dyPx / h));
+    drawSheetSource();
+    drawSheetWarp();
+    return true;
   }
 
   function drawTexturedTriangle(ctx, img, u0, v0, u1, v1, u2, v2, x0, y0, x1, y1, x2, y2) {
@@ -230,10 +400,17 @@ window.DPV2Overlays = (() => {
     drawTexturedTriangle(ctx, cutC, 0, 0, 256, 256, 0, 256, q[0].x, q[0].y, q[2].x, q[2].y, q[3].x, q[3].y);
     ctx.restore();
 
-    // 3) 4점 와이어프레임 & 드래그 꼭짓점 핸들 (1~4)
+    // 3) 4점 와이어프레임 · 변 중점 핸들 · 드래그 꼭짓점 핸들 (1~4)
     const accent = Store.activeAccentHex();
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = 1.8;
+    const isLight = Store.activeTheme().mode === "light";
+    const onAccent = isLight ? "#ffffff" : "#09090b";
+    const convex = isQuadConvex(sheetState.quad);
+    const wireCol = convex ? accent : "#ef4444";
+
+    ctx.save();
+    ctx.strokeStyle = wireCol;
+    ctx.lineWidth = 2;
+    if (!convex) ctx.setLineDash([6, 4]);
     ctx.beginPath();
     ctx.moveTo(q[0].x, q[0].y);
     ctx.lineTo(q[1].x, q[1].y);
@@ -241,17 +418,60 @@ window.DPV2Overlays = (() => {
     ctx.lineTo(q[3].x, q[3].y);
     ctx.closePath();
     ctx.stroke();
+    ctx.restore();
 
-    q.forEach((pt, idx) => {
-      ctx.fillStyle = accent;
-      ctx.strokeStyle = "#09090b";
-      ctx.lineWidth = 2;
+    // 호버/활성 변 강조 및 4변 중점 미니 핸들
+    const activeEdge = (sheetState.drag && sheetState.drag.kind === "quad-edge")
+      ? sheetState.drag.idx
+      : (sheetState.warpHover && sheetState.warpHover.kind === "edge" ? sheetState.warpHover.idx : -1);
+    for (let i = 0; i < 4; i++) {
+      const a = q[i], b = q[(i + 1) % 4];
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      const hot = activeEdge === i;
+      if (hot) {
+        ctx.save();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.fillStyle = hot ? "#ffffff" : "rgba(18, 18, 22, 0.85)";
+      ctx.strokeStyle = wireCol;
+      ctx.lineWidth = 1.6;
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 8, 0, Math.PI * 2);
+      ctx.arc(mx, my, hot ? 5.5 : 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = "#09090b";
-      ctx.font = "bold 10px sans-serif";
+    }
+
+    const activeCorner = (sheetState.drag && sheetState.drag.kind === "quad-corner")
+      ? sheetState.drag.idx
+      : (sheetState.warpHover && sheetState.warpHover.kind === "corner" ? sheetState.warpHover.idx : -1);
+    q.forEach((pt, idx) => {
+      const hot = activeCorner === idx;
+      const rad = hot ? 10 : 8.5;
+      if (hot) {
+        ctx.save();
+        ctx.strokeStyle = wireCol;
+        ctx.globalAlpha = 0.4;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, rad + 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.fillStyle = wireCol;
+      ctx.strokeStyle = onAccent;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, rad, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = onAccent;
+      ctx.font = "700 10px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(String(idx + 1), pt.x, pt.y + 0.5);
@@ -289,6 +509,8 @@ window.DPV2Overlays = (() => {
     sheetState.maximized = false;
     $("sheet-split-body").classList.remove("maximized");
     $("btn-sheet-max").textContent = "⤢ 최대화";
+    const bc = $("sheet-breadcrumb-proj");
+    if (bc) bc.textContent = (Store.state.S && Store.state.S.project) || Store.state.root || "프로젝트";
     ov.classList.remove("hidden");
 
     await Store.loadRefs(true);
@@ -329,6 +551,9 @@ window.DPV2Overlays = (() => {
 
   function closeSheetOverlay() {
     sheetState.open = false;
+    sheetState.drag = null;
+    sheetState.hoverHit = null;
+    sheetState.warpHover = null;
     const ov = $("sheet-overlay");
     if (ov) ov.classList.add("hidden");
   }
@@ -543,7 +768,70 @@ window.DPV2Overlays = (() => {
     }
   }
 
-  // ==================== 3. 히스토리 드로어 ====================
+  // ==================== 3. 히스토리 패널 (이동 · 리사이즈 · 좌/우 자석 스냅 Attach/Detach) ====================
+  function getHistoryPrefs() {
+    const cur = (Store.state.prefs && Store.state.prefs.historyPanel) || {};
+    return {
+      mode: ["floating", "dock-left", "dock-right"].includes(cur.mode) ? cur.mode : "floating",
+      x: typeof cur.x === "number" ? cur.x : null,
+      y: typeof cur.y === "number" ? cur.y : null,
+      w: Math.max(240, Math.min(520, Number(cur.w) || 300)),
+      h: Math.max(220, Math.min(Math.max(300, window.innerHeight - 80), Number(cur.h) || 420)),
+    };
+  }
+
+  function clampFloatingBox(x, y, w, h) {
+    const topMin = 50;
+    const pad = 8;
+    const maxW = Math.max(240, Math.min(520, window.innerWidth - pad * 2));
+    const maxH = Math.max(220, window.innerHeight - topMin - pad);
+    const cw = Math.max(240, Math.min(maxW, w));
+    const ch = Math.max(220, Math.min(maxH, h));
+    const cx = Math.max(pad, Math.min(window.innerWidth - cw - pad, x));
+    const cy = Math.max(topMin, Math.min(window.innerHeight - ch - pad, y));
+    return { x: Math.round(cx), y: Math.round(cy), w: Math.round(cw), h: Math.round(ch) };
+  }
+
+  function applyHistoryPanelLayout(override = null) {
+    const dr = $("history-drawer");
+    if (!dr) return;
+    const hp = Object.assign(getHistoryPrefs(), override || {});
+    dr.dataset.mode = hp.mode;
+    dr.classList.remove("mode-floating", "mode-dock-left", "mode-dock-right");
+    dr.classList.add(`mode-${hp.mode}`);
+
+    if (hp.mode === "floating") {
+      const rightDock = $("right-dock");
+      const rDockW = rightDock && rightDock.offsetWidth ? rightDock.offsetWidth : 368;
+      const defX = Math.max(16, window.innerWidth - rDockW - hp.w - 20);
+      const defY = 58;
+      const box = clampFloatingBox(hp.x ?? defX, hp.y ?? defY, hp.w, hp.h);
+      dr.style.left = `${box.x}px`;
+      dr.style.top = `${box.y}px`;
+      dr.style.width = `${box.w}px`;
+      dr.style.height = `${box.h}px`;
+    } else {
+      dr.style.left = "";
+      dr.style.top = "";
+      dr.style.width = "";
+      dr.style.height = "";
+    }
+
+    const bL = $("btn-hist-dock-left");
+    const bR = $("btn-hist-dock-right");
+    const bF = $("btn-hist-float");
+    if (bL) bL.classList.toggle("on", hp.mode === "dock-left");
+    if (bR) bR.classList.toggle("on", hp.mode === "dock-right");
+    if (bF) bF.classList.toggle("on", hp.mode === "floating");
+  }
+
+  function setHistoryPanelMode(mode, extra = {}) {
+    const cur = getHistoryPrefs();
+    const next = Object.assign({}, cur, extra, { mode });
+    Store.savePrefs({ historyPanel: next });
+    applyHistoryPanelLayout(next);
+  }
+
   function renderHistoryDrawer() {
     const list = $("history-list");
     if (!list) return;
@@ -569,10 +857,14 @@ window.DPV2Overlays = (() => {
   function toggleHistoryDrawer() {
     const dr = $("history-drawer");
     if (!dr) return;
-    dr.classList.toggle("hidden");
+    const willOpen = dr.classList.contains("hidden");
+    dr.classList.toggle("hidden", !willOpen);
     const btn = $("btn-history-panel");
-    if (btn) btn.classList.toggle("on", !dr.classList.contains("hidden"));
-    renderHistoryDrawer();
+    if (btn) btn.classList.toggle("on", willOpen);
+    if (willOpen) {
+      applyHistoryPanelLayout();
+      renderHistoryDrawer();
+    }
   }
 
   // ==================== 4. 환경설정 모달 (6테마 × 7포인트컬러 + UI 크기 + 4배치 + 바깥어둡게) ====================
@@ -798,13 +1090,16 @@ window.DPV2Overlays = (() => {
     const rows = [
       ["선택 · 이동 · 크기 · 모서리 회전", "V"],
       ["사각형 수정 영역 추가", "M"],
+      ["크기 128px · 위치 16px 스냅 임시 해제", "Ctrl + 드래그"],
+      ["비율 유지 / 정사각형 그리기", "Shift + 드래그"],
+      ["선택 영역 미세 이동 (16 / 128 / 1px)", "방향키 / Shift / Ctrl"],
       ["마스크 살리기 브러시 / 지우개", "B / E"],
       ["레퍼런스 시트 오리기 · 4점 원근", "R"],
       ["선택 해제 (밝은 원본 전체 보기)", "Esc"],
       ["원본과 즉시 비교", "Q / Tab"],
       ["좌우 분할 비교", "S"],
       ["영역선 표시 / 경계 이음매", "O / N"],
-      ["작업 히스토리 패널", "H"],
+      ["작업 히스토리 패널 (이동·부착 가능)", "H"],
       ["화면 맞춤 (Fit)", "0"],
       ["여러 영역 다중 선택", "Shift / Ctrl + 클릭"],
       ["실행 취소 / 다시 실행", "Ctrl+Z / Ctrl+Shift+Z"],
@@ -1060,13 +1355,155 @@ window.DPV2Overlays = (() => {
     const mBack = $("modal-backdrop");
     if (mBack) mBack.addEventListener("click", (e) => { if (e.target === mBack) closeModal(); });
 
-    // 히스토리 드로어
+    // 히스토리 패널 아이콘 · 도킹/분리 · 드래그 이동 · 자석 스냅 Attach · 리사이즈
+    const histIcons = [
+      ["history-grip-icon", "grip", 13],
+      ["btn-hist-dock-left", "dockLeft", 13],
+      ["btn-hist-dock-right", "dockRight", 13],
+      ["btn-hist-float", "floatWin", 13],
+      ["btn-close-history", "x", 13],
+      ["sheet-back-icon", "arrowLeft", 14],
+      ["sheet-close-icon", "x", 14],
+    ];
+    for (const [id, ico, sz] of histIcons) {
+      const el = $(id);
+      if (el) { el.innerHTML = ""; el.append(Data.icon(ico, sz)); }
+    }
+
     const btnCloseHist = $("btn-close-history");
     if (btnCloseHist) btnCloseHist.addEventListener("click", toggleHistoryDrawer);
+    const btnHistL = $("btn-hist-dock-left");
+    if (btnHistL) btnHistL.addEventListener("click", () => {
+      setHistoryPanelMode("dock-left");
+      Store.toast("작업 히스토리를 좌측에 부착했습니다.");
+    });
+    const btnHistR = $("btn-hist-dock-right");
+    if (btnHistR) btnHistR.addEventListener("click", () => {
+      setHistoryPanelMode("dock-right");
+      Store.toast("작업 히스토리를 우측에 부착했습니다.");
+    });
+    const btnHistF = $("btn-hist-float");
+    if (btnHistF) btnHistF.addEventListener("click", () => {
+      setHistoryPanelMode("floating");
+      Store.toast("작업 히스토리를 플로팅 창으로 분리했습니다.");
+    });
 
-    // 시트 오리기 & 4점 원근 이벤트
+    const histHead = $("history-drag-head");
+    const histDrawer = $("history-drawer");
+    const dockPreview = $("history-dock-preview");
+    if (histHead && histDrawer) {
+      let hDrag = null;
+      histHead.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0 || e.target.closest("button")) return;
+        const rect = histDrawer.getBoundingClientRect();
+        const hp = getHistoryPrefs();
+        hDrag = {
+          startMode: hp.mode,
+          sx: e.clientX,
+          sy: e.clientY,
+          offX: e.clientX - rect.left,
+          offY: e.clientY - rect.top,
+          w: hp.w,
+          h: hp.h,
+          detached: hp.mode === "floating",
+          snapZone: null,
+          curX: rect.left,
+          curY: rect.top,
+        };
+        try { histHead.setPointerCapture(e.pointerId); } catch (_) {}
+        histDrawer.classList.add("dragging");
+      });
+      histHead.addEventListener("pointermove", (e) => {
+        if (!hDrag) return;
+        const dist = Math.hypot(e.clientX - hDrag.sx, e.clientY - hDrag.sy);
+        if (!hDrag.detached) {
+          if (dist < 12) return;
+          hDrag.detached = true;
+          hDrag.offX = Math.min(hDrag.w - 40, Math.max(24, hDrag.offX));
+          hDrag.offY = Math.min(28, Math.max(10, hDrag.offY));
+          histDrawer.dataset.mode = "floating";
+          histDrawer.classList.remove("mode-dock-left", "mode-dock-right");
+          histDrawer.classList.add("mode-floating");
+          histDrawer.style.width = `${hDrag.w}px`;
+          histDrawer.style.height = `${hDrag.h}px`;
+        }
+        const box = clampFloatingBox(e.clientX - hDrag.offX, e.clientY - hDrag.offY, hDrag.w, hDrag.h);
+        hDrag.curX = box.x;
+        hDrag.curY = box.y;
+        histDrawer.style.left = `${box.x}px`;
+        histDrawer.style.top = `${box.y}px`;
+
+        // 좌/우 가장자리 48px 진입 시 자석 도킹 프리뷰
+        let zone = null;
+        if (e.clientX <= 48) zone = "dock-left";
+        else if (e.clientX >= window.innerWidth - 48) zone = "dock-right";
+        hDrag.snapZone = zone;
+        if (dockPreview) {
+          dockPreview.classList.toggle("hidden", !zone);
+          dockPreview.classList.toggle("left", zone === "dock-left");
+          dockPreview.classList.toggle("right", zone === "dock-right");
+        }
+      });
+      const finishHistDrag = () => {
+        if (!hDrag) return;
+        const d = hDrag;
+        hDrag = null;
+        histDrawer.classList.remove("dragging");
+        if (dockPreview) dockPreview.classList.add("hidden", "left", "right");
+        if (!d.detached) return;
+        if (d.snapZone) {
+          setHistoryPanelMode(d.snapZone, { w: d.w, h: d.h });
+          Store.toast(d.snapZone === "dock-left" ? "작업 히스토리를 좌측에 부착했습니다." : "작업 히스토리를 우측에 부착했습니다.");
+        } else {
+          setHistoryPanelMode("floating", { x: d.curX, y: d.curY, w: d.w, h: d.h });
+        }
+      };
+      histHead.addEventListener("pointerup", finishHistDrag);
+      histHead.addEventListener("pointercancel", finishHistDrag);
+    }
+
+    const histResize = $("history-resize-handle");
+    if (histResize && histDrawer) {
+      let rDrag = null;
+      histResize.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0 || histDrawer.dataset.mode !== "floating") return;
+        e.stopPropagation();
+        const rect = histDrawer.getBoundingClientRect();
+        rDrag = { sx: e.clientX, sy: e.clientY, x: rect.left, y: rect.top, w: rect.width, h: rect.height };
+        try { histResize.setPointerCapture(e.pointerId); } catch (_) {}
+      });
+      histResize.addEventListener("pointermove", (e) => {
+        if (!rDrag) return;
+        const box = clampFloatingBox(rDrag.x, rDrag.y, rDrag.w + (e.clientX - rDrag.sx), rDrag.h + (e.clientY - rDrag.sy));
+        rDrag.curBox = box;
+        histDrawer.style.width = `${box.w}px`;
+        histDrawer.style.height = `${box.h}px`;
+      });
+      const finishResize = () => {
+        if (!rDrag) return;
+        const box = rDrag.curBox;
+        rDrag = null;
+        if (box) setHistoryPanelMode("floating", box);
+      };
+      histResize.addEventListener("pointerup", finishResize);
+      histResize.addEventListener("pointercancel", finishResize);
+    }
+
+    window.addEventListener("resize", () => {
+      if (histDrawer && !histDrawer.classList.contains("hidden") && histDrawer.dataset.mode === "floating") {
+        applyHistoryPanelLayout();
+      }
+    });
+
+    // 시트 오리기 & 4점 원근 이벤트 (하위 뎁스 복귀 + 백드롭 닫기)
+    const btnSheetBack = $("btn-sheet-back");
+    if (btnSheetBack) btnSheetBack.addEventListener("click", closeSheetOverlay);
     const btnSheetClose = $("btn-sheet-close");
     if (btnSheetClose) btnSheetClose.addEventListener("click", closeSheetOverlay);
+    const sheetOv = $("sheet-overlay");
+    if (sheetOv) sheetOv.addEventListener("click", (e) => {
+      if (e.target === sheetOv) closeSheetOverlay();
+    });
     const shSel = $("sheet-select");
     if (shSel) shSel.addEventListener("change", (e) => loadSelectedSheet(e.target.value));
     const cropSel = $("sheet-target-crop");
@@ -1075,6 +1512,29 @@ window.DPV2Overlays = (() => {
     if (btnShUp) btnShUp.addEventListener("click", () => $("hidden-file-sheet").click());
     const btnShForge = $("btn-sheet-forge");
     if (btnShForge) btnShForge.addEventListener("click", openForgeImportForRef);
+
+    // 빠른 선택: 전체 / 1:1 정사각
+    const btnSelAll = $("btn-sheet-sel-all");
+    if (btnSelAll) btnSelAll.addEventListener("click", () => {
+      if (!sheetState.sheetImg) return;
+      sheetState.cutRect = { x: 0, y: 0, w: 1, h: 1 };
+      drawSheetSource();
+      drawSheetWarp();
+    });
+    const btnSelSq = $("btn-sheet-sel-sq");
+    if (btnSelSq) btnSelSq.addEventListener("click", () => {
+      const img = sheetState.sheetImg;
+      if (!img) return;
+      const w = img.naturalWidth, h = img.naturalHeight;
+      const r = sheetState.cutRect;
+      const cx = (r.x + r.w / 2) * w, cy = (r.y + r.h / 2) * h;
+      const side = Math.max(16, Math.min(w, h, Math.round((r.w * w + r.h * h) / 2)));
+      const nx = Math.max(0, Math.min(w - side, Math.round(cx - side / 2)));
+      const ny = Math.max(0, Math.min(h - side, Math.round(cy - side / 2)));
+      sheetState.cutRect = { x: nx / w, y: ny / h, w: side / w, h: side / h };
+      drawSheetSource();
+      drawSheetWarp();
+    });
 
     const btnZout = $("btn-sheet-zout"), btnZin = $("btn-sheet-zin"), btn1to1 = $("btn-sheet-1to1"), btnFit = $("btn-sheet-fit"), btnMax = $("btn-sheet-max");
     if (btnZout) btnZout.addEventListener("click", () => setSheetZoomAt(sheetState.zoom / 1.25));
@@ -1108,10 +1568,33 @@ window.DPV2Overlays = (() => {
     const btnAttach = $("btn-sheet-attach");
     if (btnAttach) btnAttach.addEventListener("click", () => saveSheetCut(true));
 
-    // 좌측 시트 뷰어: 휠 커서 중심 줌 + 오버스크롤 패닝 + 드래그 오리기
+    // 좌측 시트 뷰어: 휠 커서 중심 줌 + 오버스크롤 팬 + 8방향 핸들 리사이즈 + 내부 이동 + 바깥 새 영역 그리기
     const srcWrap = $("sheet-source-wrap");
     const srcCanvas = $("sheet-source-canvas");
     if (srcWrap && srcCanvas) {
+      const clientToSheetPx = (clientX, clientY) => {
+        const b = srcCanvas.getBoundingClientRect();
+        const img = sheetState.sheetImg;
+        if (!img || !b.width || !b.height) return null;
+        return {
+          x: ((clientX - b.left) / b.width) * img.naturalWidth,
+          y: ((clientY - b.top) / b.height) * img.naturalHeight,
+        };
+      };
+
+      const updateSheetCursor = (pxPt) => {
+        if (Canvas.view.spaceDown) { srcWrap.style.cursor = "grab"; return; }
+        if (!pxPt) { srcWrap.style.cursor = "crosshair"; return; }
+        const hit = sheetHitTest(pxPt.x, pxPt.y);
+        const prev = sheetState.hoverHit;
+        const changed = (prev?.kind !== hit?.kind) || (prev?.handle !== hit?.handle);
+        sheetState.hoverHit = hit;
+        if (!hit) srcWrap.style.cursor = "crosshair";
+        else if (hit.kind === "handle") srcWrap.style.cursor = SHEET_HANDLE_CURSORS[hit.handle] || "pointer";
+        else srcWrap.style.cursor = "move";
+        if (changed) drawSheetSource();
+      };
+
       srcWrap.addEventListener("contextmenu", (e) => e.preventDefault());
       srcWrap.addEventListener("wheel", (e) => {
         e.preventDefault();
@@ -1119,90 +1602,229 @@ window.DPV2Overlays = (() => {
         setSheetZoomAt(sheetState.zoom * (e.deltaY < 0 ? 1.16 : 1 / 1.16), e.clientX - b.left, e.clientY - b.top);
       }, { passive: false });
       srcWrap.addEventListener("pointerdown", (e) => {
-        if (!sheetState.sheetImg) return;
+        const img = sheetState.sheetImg;
+        if (!img) return;
         if (e.button === 1 || e.button === 2 || Canvas.view.spaceDown) {
           sheetState.drag = { kind: "pan", sx: e.clientX, sy: e.clientY, panX: sheetState.panX, panY: sheetState.panY };
           srcWrap.style.cursor = "grabbing";
-          srcWrap.setPointerCapture(e.pointerId);
+          try { srcWrap.setPointerCapture(e.pointerId); } catch (_) {}
           return;
         }
         if (e.button !== 0) return;
-        const b = srcCanvas.getBoundingClientRect();
-        if (!b.width || !b.height) return;
-        const x = Math.max(0, Math.min(1, (e.clientX - b.left) / b.width));
-        const y = Math.max(0, Math.min(1, (e.clientY - b.top) / b.height));
-        sheetState.drag = { kind: "cut", x0: x, y0: y };
-        srcWrap.setPointerCapture(e.pointerId);
+        const pt = clientToSheetPx(e.clientX, e.clientY);
+        if (!pt) return;
+        const hit = sheetHitTest(pt.x, pt.y);
+        const r = sheetState.cutRect;
+        const origPx = [
+          r.x * img.naturalWidth,
+          r.y * img.naturalHeight,
+          (r.x + r.w) * img.naturalWidth,
+          (r.y + r.h) * img.naturalHeight,
+        ];
+        if (hit && hit.kind === "handle") {
+          sheetState.drag = { kind: "resize", handle: hit.handle, startPt: pt, origPx };
+          srcWrap.style.cursor = SHEET_HANDLE_CURSORS[hit.handle] || "pointer";
+        } else if (hit && hit.kind === "body") {
+          sheetState.drag = { kind: "move", startPt: pt, origPx };
+          srcWrap.style.cursor = "grabbing";
+        } else {
+          const cx = Math.max(0, Math.min(img.naturalWidth, pt.x));
+          const cy = Math.max(0, Math.min(img.naturalHeight, pt.y));
+          sheetState.drag = { kind: "new", x0: cx, y0: cy, sx: e.clientX, sy: e.clientY, active: false };
+        }
+        try { srcWrap.setPointerCapture(e.pointerId); } catch (_) {}
+        drawSheetSource();
       });
       srcWrap.addEventListener("pointermove", (e) => {
+        const img = sheetState.sheetImg;
+        if (!img) return;
+        const pt = clientToSheetPx(e.clientX, e.clientY);
         if (!sheetState.drag) {
-          srcWrap.style.cursor = Canvas.view.spaceDown ? "grab" : "crosshair";
+          updateSheetCursor(pt);
           return;
         }
-        if (sheetState.drag.kind === "pan") {
-          sheetState.panX = sheetState.drag.panX + (e.clientX - sheetState.drag.sx);
-          sheetState.panY = sheetState.drag.panY + (e.clientY - sheetState.drag.sy);
+        const dg = sheetState.drag;
+        if (dg.kind === "pan") {
+          sheetState.panX = dg.panX + (e.clientX - dg.sx);
+          sheetState.panY = dg.panY + (e.clientY - dg.sy);
           applySheetTransform();
           return;
         }
-        if (sheetState.drag.kind !== "cut") return;
-        const b = srcCanvas.getBoundingClientRect();
-        if (!b.width || !b.height) return;
-        const x = Math.max(0, Math.min(1, (e.clientX - b.left) / b.width));
-        const y = Math.max(0, Math.min(1, (e.clientY - b.top) / b.height));
-        sheetState.cutRect = {
-          x: Math.min(sheetState.drag.x0, x),
-          y: Math.min(sheetState.drag.y0, y),
-          w: Math.max(0.03, Math.abs(x - sheetState.drag.x0)),
-          h: Math.max(0.03, Math.abs(y - sheetState.drag.y0)),
-        };
+        if (!pt) return;
+        const W = img.naturalWidth, H = img.naturalHeight;
+        const MIN = Math.min(16, W, H);
+
+        if (dg.kind === "move") {
+          const [ox1, oy1, ox2, oy2] = dg.origPx;
+          const rw = ox2 - ox1, rh = oy2 - oy1;
+          const nx1 = Math.max(0, Math.min(W - rw, ox1 + (pt.x - dg.startPt.x)));
+          const ny1 = Math.max(0, Math.min(H - rh, oy1 + (pt.y - dg.startPt.y)));
+          sheetState.cutRect = { x: nx1 / W, y: ny1 / H, w: rw / W, h: rh / H };
+        } else if (dg.kind === "resize") {
+          const [ox1, oy1, ox2, oy2] = dg.origPx;
+          const dx = pt.x - dg.startPt.x;
+          const dy = pt.y - dg.startPt.y;
+          const h = dg.handle;
+          let x1 = ox1, y1 = oy1, x2 = ox2, y2 = oy2;
+          if (h.includes("w")) x1 = Math.max(0, Math.min(ox2 - MIN, ox1 + dx));
+          if (h.includes("e")) x2 = Math.min(W, Math.max(ox1 + MIN, ox2 + dx));
+          if (h.includes("n")) y1 = Math.max(0, Math.min(oy2 - MIN, oy1 + dy));
+          if (h.includes("s")) y2 = Math.min(H, Math.max(oy1 + MIN, oy2 + dy));
+
+          // Shift + 모서리 드래그: 원래 종횡비 유지
+          if (e.shiftKey && (h.includes("w") || h.includes("e")) && (h.includes("n") || h.includes("s"))) {
+            const aspect = Math.max(0.05, (ox2 - ox1) / Math.max(1, oy2 - oy1));
+            let nw = x2 - x1, nh = y2 - y1;
+            if (nw / Math.max(1, nh) > aspect) nh = nw / aspect;
+            else nw = nh * aspect;
+            if (h.includes("w")) {
+              x1 = Math.max(0, ox2 - nw);
+              nw = ox2 - x1; nh = nw / aspect;
+            } else {
+              x2 = Math.min(W, ox1 + nw);
+              nw = x2 - ox1; nh = nw / aspect;
+            }
+            if (h.includes("n")) {
+              y1 = Math.max(0, oy2 - nh);
+              nh = oy2 - y1; nw = nh * aspect;
+              if (h.includes("w")) x1 = Math.max(0, ox2 - nw); else x2 = Math.min(W, ox1 + nw);
+            } else {
+              y2 = Math.min(H, oy1 + nh);
+              nh = y2 - oy1; nw = nh * aspect;
+              if (h.includes("w")) x1 = Math.max(0, ox2 - nw); else x2 = Math.min(W, ox1 + nw);
+            }
+          }
+          sheetState.cutRect = {
+            x: Math.max(0, x1) / W,
+            y: Math.max(0, y1) / H,
+            w: Math.max(MIN, x2 - x1) / W,
+            h: Math.max(MIN, y2 - y1) / H,
+          };
+        } else if (dg.kind === "new") {
+          if (!dg.active) {
+            if (Math.hypot(e.clientX - dg.sx, e.clientY - dg.sy) < 5) return;
+            dg.active = true;
+          }
+          let x2 = Math.max(0, Math.min(W, pt.x));
+          let y2 = Math.max(0, Math.min(H, pt.y));
+          if (e.shiftKey) {
+            const side = Math.max(Math.abs(x2 - dg.x0), Math.abs(y2 - dg.y0));
+            x2 = Math.max(0, Math.min(W, dg.x0 + (x2 >= dg.x0 ? side : -side)));
+            y2 = Math.max(0, Math.min(H, dg.y0 + (y2 >= dg.y0 ? side : -side)));
+          }
+          const nx1 = Math.min(dg.x0, x2), ny1 = Math.min(dg.y0, y2);
+          const nw = Math.max(MIN, Math.abs(x2 - dg.x0));
+          const nh = Math.max(MIN, Math.abs(y2 - dg.y0));
+          sheetState.cutRect = {
+            x: Math.min(nx1, W - nw) / W,
+            y: Math.min(ny1, H - nh) / H,
+            w: Math.min(nw, W) / W,
+            h: Math.min(nh, H) / H,
+          };
+        }
         drawSheetSource();
         drawSheetWarp();
       });
-      srcWrap.addEventListener("pointerup", () => {
+      const finishSheetDrag = (e) => {
+        if (!sheetState.drag) return;
         sheetState.drag = null;
-        srcWrap.style.cursor = "crosshair";
+        const pt = e ? clientToSheetPx(e.clientX, e.clientY) : null;
+        updateSheetCursor(pt);
+        drawSheetSource();
+      };
+      srcWrap.addEventListener("pointerup", finishSheetDrag);
+      srcWrap.addEventListener("pointercancel", finishSheetDrag);
+      srcWrap.addEventListener("pointerleave", () => {
+        if (!sheetState.drag && sheetState.hoverHit) {
+          sheetState.hoverHit = null;
+          drawSheetSource();
+        }
       });
     }
 
-    // 우측 4점 원근 꼭짓점 드래그
+    // 우측 4점 원근: 꼭짓점 개별 드래그 + 변 통째 드래그 + 사각형 내부 전체 평행 이동
     const warpCanvas = $("sheet-warp-canvas");
     if (warpCanvas) {
+      const updateWarpCursor = (x, y) => {
+        const hit = warpHitTest(x, y);
+        const prev = sheetState.warpHover;
+        const changed = (prev?.kind !== hit?.kind) || (prev?.idx !== hit?.idx);
+        sheetState.warpHover = hit;
+        if (!hit) warpCanvas.style.cursor = "default";
+        else if (hit.kind === "corner") warpCanvas.style.cursor = "grab";
+        else if (hit.kind === "edge") warpCanvas.style.cursor = "pointer";
+        else warpCanvas.style.cursor = "move";
+        if (changed) drawSheetWarp();
+      };
+
       warpCanvas.addEventListener("pointerdown", (e) => {
-        if (!sheetState.sheetImg) return;
+        if (!sheetState.sheetImg || e.button !== 0) return;
         const b = warpCanvas.getBoundingClientRect();
         const x = (e.clientX - b.left) / b.width;
         const y = (e.clientY - b.top) / b.height;
-        let nearest = -1, bestD = 0.09;
-        sheetState.quad.forEach((pt, idx) => {
-          const d = Math.hypot(pt.x - x, pt.y - y);
-          if (d < bestD) { bestD = d; nearest = idx; }
-        });
-        if (nearest >= 0) {
-          sheetState.drag = { kind: "quad", idx: nearest };
+        const hit = warpHitTest(x, y);
+        if (!hit) return;
+        const origQuad = sheetState.quad.map((pt) => ({ x: pt.x, y: pt.y }));
+        if (hit.kind === "corner") {
+          sheetState.drag = { kind: "quad-corner", idx: hit.idx, sx: x, sy: y, origQuad };
           warpCanvas.style.cursor = "grabbing";
-          warpCanvas.setPointerCapture(e.pointerId);
+        } else if (hit.kind === "edge") {
+          sheetState.drag = { kind: "quad-edge", idx: hit.idx, sx: x, sy: y, origQuad };
+          warpCanvas.style.cursor = "grabbing";
+        } else {
+          sheetState.drag = { kind: "quad-move", sx: x, sy: y, origQuad };
+          warpCanvas.style.cursor = "grabbing";
         }
+        try { warpCanvas.setPointerCapture(e.pointerId); } catch (_) {}
+        drawSheetWarp();
       });
       warpCanvas.addEventListener("pointermove", (e) => {
         const b = warpCanvas.getBoundingClientRect();
         const x = (e.clientX - b.left) / b.width;
         const y = (e.clientY - b.top) / b.height;
         if (!sheetState.drag) {
-          const near = sheetState.quad.some((pt) => Math.hypot(pt.x - x, pt.y - y) < 0.08);
-          warpCanvas.style.cursor = near ? "grab" : "default";
+          updateWarpCursor(x, y);
           return;
         }
-        if (sheetState.drag.kind !== "quad") return;
-        sheetState.quad[sheetState.drag.idx] = {
-          x: Math.max(0.02, Math.min(0.98, x)),
-          y: Math.max(0.02, Math.min(0.98, y)),
-        };
-        drawSheetWarp();
+        const dg = sheetState.drag;
+        const clampQ = (v) => Math.max(0.02, Math.min(0.98, v));
+        if (dg.kind === "quad-corner") {
+          sheetState.quad[dg.idx] = { x: clampQ(x), y: clampQ(y) };
+          drawSheetWarp();
+        } else if (dg.kind === "quad-edge") {
+          const dx = x - dg.sx, dy = y - dg.sy;
+          const i1 = dg.idx, i2 = (dg.idx + 1) % 4;
+          sheetState.quad[i1] = { x: clampQ(dg.origQuad[i1].x + dx), y: clampQ(dg.origQuad[i1].y + dy) };
+          sheetState.quad[i2] = { x: clampQ(dg.origQuad[i2].x + dx), y: clampQ(dg.origQuad[i2].y + dy) };
+          drawSheetWarp();
+        } else if (dg.kind === "quad-move") {
+          let dx = x - dg.sx, dy = y - dg.sy;
+          const minX = Math.min(...dg.origQuad.map((p) => p.x));
+          const maxX = Math.max(...dg.origQuad.map((p) => p.x));
+          const minY = Math.min(...dg.origQuad.map((p) => p.y));
+          const maxY = Math.max(...dg.origQuad.map((p) => p.y));
+          dx = Math.max(0.02 - minX, Math.min(0.98 - maxX, dx));
+          dy = Math.max(0.02 - minY, Math.min(0.98 - maxY, dy));
+          sheetState.quad = dg.origQuad.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+          drawSheetWarp();
+        }
       });
-      warpCanvas.addEventListener("pointerup", () => {
+      const finishWarpDrag = (e) => {
+        if (!sheetState.drag) return;
         sheetState.drag = null;
-        warpCanvas.style.cursor = "default";
+        if (e) {
+          const b = warpCanvas.getBoundingClientRect();
+          updateWarpCursor((e.clientX - b.left) / b.width, (e.clientY - b.top) / b.height);
+        }
+        drawSheetWarp();
+      };
+      warpCanvas.addEventListener("pointerup", finishWarpDrag);
+      warpCanvas.addEventListener("pointercancel", finishWarpDrag);
+      warpCanvas.addEventListener("pointerleave", () => {
+        if (!sheetState.drag && sheetState.warpHover) {
+          sheetState.warpHover = null;
+          drawSheetWarp();
+        }
       });
     }
 
@@ -1284,9 +1906,12 @@ window.DPV2Overlays = (() => {
     closeModal,
     openSheetOverlay,
     closeSheetOverlay,
+    nudgeSheetCut,
     openCompareOverlay,
     closeCompareOverlay,
     toggleHistoryDrawer,
+    setHistoryPanelMode,
+    applyHistoryPanelLayout,
     openSettingsModal,
     openExportModal,
     openPresetsModal,

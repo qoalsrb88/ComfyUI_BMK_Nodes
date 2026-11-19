@@ -16,6 +16,11 @@ window.DPV2Store = (() => {
     focusDimAlpha: 36,
     forgeThemeSync: true,
     showAutoCrop: false,
+    snapGrid: true,
+    snapStep: 128,
+    snapRatio: true,
+    historyPanel: { mode: "floating", x: null, y: null, w: 300, h: 420 },
+    modelPopoverSize: { w: 640, h: 490 },
   };
 
   const listeners = new Set();
@@ -101,7 +106,19 @@ window.DPV2Store = (() => {
     if (!st) return;
     try {
       const raw = st.getItem(PREF_KEY);
-      if (raw) Object.assign(state.prefs, DEFAULT_PREFS, JSON.parse(raw));
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        Object.assign(state.prefs, DEFAULT_PREFS, parsed);
+        // 기존 snapGrid(boolean)만 있던 설정을 snapStep으로 호환 마이그레이션
+        if (parsed && parsed.snapStep === undefined && parsed.snapGrid === false) {
+          state.prefs.snapStep = 1;
+        }
+        if (![1, 16, 32, 64, 128].includes(Number(state.prefs.snapStep))) {
+          state.prefs.snapStep = 128;
+        }
+        state.prefs.historyPanel = Object.assign({}, DEFAULT_PREFS.historyPanel, (parsed && parsed.historyPanel) || {});
+        state.prefs.modelPopoverSize = Object.assign({}, DEFAULT_PREFS.modelPopoverSize, (parsed && parsed.modelPopoverSize) || {});
+      }
     } catch (_) { /* 손상된 설정은 기본값 사용 */ }
   }
 
@@ -739,13 +756,32 @@ window.DPV2Store = (() => {
   async function refreshAll(force = false) {
     if (!state.root || state.polling) return;
     state.polling = true;
-    state.syncState = "syncing";
-    state.syncMsg = "동기화 중…";
-    emit("sync");
+    const isInitial = !state.S;
+    let slowTimer = null;
+    if (isInitial) {
+      state.syncState = "syncing";
+      state.syncMsg = "불러오는 중";
+      emit("sync");
+    } else if (force) {
+      // 빠른 응답(450ms 이하)에서는 헤더 점멸 없이 rev 숫자만 매끄럽게 갱신
+      slowTimer = setTimeout(() => {
+        if (state.polling) {
+          state.syncState = "syncing";
+          emit("sync");
+        }
+      }, 450);
+    }
     try {
       const prev = state.S;
+      const prevRunning = !!(prev && prev.running);
+      const prevDrain = !!(prev && prev.drain);
+      const prevDrafting = !!(prev && prev.drafting);
+      const prevExport = prev ? prev.export_state : undefined;
+      const prevSyncState = state.syncState;
+      const prevSyncMsg = state.syncMsg;
       const d = await Api.getState(state.root, force || !prev ? undefined : prev.rev);
       let fullReload = !d.unchanged;
+      let statusChanged = false;
       if (d.unchanged && prev) {
         prev.running = d.running;
         prev.drain = d.drain;
@@ -754,6 +790,10 @@ window.DPV2Store = (() => {
           prev.export_state = d.export_state;
           prev.export_last = d.export_last;
         }
+        statusChanged = (!!prev.running !== prevRunning)
+          || (!!prev.drain !== prevDrain)
+          || (!!prev.drafting !== prevDrafting)
+          || (prev.export_state !== prevExport);
         if (d.layout_rev !== prev.layout_rev || d.refs_rev !== prev.refs_rev
             || d.refs_files_v !== prev.refs_files_v || d.pipeline_rev !== prev.pipeline_rev
             || d.plan_v !== prev.plan_v) {
@@ -783,16 +823,21 @@ window.DPV2Store = (() => {
           await loadSpec(state.primaryId, true);
         }
       } else if (state.S && state.S.running) {
-        try { state.progress = await Api.getProgress(state.root); } catch (_) {}
+        try { state.progress = await Api.getProgress(state.root); statusChanged = true; } catch (_) {}
       }
       state.syncState = "idle";
       state.syncMsg = state.S ? `rev ${state.S.rev} · 동기화됨` : "연결됨";
-      emit("state");
+      if (fullReload || statusChanged || isInitial) {
+        emit("state");
+      } else if (prevSyncState !== "idle" || prevSyncMsg !== state.syncMsg) {
+        emit("sync");
+      }
     } catch (err) {
       state.syncState = "err";
       state.syncMsg = err.message || "연결 오류";
       emit("sync");
     } finally {
+      if (slowTimer) clearTimeout(slowTimer);
       state.polling = false;
     }
   }

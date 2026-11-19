@@ -127,6 +127,12 @@ window.DPV2Inspector = (() => {
         dataset: { patchId: p.id },
       });
 
+      // 좌측 6-dot Drag Handle (드래그 재정렬 가능 UI 명시)
+      const dragHandle = Data.el("span", {
+        className: "patch-drag-handle",
+        title: "드래그해서 레이어 겹침 순서(Z-Order) 변경",
+      }, Data.icon("grip", 13));
+
       // 생성 대상 체크박스
       const chk = Data.el("input", {
         type: "checkbox",
@@ -154,10 +160,17 @@ window.DPV2Inspector = (() => {
       thumb.append(tc, Data.el("span", { className: "patch-idx-badge", text: String(idx + 1) }));
       if (p.anyPicked) thumb.append(Data.el("span", { className: "patch-star-mini", text: "★" }));
 
-      // 정보 & 행 컨트롤
+      // 정보 & 행 컨트롤 (눈 · 잠금 · 삭제)
+      const themeMode = Store.activeTheme().mode;
+      const pCol = Data.purposeColor(p.meta.purpose, themeMode);
       const info = Data.el("div", { className: "patch-info" });
+      const purpIcoWrap = Data.el("span", {
+        className: "patch-purpose-ico",
+        title: purp.label,
+        style: `--p-col:${pCol};--p-soft:${Data.hexToRgba(pCol, themeMode === "light" ? 0.13 : 0.18)};`,
+      }, Data.icon(purp.icon, 11));
       const nameLine = Data.el("div", { className: "patch-name-line" },
-        Data.icon(purp.icon, 12),
+        purpIcoWrap,
         Data.el("span", { className: "patch-name", text: p.name, title: p.name }),
       );
 
@@ -168,23 +181,21 @@ window.DPV2Inspector = (() => {
       const statusTxt = p.anyPicked
         ? `★ ${p.candidates.length}장`
         : hasCands ? `${p.candidates.length}장` : "대기";
-      const modelShort = p.modelInfo ? p.modelInfo.shortName : p.effectiveModel;
+      const rawModelShort = p.modelInfo ? p.modelInfo.shortName : p.effectiveModel;
+      const compactModel = rawModelShort
+        .replace(/^GPT\s+2\.6.*$/i, "GPT 2.6")
+        .replace(/^GPT\s+2\.5.*$/i, "GPT 2.5")
+        .replace(/^Nano Banana\s*/i, "NB ")
+        .replace(/^Seedream\s*/i, "SR ")
+        .replace(/^Ideogram\s*/i, "IG ");
 
-      const metaEl = Data.el("div", { className: "patch-meta" },
+      const metaEl = Data.el("div", { className: "patch-meta", title: `${statusTxt} · ${rawModelShort}` },
         Data.el("span", { className: `status-dot ${statusCls}` }),
-        Data.el("span", { text: `${statusTxt} · ${modelShort}` }),
+        Data.el("span", { className: "patch-meta-text", text: `${statusTxt} · ${compactModel}` }),
       );
 
       const ctrls = Data.el("div", { className: "patch-row-ctrls", onClick: (e) => e.stopPropagation() });
 
-      const btnUp = Data.el("button", {
-        type: "button", className: "row-icon-btn", title: "위로 이동 (Z-순서)", disabled: idx === 0,
-        onClick: () => Store.moveCropZ(p.id, "step", "up"),
-      }, Data.icon("up", 12));
-      const btnDown = Data.el("button", {
-        type: "button", className: "row-icon-btn", title: "아래로 이동 (Z-순서)", disabled: idx === patches.length - 1,
-        onClick: () => Store.moveCropZ(p.id, "step", "down"),
-      }, Data.icon("down", 12));
       const btnEye = Data.el("button", {
         type: "button",
         className: "row-icon-btn" + (p.meta.hidden ? " off" : ""),
@@ -198,30 +209,46 @@ window.DPV2Inspector = (() => {
         onClick: () => Store.updateCrop(p.id, { locked: !p.locked }, p.locked ? `잠금 해제 (${p.name})` : `잠금 (${p.name})`),
       }, Data.icon(p.locked ? "lock" : "unlock", 12));
       const btnDel = Data.el("button", {
-        type: "button", className: "row-icon-btn", title: "영역 삭제",
+        type: "button", className: "row-icon-btn danger", title: "영역 삭제",
         onClick: async () => {
           const ok = await Data.askDialogConfirm(`"${p.name}" 수정 영역을 삭제할까요?`, { ok: "삭제", cancel: "취소", danger: true });
           if (ok) await Store.deleteCrop(p.id);
         },
       }, Data.icon("x", 12));
 
-      ctrls.append(btnUp, btnDown, btnEye, btnLock, btnDel);
+      ctrls.append(btnEye, btnLock, btnDel);
       info.append(nameLine, Data.el("div", { className: "patch-sub-row" }, metaEl, ctrls));
-      li.append(chk, thumb, info);
+
+      // 우측 세로 정렬 상하 이동 화살표 스택 (Z-Order 위/아래)
+      const zStack = Data.el("div", { className: "patch-z-stack", onClick: (e) => e.stopPropagation() },
+        Data.el("button", {
+          type: "button", className: "z-step-btn", title: "한 단계 위로 이동 (Z-순서)", disabled: idx === 0,
+          onClick: () => Store.moveCropZ(p.id, "step", "up"),
+        }, Data.icon("up", 11)),
+        Data.el("button", {
+          type: "button", className: "z-step-btn", title: "한 단계 아래로 이동 (Z-순서)", disabled: idx === patches.length - 1,
+          onClick: () => Store.moveCropZ(p.id, "step", "down"),
+        }, Data.icon("down", 11)),
+      );
+
+      li.append(dragHandle, chk, thumb, info, zStack);
 
       li.addEventListener("click", (e) => {
         Store.selectPatch(p.id, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey });
       });
 
-      // 드래그 Z-Order 재정렬 + 레퍼런스 카드 드롭 수용
+      // 드래그 Z-Order 재정렬(상/하반부 정밀 드롭) + 레퍼런스 카드 드롭 수용
       li.addEventListener("dragstart", (e) => {
         draggedPatchId = p.id;
+        li.classList.add("dragging");
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("text/dps-patch-id", p.id);
       });
       li.addEventListener("dragend", () => {
         draggedPatchId = null;
-        document.querySelectorAll(".patch-item.drag-over-top").forEach((el) => el.classList.remove("drag-over-top"));
+        document.querySelectorAll(".patch-item.dragging, .patch-item.drag-over-top, .patch-item.drag-over-bottom").forEach((el) => {
+          el.classList.remove("dragging", "drag-over-top", "drag-over-bottom");
+        });
       });
       li.addEventListener("dragover", (e) => {
         if (e.dataTransfer?.types?.includes("text/dps-ref-file")) {
@@ -229,14 +256,18 @@ window.DPV2Inspector = (() => {
           li.classList.add("drop-hover");
         } else if (draggedPatchId && draggedPatchId !== p.id) {
           e.preventDefault();
-          li.classList.add("drag-over-top");
+          const r = li.getBoundingClientRect();
+          const isLower = (e.clientY - r.top) > r.height / 2;
+          li.classList.toggle("drag-over-top", !isLower);
+          li.classList.toggle("drag-over-bottom", isLower);
         }
       });
       li.addEventListener("dragleave", () => {
-        li.classList.remove("drop-hover", "drag-over-top");
+        li.classList.remove("drop-hover", "drag-over-top", "drag-over-bottom");
       });
       li.addEventListener("drop", async (e) => {
-        li.classList.remove("drop-hover", "drag-over-top");
+        const dropBelow = li.classList.contains("drag-over-bottom");
+        li.classList.remove("drop-hover", "drag-over-top", "drag-over-bottom");
         const refFile = e.dataTransfer?.getData("text/dps-ref-file");
         if (refFile) {
           e.preventDefault();
@@ -248,7 +279,7 @@ window.DPV2Inspector = (() => {
           e.preventDefault();
           const moving = draggedPatchId;
           draggedPatchId = null;
-          await Store.moveCropZ(moving, "after", p.id);
+          await Store.moveCropZ(moving, dropBelow ? "before" : "after", p.id);
         }
       });
 
@@ -356,16 +387,21 @@ window.DPV2Inspector = (() => {
         }
       }
 
-      // 5종 작업 목적 그리드
+      // 5종 작업 목적 그리드 (고유 시맨틱 컬러 연동)
       const pg = $("purpose-grid");
       const commonPurp = Store.getCommonOrMixed(selList, (p) => p.meta.purpose);
+      const themeMode = Store.activeTheme().mode;
       if (pg) {
         pg.innerHTML = "";
         for (const pr of Data.PURPOSES) {
+          const pc = Data.purposeColor(pr.id, themeMode);
+          const pSoft = Data.hexToRgba(pc, themeMode === "light" ? 0.12 : 0.17);
+          const pBorder = Data.hexToRgba(pc, themeMode === "light" ? 0.55 : 0.62);
           const btn = Data.el("button", {
             type: "button",
             className: "purpose-btn" + (!commonPurp.mixed && commonPurp.value === pr.id ? " on" : ""),
             title: pr.hint,
+            style: `--p-col:${pc};--p-soft:${pSoft};--p-border:${pBorder};`,
             onClick: () => {
               for (const sp of selList) {
                 sp.meta.purpose = pr.id;
@@ -376,7 +412,7 @@ window.DPV2Inspector = (() => {
                 Store.savePatchSpec(patch).catch((err) => Store.toast(`지시문 저장 실패: ${err.message}`, "err"));
               }
             },
-          }, Data.icon(pr.icon, 14), Data.el("span", { text: pr.label }));
+          }, Data.el("span", { className: "purpose-btn-ico" }, Data.icon(pr.icon, 13)), Data.el("span", { text: pr.label }));
           pg.append(btn);
         }
         if (isMulti && commonPurp.mixed) {
@@ -472,8 +508,8 @@ window.DPV2Inspector = (() => {
         aiDraftBtn.append(
           Data.icon("sparkles", 14),
           Store.state.assistBusy
-            ? "Forge AI 프롬프트 작성 중…"
-            : (patch.meta.body_en ? "AI 스마트 프롬프트 다시 작성" : "AI 스마트 프롬프트 미리 작성"),
+            ? "AI 프롬프트 작성 중…"
+            : (patch.meta.body_en ? "AI 프롬프트 다시 작성" : "AI 프롬프트 미리 작성"),
         );
         aiDraftBtn.disabled = !!Store.state.assistBusy;
       }
@@ -817,7 +853,40 @@ window.DPV2Inspector = (() => {
     }
   }
 
-  // ── 5. 2열 검색형 모델 팝오버 (목업 100% 복원) ──
+  // ── 5. 2열 검색형 모델 팝오버 (독립 스크롤 · 3방향 리사이즈 · 크기 영속 저장) ──
+  const MP_DEF_W = 640, MP_DEF_H = 490;
+  const MP_MIN_W = 480, MP_MIN_H = 320;
+
+  function clampModelPopoverSize(w, h) {
+    const maxW = Math.max(MP_MIN_W, Math.min(960, Math.floor(window.innerWidth * 0.9)));
+    const maxH = Math.max(MP_MIN_H, Math.min(760, Math.floor(window.innerHeight * 0.82)));
+    return {
+      w: Math.round(Math.max(MP_MIN_W, Math.min(maxW, Number(w) || MP_DEF_W))),
+      h: Math.round(Math.max(MP_MIN_H, Math.min(maxH, Number(h) || MP_DEF_H))),
+    };
+  }
+
+  function applyModelPopoverBox(pop, anchorEl) {
+    const saved = (Store.state.prefs && Store.state.prefs.modelPopoverSize) || {};
+    const sz = clampModelPopoverSize(saved.w ?? MP_DEF_W, saved.h ?? MP_DEF_H);
+    pop.style.width = `${sz.w}px`;
+    pop.style.height = `${sz.h}px`;
+
+    const rect = anchorEl ? anchorEl.getBoundingClientRect() : null;
+    let left = rect ? rect.right - sz.w : window.innerWidth - sz.w - 16;
+    if (left < 12) left = 12;
+    if (left + sz.w > window.innerWidth - 12) left = Math.max(12, window.innerWidth - sz.w - 12);
+
+    let top = rect ? rect.bottom + 8 : 64;
+    if (top + sz.h > window.innerHeight - 14) {
+      const above = rect ? rect.top - sz.h - 8 : 54;
+      top = above >= 54 ? above : Math.max(54, window.innerHeight - sz.h - 14);
+    }
+    if (top < 54) top = 54;
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.top = `${Math.round(top)}px`;
+  }
+
   function openModelPopover(anchorEl) {
     const pop = $("model-popover");
     if (!pop) return;
@@ -831,29 +900,86 @@ window.DPV2Inspector = (() => {
     const search = $("mp-search");
     if (search) search.value = "";
     renderModelPopoverList("");
-
-    const positionPopover = () => {
-      const rect = anchorEl.getBoundingClientRect();
-      const pr = pop.getBoundingClientRect();
-      const popW = pr.width || 600;
-      const popH = Math.min(pr.height || 430, window.innerHeight - 64);
-      let left = rect.right - popW;
-      if (left < 12) left = 12;
-      if (left + popW > window.innerWidth - 12) left = window.innerWidth - popW - 12;
-      let top = rect.bottom + 8;
-      if (top + popH > window.innerHeight - 14) {
-        top = rect.top - popH - 8;
-      }
-      if (top < 52) top = 52;
-      if (top + popH > window.innerHeight - 14) {
-        top = Math.max(52, window.innerHeight - popH - 14);
-      }
-      pop.style.left = `${Math.round(left)}px`;
-      pop.style.top = `${Math.round(top)}px`;
-    };
-    positionPopover();
-    requestAnimationFrame(positionPopover);
+    applyModelPopoverBox(pop, anchorEl);
+    requestAnimationFrame(() => applyModelPopoverBox(pop, anchorEl));
     if (search) search.focus();
+  }
+
+  function setupModelPopoverResize() {
+    const pop = $("model-popover");
+    if (!pop) return;
+    const handles = [
+      { id: "mp-resize-sw", dx: -1, dy: 1 },
+      { id: "mp-resize-s", dx: 0, dy: 1 },
+      { id: "mp-resize-se", dx: 1, dy: 1 },
+    ];
+    let activeDrag = null;
+
+    const onMove = (e) => {
+      if (!activeDrag) return;
+      const { h, sx, sy, left, right, top, w, height } = activeDrag;
+      const deltaX = e.clientX - sx;
+      const deltaY = e.clientY - sy;
+      const rawW = h.dx === 0 ? w : w + h.dx * deltaX;
+      const rawH = height + h.dy * deltaY;
+      const sz = clampModelPopoverSize(rawW, rawH);
+
+      let nextLeft = left;
+      if (h.dx < 0) {
+        nextLeft = Math.max(12, right - sz.w);
+        sz.w = Math.round(Math.max(MP_MIN_W, right - nextLeft));
+      } else if (nextLeft + sz.w > window.innerWidth - 12) {
+        nextLeft = Math.max(12, window.innerWidth - 12 - sz.w);
+        sz.w = Math.round(Math.min(sz.w, window.innerWidth - 24));
+      }
+
+      let nextTop = top;
+      if (nextTop + sz.h > window.innerHeight - 14) {
+        nextTop = Math.max(54, window.innerHeight - 14 - sz.h);
+        sz.h = Math.round(Math.min(sz.h, window.innerHeight - 68));
+      }
+
+      activeDrag.cur = sz;
+      pop.style.left = `${Math.round(nextLeft)}px`;
+      pop.style.top = `${Math.round(nextTop)}px`;
+      pop.style.width = `${sz.w}px`;
+      pop.style.height = `${sz.h}px`;
+    };
+
+    const onUp = () => {
+      if (!activeDrag) return;
+      const fin = activeDrag.cur;
+      activeDrag = null;
+      pop.classList.remove("resizing");
+      if (fin) Store.savePrefs({ modelPopoverSize: { w: fin.w, h: fin.h } });
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+
+    for (const h of handles) {
+      const el = $(h.id);
+      if (!el) continue;
+      el.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const r = pop.getBoundingClientRect();
+        activeDrag = { h, sx: e.clientX, sy: e.clientY, left: r.left, right: r.right, top: r.top, w: r.width, height: r.height };
+        pop.classList.add("resizing");
+        try { el.setPointerCapture(e.pointerId); } catch (_) {}
+      });
+      el.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        Store.savePrefs({ modelPopoverSize: { w: MP_DEF_W, h: MP_DEF_H } });
+        applyModelPopoverBox(pop, popoverAnchor);
+        Store.toast("모델 선택 창 크기를 기본값으로 복원했습니다.");
+      });
+    }
+    window.addEventListener("resize", () => {
+      if (!pop.classList.contains("hidden")) applyModelPopoverBox(pop, popoverAnchor);
+    });
   }
 
   function renderModelPopoverList(query) {
@@ -871,6 +997,11 @@ window.DPV2Inspector = (() => {
       || (m.badge || "").toLowerCase().includes(q)
       || (m.guide && m.guide.when.toLowerCase().includes(q))
     );
+
+    const cntEl = $("mp-count");
+    if (cntEl) {
+      cntEl.textContent = q ? `${filtered.length}/${catalog.length}` : `${catalog.length}종`;
+    }
 
     listEl.innerHTML = "";
     for (const m of filtered) {
@@ -1238,9 +1369,10 @@ window.DPV2Inspector = (() => {
   }
 
   function bindEvents() {
-    setupSplitter("splitter-left", "--left-w", 230, 420, false, 278);
+    setupSplitter("splitter-left", "--left-w", 248, 420, false, 294);
     setupSplitter("splitter-right", "--right-w", 300, 500, true, 368);
     setupDockDrag();
+    setupModelPopoverResize();
 
     // 좌측 도크 버튼
     const btnDesel = $("btn-deselect-patch");
@@ -1613,6 +1745,7 @@ window.DPV2Inspector = (() => {
         renderInspector();
         renderRunDock();
       } else if (reason === "prefs") {
+        renderPatchList();
         renderInspector();
       }
     });

@@ -199,6 +199,7 @@
             <span class="focus-dim-val" id="val-focus-dim">36%</span>
           </label>
           <div class="footer-right">
+            <button type="button" class="footer-snap-btn on" id="btn-toggle-snap" title="v1 격자 스냅 전환 (크기 128px 배수 · 위치 16px 격자 · Ctrl 드래그로 1px 임시 해제)">스냅 128px</button>
             <span id="canvas-res-label">- × - px</span>
             <span class="footer-coords" id="canvas-coords">0, 0</span>
           </div>
@@ -548,99 +549,154 @@
           </div>
         </footer>
       </aside>
+
+      <!-- 포토샵식 이동 · 도킹(Attach) 가능 작업 히스토리 패널 -->
+      <aside class="history-drawer hidden mode-floating" id="history-drawer" data-mode="floating">
+        <div class="history-head" id="history-drag-head" title="드래그해 자유롭게 이동하거나 화면 좌·우 끝에 끌어다 부착(Attach)하세요">
+          <div class="history-head-title">
+            <span class="history-grip" id="history-grip-icon"></span>
+            <strong>작업 히스토리</strong>
+          </div>
+          <div class="history-head-ctrls">
+            <button type="button" class="hist-mode-btn" id="btn-hist-dock-left" title="좌측 패널에 부착 (Attach Left)"></button>
+            <button type="button" class="hist-mode-btn" id="btn-hist-dock-right" title="우측 패널에 부착 (Attach Right)"></button>
+            <button type="button" class="hist-mode-btn on" id="btn-hist-float" title="플로팅 창으로 분리 (Detach)"></button>
+            <button type="button" class="hist-mode-btn close" id="btn-close-history" title="히스토리 닫기 (H)"></button>
+          </div>
+        </div>
+        <ul class="history-list" id="history-list"></ul>
+        <div class="history-foot">
+          <span>항목 클릭 시 해당 시점으로 이동</span>
+          <span class="history-foot-hint">좌·우 끝 드래그로 부착</span>
+        </div>
+        <div class="history-resize-handle" id="history-resize-handle" title="드래그해 창 크기 조절"></div>
+      </aside>
     </main>
 
-    <!-- 포토샵식 히스토리 드로어 -->
-    <aside class="history-drawer hidden" id="history-drawer">
-      <div class="history-head">
-        <strong>작업 히스토리</strong>
-        <button type="button" class="icon-btn" id="btn-close-history" title="닫기">×</button>
-      </div>
-      <ul class="history-list" id="history-list"></ul>
-      <div class="history-foot">항목을 클릭하면 해당 시점으로 즉시 이동합니다.</div>
-    </aside>
+    <!-- 히스토리 자석 도킹(Attach) 미리보기 가이드 -->
+    <div class="history-dock-preview hidden" id="history-dock-preview"></div>
 
-    <!-- 2열 검색형 모델 선택 팝오버 -->
+    <!-- 2열 검색형 모델 선택 팝오버 (독립 스크롤 · 좌하/하/우하 리사이즈 · 크기 자동 저장) -->
     <div class="model-popover hidden" id="model-popover">
       <div class="mp-left">
-        <input type="text" class="mp-search" id="mp-search" placeholder="모델명·용도 검색 (예: 정밀, 질감, 4K)" />
+        <div class="mp-search-wrap">
+          <input type="text" class="mp-search" id="mp-search" placeholder="모델명·용도 검색 (예: 정밀, 질감, 4K)" />
+          <span class="mp-count" id="mp-count">0종</span>
+        </div>
         <div class="mp-list" id="mp-list"></div>
       </div>
       <div class="mp-guide" id="mp-guide"></div>
+      <div class="mp-resize mp-resize-sw" id="mp-resize-sw" title="좌하단 드래그로 크기 조절 (더블클릭 초기화)"></div>
+      <div class="mp-resize mp-resize-s" id="mp-resize-s" title="하단 드래그로 높이 조절 (더블클릭 초기화)"></div>
+      <div class="mp-resize mp-resize-se" id="mp-resize-se" title="우하단 드래그로 크기 조절 (더블클릭 초기화)"></div>
     </div>
 
-    <!-- 50/50 분할 레퍼런스 시트 오리기 & 4점 원근 오버레이 (버그 1 영구 해결) -->
-    <div class="sheet-overlay hidden" id="sheet-overlay">
-      <div class="sheet-overlay-head">
-        <div class="sheet-head-left">
-          <strong>레퍼런스 시트 오리기 · 4점 원근 맞추기</strong>
-          <small>좌측: 휠 줌 · Space/우클릭 패닝 · 드래그 오리기 &nbsp;|&nbsp; 우측: 노란 꼭짓점 4개 드래그해 타깃 각도에 맞추기</small>
-        </div>
-        <div class="sheet-head-right">
-          <select class="select-input" id="sheet-select" title="작업할 레퍼런스 시트 선택"></select>
-          <button type="button" class="btn-secondary-sm" id="btn-sheet-upload">시트 업로드</button>
-          <button type="button" class="btn-secondary-sm" id="btn-sheet-forge">Forge 자료함</button>
-          <button type="button" class="btn-secondary-sm" id="btn-sheet-close">닫기 (Esc)</button>
-        </div>
+    <!-- 격자 · 모델 비율 스냅 설정 팝오버 -->
+    <div class="snap-popover hidden" id="snap-popover">
+      <div class="sp-head">
+        <strong>격자 · 비율 스냅</strong>
+        <span class="sp-sub">Ctrl 드래그: 1px 임시 해제</span>
       </div>
+      <div class="sp-list" id="snap-step-list"></div>
+      <div class="sp-ratio-box">
+        <label class="chk-inline">
+          <input type="checkbox" id="chk-snap-ratio" checked />
+          <span>모델 지정 비율 자동 스냅</span>
+        </label>
+        <small class="sp-ratio-hint" id="snap-ratio-hint">나노바나나 등 지정 비율 모델에서 허용 비율(1% 오차)로 자동 흡착</small>
+      </div>
+    </div>
 
-      <div class="sheet-split-body" id="sheet-split-body">
-        <!-- 좌측: 원본 시트 1:1 / 오버스크롤 오리기 -->
-        <div class="sheet-pane sheet-pane-left">
-          <div class="sheet-pane-bar">
-            <span><strong>1. 시트에서 영역 오리기</strong></span>
-            <div class="sheet-zoom-ctrls">
-              <button type="button" class="mini-btn" id="btn-sheet-zout">-</button>
-              <span class="sheet-zoom-val" id="sheet-zoom-val">100%</span>
-              <button type="button" class="mini-btn" id="btn-sheet-zin">+</button>
-              <button type="button" class="mini-btn" id="btn-sheet-1to1" title="원본 1:1 픽셀 배율">1:1</button>
-              <button type="button" class="mini-btn" id="btn-sheet-fit" title="화면에 맞춤">맞춤</button>
-              <button type="button" class="mini-btn accent-outline" id="btn-sheet-max" title="오리기 영역 최대화/분할 전환">⤢ 최대화</button>
+    <!-- 50/50 분할 레퍼런스 시트 오리기 & 4점 원근 하위 뎁스 오버레이 -->
+    <div class="sheet-overlay hidden" id="sheet-overlay">
+      <div class="sheet-frame" id="sheet-frame">
+        <div class="sheet-overlay-head">
+          <div class="sheet-head-left">
+            <button type="button" class="sheet-back-btn" id="btn-sheet-back" title="메인 작업 화면으로 돌아가기 (Esc)">
+              <span id="sheet-back-icon"></span>
+              <span>작업 화면</span>
+            </button>
+            <div class="sheet-breadcrumb">
+              <span class="crumb-root" id="sheet-breadcrumb-proj">프로젝트</span>
+              <span class="crumb-sep">/</span>
+              <strong class="crumb-cur">레퍼런스 시트 오리기 · 4점 원근</strong>
+              <span class="crumb-depth-tag">하위 화면</span>
             </div>
           </div>
-          <div class="sheet-canvas-wrap overscroll-stage" id="sheet-source-wrap">
-            <div class="sheet-transform" id="sheet-source-transform">
-              <canvas id="sheet-source-canvas"></canvas>
-            </div>
-            <div class="sheet-empty-overlay hidden" id="sheet-source-empty">
-              <strong>업로드된 시트가 없습니다</strong>
-              <small>상단의 [시트 업로드] 또는 [Forge 자료함]으로 레퍼런스 시트를 불러오세요.</small>
-            </div>
-          </div>
-          <div class="sheet-pane-foot">
-            <span id="sheet-cut-size">드래그해서 오릴 영역을 선택하세요</span>
-            <span class="block-sub">휠: 커서 줌 · Space/우클릭: 자유 이동</span>
+          <div class="sheet-head-right">
+            <select class="select-input" id="sheet-select" title="작업할 레퍼런스 시트 선택"></select>
+            <button type="button" class="btn-secondary-sm" id="btn-sheet-upload">시트 업로드</button>
+            <button type="button" class="btn-secondary-sm" id="btn-sheet-forge">Forge 자료함</button>
+            <div class="topbar-divider"></div>
+            <button type="button" class="sheet-close-btn" id="btn-sheet-close" title="하위 화면 닫고 작업 화면으로 돌아가기 (Esc)">
+              <span id="sheet-close-icon"></span>
+              <span>닫기</span>
+              <kbd>Esc</kbd>
+            </button>
           </div>
         </div>
 
-        <!-- 우측: 대상 크롭 오버레이 + 4점 원근 왜곡 -->
-        <div class="sheet-pane sheet-pane-right">
-          <div class="sheet-pane-bar">
-            <span><strong>2. 대상 원화 위 4점 원근 맞추기</strong></span>
-            <div class="sheet-warp-ctrls">
-              <select class="select-input" id="sheet-target-crop" title="연결할 수정 영역"></select>
-              <select class="select-input" id="sheet-role-select" title="레퍼런스 역할">
-                <option value="main">대표 ★</option>
-                <option value="aux">보조</option>
-              </select>
+        <div class="sheet-split-body" id="sheet-split-body">
+          <!-- 좌측: 원본 시트 1:1 / 오버스크롤 오리기 (8방향 핸들 · 이동 · 새 영역 · Shift 비율 유지) -->
+          <div class="sheet-pane sheet-pane-left">
+            <div class="sheet-pane-bar">
+              <span class="sheet-step-label"><span class="step-num">1</span>시트에서 영역 오리기</span>
+              <div class="sheet-zoom-ctrls">
+                <button type="button" class="mini-btn" id="btn-sheet-sel-all" title="시트 전체를 오리기 영역으로 선택">전체</button>
+                <button type="button" class="mini-btn" id="btn-sheet-sel-sq" title="선택 영역을 1:1 정사각형으로 맞추기">1:1</button>
+                <span class="pane-bar-sep"></span>
+                <button type="button" class="mini-btn" id="btn-sheet-zout">-</button>
+                <span class="sheet-zoom-val" id="sheet-zoom-val">100%</span>
+                <button type="button" class="mini-btn" id="btn-sheet-zin">+</button>
+                <button type="button" class="mini-btn" id="btn-sheet-1to1" title="원본 1:1 픽셀 배율">1:1 배율</button>
+                <button type="button" class="mini-btn" id="btn-sheet-fit" title="화면에 맞춤">맞춤</button>
+                <button type="button" class="mini-btn accent-outline" id="btn-sheet-max" title="오리기 영역 최대화/분할 전환">⤢ 최대화</button>
+              </div>
+            </div>
+            <div class="sheet-canvas-wrap overscroll-stage" id="sheet-source-wrap">
+              <div class="sheet-transform" id="sheet-source-transform">
+                <canvas id="sheet-source-canvas"></canvas>
+              </div>
+              <div class="sheet-empty-overlay hidden" id="sheet-source-empty">
+                <strong>업로드된 시트가 없습니다</strong>
+                <small>상단의 [시트 업로드] 또는 [Forge 자료함]으로 레퍼런스 시트를 불러오세요.</small>
+              </div>
+            </div>
+            <div class="sheet-pane-foot">
+              <span id="sheet-cut-size">모서리·변 드래그: 크기 조절 · 내부 드래그: 이동 · 바깥 드래그: 새 선택</span>
+              <span class="block-sub">Shift: 비율 유지 · 화살표: 미세 이동 · 휠: 줌 · Space/우클릭: 팬</span>
             </div>
           </div>
-          <div class="sheet-canvas-wrap" id="sheet-warp-wrap">
-            <canvas id="sheet-warp-canvas" width="480" height="480"></canvas>
-            <div class="sheet-empty-overlay hidden" id="sheet-warp-empty">
-              <strong>4점 원근 미리보기 대기 중</strong>
-              <small>좌측 시트에서 영역을 드래그하면 대상 원화 위에 겹쳐져 4점 꼭짓점을 조절할 수 있습니다.</small>
+
+          <!-- 우측: 대상 크롭 오버레이 + 4점 원근 왜곡 -->
+          <div class="sheet-pane sheet-pane-right">
+            <div class="sheet-pane-bar">
+              <span class="sheet-step-label"><span class="step-num">2</span>대상 원화 위 4점 원근 맞추기</span>
+              <div class="sheet-warp-ctrls">
+                <select class="select-input" id="sheet-target-crop" title="연결할 수정 영역"></select>
+                <select class="select-input" id="sheet-role-select" title="레퍼런스 역할">
+                  <option value="main">대표 ★</option>
+                  <option value="aux">보조</option>
+                </select>
+              </div>
             </div>
-          </div>
-          <div class="sheet-pane-foot">
-            <div class="sheet-warp-ctrls">
-              <label>투명도 <input type="range" id="sheet-overlay-alpha" min="15" max="100" value="65" /></label>
-              <button type="button" class="mini-btn" id="btn-sheet-flip">좌우 반전</button>
-              <button type="button" class="mini-btn" id="btn-sheet-reset-quad">각도 초기화</button>
+            <div class="sheet-canvas-wrap" id="sheet-warp-wrap">
+              <canvas id="sheet-warp-canvas" width="480" height="480"></canvas>
+              <div class="sheet-empty-overlay hidden" id="sheet-warp-empty">
+                <strong>4점 원근 미리보기 대기 중</strong>
+                <small>좌측 시트에서 영역을 선택하면 대상 원화 위에 겹쳐져 4점 꼭짓점·변·전체 위치를 조절할 수 있습니다.</small>
+              </div>
             </div>
-            <div class="dock-actions">
-              <button type="button" class="btn-secondary-sm" id="btn-sheet-save-vault">보관함에만 저장</button>
-              <button type="button" class="btn-primary-sm" id="btn-sheet-attach">저장 및 영역 연결</button>
+            <div class="sheet-pane-foot">
+              <div class="sheet-warp-ctrls">
+                <label>투명도 <input type="range" id="sheet-overlay-alpha" min="15" max="100" value="65" /></label>
+                <button type="button" class="mini-btn" id="btn-sheet-flip">좌우 반전</button>
+                <button type="button" class="mini-btn" id="btn-sheet-reset-quad">각도 초기화</button>
+              </div>
+              <div class="dock-actions">
+                <button type="button" class="btn-secondary-sm" id="btn-sheet-save-vault">보관함에만 저장</button>
+                <button type="button" class="btn-primary-sm" id="btn-sheet-attach">저장 및 영역 연결</button>
+              </div>
             </div>
           </div>
         </div>

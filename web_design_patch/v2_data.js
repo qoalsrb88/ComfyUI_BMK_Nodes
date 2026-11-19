@@ -74,11 +74,12 @@ window.DPV2Data = (() => {
     { id: "focus", name: "캔버스 집중", desc: "도구 레일과 캔버스만 넓게 보기" },
   ];
 
-  // 작업자 친화 목적 5종 (계약 §3.1 + 전용 SVG 아이콘 키 + 추천 모델 + 자주 쓰는 프리셋)
+  // 작업자 친화 목적 5종 (계약 §3.1 + 전용 SVG 아이콘 키 + 다크/라이트 시맨틱 컬러 + 추천 모델 + 프리셋)
   const PURPOSES = [
     {
       id: "correct",
       icon: "correct",
+      color: { dark: "#60a5fa", light: "#2563eb" },
       label: "수정 · 보정",
       short: "수정",
       recModel: "gpt-image-2.6-sunburst",
@@ -94,6 +95,7 @@ window.DPV2Data = (() => {
     {
       id: "add",
       icon: "add",
+      color: { dark: "#34d399", light: "#059669" },
       label: "요소 추가",
       short: "추가",
       recModel: "seedream-5.5",
@@ -109,6 +111,7 @@ window.DPV2Data = (() => {
     {
       id: "remove",
       icon: "remove",
+      color: { dark: "#fb7185", light: "#e11d48" },
       label: "제거 · 정리",
       short: "제거",
       recModel: "ideogram-4.5",
@@ -124,6 +127,7 @@ window.DPV2Data = (() => {
     {
       id: "vary",
       icon: "vary",
+      color: { dark: "#c084fc", light: "#7c3aed" },
       label: "디자인 변형",
       short: "변형",
       recModel: "nano-banana-2.1",
@@ -139,6 +143,7 @@ window.DPV2Data = (() => {
     {
       id: "detail",
       icon: "detail",
+      color: { dark: "#fbbf24", light: "#d97706" },
       label: "디테일 강화",
       short: "디테일",
       recModel: "gpt-image-2.6-sunburst",
@@ -151,6 +156,15 @@ window.DPV2Data = (() => {
         "기존 조명 방향을 지키면서 하이라이트와 미세 음영 대비만 살짝 강화해줘",
       ],
     },
+  ];
+
+  // 격자 스냅 단계 선택지 (GPT 128px 권장 · 다중 모델 16/32/64px · 1px 자유)
+  const SNAP_STEPS = [
+    { val: 128, label: "128px", tag: "GPT 권장", desc: "v1 표준 · 정수 배율 2× 최적" },
+    { val: 64, label: "64px", tag: "중형 파츠", desc: "장식·소품 균형 격자" },
+    { val: 32, label: "32px", tag: "소형 파츠", desc: "브로치·눈·손 등 세부 영역" },
+    { val: 16, label: "16px", tag: "공통 정밀", desc: "GPT·나노바나나 출력 공통 약수" },
+    { val: 1, label: "1px", tag: "자유", desc: "격자 제한 없이 픽셀 단위 조절" },
   ];
 
   // 공용 인라인 SVG 아이콘 팩 (외부 리소스 0개 · 다크/라이트 6종 테마 currentColor 자동 추종)
@@ -202,6 +216,21 @@ window.DPV2Data = (() => {
     help: [["circle", { cx: 12, cy: 12, r: 9 }], ["path", { d: "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" }], ["circle", { cx: 12, cy: 17, r: 0.8, fill: "currentColor" }]],
     chevronDown: [["polyline", { points: "6 9 12 15 18 9" }]],
     x: [["line", { x1: 18, y1: 6, x2: 6, y2: 18 }], ["line", { x1: 6, y1: 6, x2: 18, y2: 18 }]],
+    grip: [
+      ["circle", { cx: 9, cy: 6, r: 1.35, fill: "currentColor", stroke: "none" }],
+      ["circle", { cx: 15, cy: 6, r: 1.35, fill: "currentColor", stroke: "none" }],
+      ["circle", { cx: 9, cy: 12, r: 1.35, fill: "currentColor", stroke: "none" }],
+      ["circle", { cx: 15, cy: 12, r: 1.35, fill: "currentColor", stroke: "none" }],
+      ["circle", { cx: 9, cy: 18, r: 1.35, fill: "currentColor", stroke: "none" }],
+      ["circle", { cx: 15, cy: 18, r: 1.35, fill: "currentColor", stroke: "none" }],
+    ],
+    arrowLeft: [["line", { x1: 19, y1: 12, x2: 5, y2: 12 }], ["polyline", { points: "12 19 5 12 12 5" }]],
+    dockLeft: [["rect", { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ["line", { x1: 9, y1: 4, x2: 9, y2: 20 }], ["rect", { x: 4.5, y: 6, width: 3, height: 12, rx: 0.5, fill: "currentColor", stroke: "none", opacity: "0.45" }]],
+    dockRight: [["rect", { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ["line", { x1: 15, y1: 4, x2: 15, y2: 20 }], ["rect", { x: 16.5, y: 6, width: 3, height: 12, rx: 0.5, fill: "currentColor", stroke: "none", opacity: "0.45" }]],
+    floatWin: [["rect", { x: 3, y: 4, width: 14, height: 12, rx: 2 }], ["path", { d: "M8 20h11a2 2 0 0 0 2-2V9" }]],
+    gridSnap: [["path", { d: "M3 9h18M3 15h18M9 3v18M15 3v18" }]],
+    maximize: [["polyline", { points: "15 3 21 3 21 9" }], ["polyline", { points: "9 21 3 21 3 15" }], ["line", { x1: 21, y1: 3, x2: 14, y2: 10 }], ["line", { x1: 3, y1: 21, x2: 10, y2: 14 }]],
+    minimize: [["polyline", { points: "4 14 10 14 10 20" }], ["polyline", { points: "20 10 14 10 14 4" }], ["line", { x1: 14, y1: 10, x2: 21, y2: 3 }], ["line", { x1: 3, y1: 21, x2: 10, y2: 14 }]],
   };
 
   function icon(name, size = 14) {
@@ -522,6 +551,31 @@ window.DPV2Data = (() => {
     return PURPOSES.find((p) => p.id === id) || PURPOSES[0];
   }
 
+  function purposeColor(id, mode = "dark") {
+    const p = purposeInfo(id);
+    const pal = p && p.color ? p.color : { dark: "#60a5fa", light: "#2563eb" };
+    return mode === "light" ? pal.light : pal.dark;
+  }
+
+  function appendSvgIcon(parentSvg, name, x, y, size, strokeColor, strokeW = 2.1) {
+    const nested = svgEl("svg", {
+      x, y, width: size, height: size,
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: strokeColor,
+      "stroke-width": strokeW,
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+    });
+    for (const [tag, attrs] of (ICON_DEFS[name] || [])) {
+      const a = Object.assign({}, attrs);
+      if (a.fill === "currentColor") a.fill = strokeColor;
+      nested.append(svgEl(tag, a));
+    }
+    parentSvg.append(nested);
+    return nested;
+  }
+
   function modelCatalog() {
     const live = window.DPEnv && window.DPEnv.caps && Array.isArray(window.DPEnv.caps.models)
       ? window.DPEnv.caps.models : null;
@@ -561,8 +615,8 @@ window.DPV2Data = (() => {
   }
 
   return {
-    THEMES, POINT_COLORS, LAYOUT_PRESETS, PURPOSES, MODEL_GUIDE, RATIO_SIZES, THINKING_LABELS,
-    el, svgEl, icon, askDialogConfirm, showDialogNotice, hexMix, hexToRgba, computeAutoCropFrame,
-    validateProjectName, formatElapsed, trafficLight, buildSwitchUrl, purposeInfo, modelCatalog, findModel,
+    THEMES, POINT_COLORS, LAYOUT_PRESETS, PURPOSES, SNAP_STEPS, MODEL_GUIDE, RATIO_SIZES, THINKING_LABELS,
+    el, svgEl, icon, appendSvgIcon, askDialogConfirm, showDialogNotice, hexMix, hexToRgba, computeAutoCropFrame,
+    validateProjectName, formatElapsed, trafficLight, buildSwitchUrl, purposeInfo, purposeColor, modelCatalog, findModel,
   };
 })();

@@ -38,12 +38,16 @@
   function updateTopbarState() {
     const S = Store.state.S;
     const nameEl = $("project-name-label");
-    if (nameEl && S) nameEl.textContent = S.project || Store.state.root;
+    if (nameEl && S) {
+      const nextName = S.project || Store.state.root;
+      if (nameEl.textContent !== nextName) nameEl.textContent = nextName;
+    }
 
     const pill = $("status-pill");
     if (pill) {
       const running = !!(S && S.running);
-      pill.textContent = running ? "생성 중…" : "작업 중";
+      const nextPill = running ? "생성 중…" : "작업 중";
+      if (pill.textContent !== nextPill) pill.textContent = nextPill;
       pill.classList.toggle("running", running);
     }
 
@@ -53,7 +57,10 @@
       syncPill.classList.toggle("syncing", Store.state.syncState === "syncing");
       syncPill.classList.toggle("err", Store.state.syncState === "err");
     }
-    if (syncTxt) syncTxt.textContent = Store.state.syncMsg || "동기화됨";
+    if (syncTxt) {
+      const nextMsg = Store.state.syncMsg || "동기화됨";
+      if (syncTxt.textContent !== nextMsg) syncTxt.textContent = nextMsg;
+    }
 
     const btnUndo = $("btn-undo"), btnRedo = $("btn-redo");
     if (btnUndo) btnUndo.disabled = Store.state.histIndex < 0;
@@ -223,6 +230,8 @@
         if (Overlays.sheetState.open) { Overlays.closeSheetOverlay(); return; }
         const pop = $("model-popover");
         if (pop && !pop.classList.contains("hidden")) { pop.classList.add("hidden"); return; }
+        const spop = $("snap-popover");
+        if (spop && !spop.classList.contains("hidden")) { spop.classList.add("hidden"); return; }
         // 버그 2 영구 해결: Esc 로 선택 완전 해제 → 밝은 원본 화면 즉시 확인!
         if (Store.state.selectedIds.size > 0 || Store.state.primaryId) {
           Store.clearSelection();
@@ -242,6 +251,24 @@
 
       if (isTyping(document.activeElement)) return;
 
+      // 레퍼런스 시트 오리기 오버레이 열림 시: 방향키 미세 이동 + Space 팬
+      if (Overlays.sheetState.open) {
+        if (e.key === " ") {
+          e.preventDefault();
+          Canvas.view.spaceDown = true;
+          return;
+        }
+        const arrowDelta = {
+          ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
+        }[e.key];
+        if (arrowDelta) {
+          e.preventDefault();
+          const step = e.shiftKey ? 10 : 1;
+          Overlays.nudgeSheetCut(arrowDelta[0] * step, arrowDelta[1] * step);
+        }
+        return;
+      }
+
       // 풀스크린 정밀 비교 단축키
       if (Overlays.cmpState.open) {
         if (e.key === "Tab") {
@@ -253,6 +280,21 @@
           if (c) Overlays.openCompareOverlay(c.key);
         }
         return;
+      }
+
+      // 메인 캔버스 선택 영역 방향키 미세 이동 (현재 snapStep 연동 · Shift 큰 단위 · Ctrl 1px)
+      const mainArrow = {
+        ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
+      }[e.key];
+      if (mainArrow) {
+        const activeStep = Canvas.getActiveSnapStep(e);
+        const delta = activeStep <= 1
+          ? (e.shiftKey ? 16 : 1)
+          : (e.shiftKey ? activeStep : Math.min(16, activeStep));
+        if (Canvas.nudgeSelectedPatch(mainArrow[0] * delta, mainArrow[1] * delta, activeStep)) {
+          e.preventDefault();
+          return;
+        }
       }
 
       const k = e.key.toLowerCase();
