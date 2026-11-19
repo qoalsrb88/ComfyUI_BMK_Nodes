@@ -903,7 +903,7 @@ def drift(settings: dict, m: dict) -> list[dict]:
             continue
         if key == "quality" and recorded_model is not None and not recorded_model.qualities:
             continue
-        if key == "size_rule" and recorded_model is not None and recorded_model.ratios and target_model is not None and target_model.ratios:
+        if key == "size_rule" and target_model is not None and target_model.ratios:
             continue
         mv, sv = rec[key], pre.get(key)
         if key in _PREPARE_OPTS:
@@ -970,12 +970,11 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
         target = validate_section("prepare", target)
         backend = runner.backend_name(root)
         _src, rec = prepare_record(m)
-        recorded_model, target_model = models.get(rec.get("model")), models.get(target["model"])
-        ratio_models = bool(recorded_model and recorded_model.ratios and target_model and target_model.ratios)
-        input_keys = ("variants", "ref_style") if ratio_models else ("size_rule", "variants", "ref_style")
+        target_model = models.get(target["model"])
+        input_keys = ("variants", "ref_style") if target_model and target_model.ratios else ("size_rule", "variants", "ref_style")
         missing_record = any(k not in rec for k in input_keys)
         recorded = {k: rec.get(k, before[k]) for k in input_keys}
-        if ((not ratio_models and target["size_rule"] != recorded["size_rule"]) or target["ref_style"] != recorded["ref_style"]
+        if (("size_rule" in recorded and target["size_rule"] != recorded["size_rule"]) or target["ref_style"] != recorded["ref_style"]
                 or _variant_tokens(target["variants"]) != _variant_tokens(recorded["variants"])):
             return {"prepare": target, "exact": False, "need": None, "cells": None, "est_usd": None, "credits": None,
                     "uncertain": True, "backend": backend}
