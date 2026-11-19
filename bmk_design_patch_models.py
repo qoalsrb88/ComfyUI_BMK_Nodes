@@ -16,6 +16,13 @@
               (RATIO_SIZES 의 가로/세로)과 RATIO_TOLERANCE 안에서 맞을 때만 생성한다 — 맞은 비율은 작업의
               opts["aspect_ratio"] 에 적힌다(없으면 발사하지 않는다)
   family      같은 계열의 묶음 이름. 표의 순서가 계열 안의 우선순위다(모델이 서버 목록에서 빠지면 다음 것을 권한다)
+  complexities 요청의 복잡도 선택지(GPT Image 2.6 계열만 — store.COMPLEXITY_MODELS 와 같은 모델). 비어 있으면 복잡도가 없는 모델이다
+
+패치별 생성 설정(UX v2-B — 프로젝트 폴더의 crop_gen.json 한 항목): 패치마다 모델 묶음과 장 수를 따로 정한다.
+  {"model", "quality"?, "opts"?, "complexity"?, "n"?}
+  모델 묶음 = model + 그 모델에 필요한 칸 전부(품질을 고르는 모델 = quality · 옵션이 있는 모델 = opts 의 모든 이름 ·
+  복잡도가 있는 모델 = complexity). 그 모델에 없는 칸은 적지 않는다. n 은 모델 묶음 없이 혼자 있을 수 있다.
+  gen_bundle 이 저장할 모델 묶음을 만들고, gen_entry_problem 이 읽은 항목을 검사하고, effective_gen 이 프로젝트 값과 합친다.
 
 이름(표의 키)은 프로젝트 기록에 남는 값이다 — 서버의 id 가 바뀌어도 이름은 그대로 두고 checkpoint 만 고친다.
 """
@@ -31,6 +38,10 @@ GPT_QUALITIES = ("max", "xhigh", "high", "medium", "low")
 SIZE_RULES = ("user_k", "int_k_2560")  # store.GPT_SIZE_RULES 와 같은 이름 — 기준 배율만 같이 쓴다
 RATIO_TOLERANCE = 0.01  # 받은 그림의 가로세로비가 요청과 이보다 크게 다르면 「비율 다름」
 PROVIDER_CALL_LIMIT = 8  # 장마다 따로 부르는 모델: 동시에 낸 잡들의 장 수 합 상한
+COMPLEXITIES = ("low", "medium", "high")  # GPT Image 2.6 계열의 복잡도 선택지
+DEFAULT_COMPLEXITY = "high"
+GEN_KEYS = ("model", "quality", "opts", "complexity", "n")  # 패치별 생성 설정 한 항목의 키(저장 순서)
+GEN_BROKEN = "패치의 생성 설정을 읽지 못했습니다"
 
 
 @dataclass(frozen=True)
@@ -52,11 +63,12 @@ class Model:
     opts: dict = field(default_factory=dict)
     opt_defaults: dict = field(default_factory=dict)
     ratios: tuple = ()               # 정해진 가로세로비로만 그리는 모델의 비율 목록
+    complexities: tuple = ()         # 복잡도 선택지(GPT Image 2.6 계열만)
 
 
-def _gpt(name: str, checkpoint: str) -> Model:
+def _gpt(name: str, checkpoint: str, complexities: tuple = ()) -> Model:
     return Model(name=name, label=name, checkpoint=checkpoint, kind="gpt", max_inputs=16, max_n=10,
-                 qualities=GPT_QUALITIES, default_quality="max")
+                 qualities=GPT_QUALITIES, default_quality="max", complexities=complexities)
 
 
 # 정해진 비율로만 그리는 모델(Gemini 계열)의 비율 목록과 해상도 단계. RATIO_SIZES 는 1K 단계의 예상 출력 크기(서버 모델 목록의
@@ -81,8 +93,8 @@ def _gemini(name: str, label: str, checkpoint: str, thinking: tuple = (), thinki
 
 # 순서 = 화면 선택지의 순서. 앞의 넷은 로컬판의 모델 목록(pipeline._MODELS)과 같은 순서다.
 MODELS: dict[str, Model] = {m.name: m for m in (
-    _gpt("gpt-image-2.6-sunburst", "gpt_image_26_sunburst"),
-    _gpt("gpt-image-2.6-flare", "gpt_image_26_flare"),
+    _gpt("gpt-image-2.6-sunburst", "gpt_image_26_sunburst", COMPLEXITIES),
+    _gpt("gpt-image-2.6-flare", "gpt_image_26_flare", COMPLEXITIES),
     _gpt("gpt-image-2.5-sunburst", "gpt_image_25_sunburst"),
     _gpt("gpt-image-2.5-flare", "gpt_image_25_flare"),
     Model(name="seedream-5.5", label="Seedream 5.5", checkpoint="seedream_5_5", kind="seedream", max_inputs=10,
@@ -392,9 +404,12 @@ def describe(name, catalog=None, *, checked: bool = False) -> dict:
     """화면에 주는 모델 한 줄(GET env 의 caps.models 항목). checked = 서버 목록을 대조했는가 — 대조하지 않았으면 available 은 참이고
     max_inputs 는 표의 값이다. opt_defaults = 옵션의 기본값, ratios = 비율 목록(없으면 []), ratio_sizes = 비율마다 예상 출력 크기
     [가로, 세로](비율 맞춤의 기준 — 없으면 {}), ratio_tolerance = 비율 맞춤의 허용 오차(비율 목록이 없으면 None), family = 계열 이름,
-    fallback = 목록에서 빠진 모델 대신 권할 같은 계열 모델의 이름(없으면 None)."""
+    fallback = 목록에서 빠진 모델 대신 권할 같은 계열 모델의 이름(없으면 None).
+    max_refs = 레퍼런스로 붙일 수 있는 그림 수(max_inputs 에서 타깃 크롭 한 장을 뺀 수), supports_quality = 품질을 고르는 모델인가,
+    complexities = 복잡도 선택지(없는 모델은 []) — 화면이 모델 이름을 비교하지 않고 이 값으로 칸을 연다(UX v2-B D554)."""
     m = MODELS[name]
     ok, why, limit = availability(name, catalog) if checked else (True, None, m.max_inputs)
+    limit = limit if limit is not None else m.max_inputs
     return {"name": m.name, "label": m.label, "kind": m.kind, "available": ok, "why": why,
             "qualities": list(m.qualities), "default_quality": m.default_quality if m.qualities else None,
             "opts": {key: list(values) for key, values in sorted(m.opts.items())},
@@ -402,4 +417,134 @@ def describe(name, catalog=None, *, checked: bool = False) -> dict:
             "ratios": list(m.ratios), "ratio_sizes": {label: list(RATIO_SIZES[label]) for label in m.ratios},
             "ratio_tolerance": RATIO_TOLERANCE if m.ratios else None, "family": m.family,
             "fallback": family_fallback(name, catalog) if checked else None,
-            "max_inputs": limit if limit is not None else m.max_inputs, "max_n": m.max_n, "fan_out": m.fan_out}
+            "max_inputs": limit, "max_n": m.max_n, "fan_out": m.fan_out,
+            "max_refs": max(0, limit - 1), "supports_quality": bool(m.qualities), "complexities": list(m.complexities)}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 패치별 생성 설정(UX v2-B) — 항목 만들기·검사·효과 값
+# ══════════════════════════════════════════════════════════════════════
+class GenError(ValueError):
+    """패치별 생성 설정의 값 오류. key = 틀린 칸의 이름(요청의 이름 그대로 — model_id·quality·opts·complexity·count, 읽은 항목이면 entry)."""
+
+    def __init__(self, key: str, message: str):
+        super().__init__(message)
+        self.key = key
+
+
+def gen_bundle(model_id, quality=None, opts=None, complexity=None) -> dict:
+    """저장할 모델 묶음 {"model", "quality"?, "opts"?, "complexity"?} — 그 모델에 필요한 칸을 전부 채운다(안 준 칸은 그 모델의
+    기본값: 품질 = default_quality, 옵션 = opt_defaults, 복잡도 = DEFAULT_COMPLEXITY). 그 모델에 없는 칸을 주었거나 값이 선택지
+    밖이면 GenError(틀린 칸). 비율(RATIO_OPT)은 고르는 값이 아니라 크롭에서 정해지므로 받지 않는다."""
+    m = get(model_id)
+    if m is None:
+        raise GenError("model_id", f"모르는 생성 모델입니다: {model_id!r}")
+    out: dict = {"model": m.name}
+    if quality is not None and not m.qualities:
+        raise GenError("quality", f"{m.label} 은 품질을 고르지 않는 모델입니다")
+    if m.qualities:
+        if quality is None:
+            quality = m.default_quality
+        if not isinstance(quality, str) or quality not in m.qualities:
+            raise GenError("quality", f"{m.label} 의 품질은 {' · '.join(m.qualities)} 가운데 하나여야 합니다: {quality!r}")
+        out["quality"] = quality
+    if opts is not None and not isinstance(opts, dict):
+        raise GenError("opts", "opts 는 객체여야 합니다")
+    given = opts or {}
+    if RATIO_OPT in given:
+        raise GenError("opts", "가로세로비는 고르는 값이 아닙니다 — 크롭의 비율에서 정해집니다")
+    extra = sorted(str(k) for k in set(given) - set(m.opts))
+    if extra:
+        raise GenError("opts", f"{m.label} 에 없는 옵션입니다: {', '.join(extra)}")
+    if m.opts:
+        filled = {}
+        for key, choices in sorted(m.opts.items()):
+            value = given.get(key, m.opt_defaults.get(key, choices[0]))
+            if not isinstance(value, str) or value not in choices:
+                raise GenError("opts", f"{m.label} 의 {key} 는 {' · '.join(choices)} 가운데 하나여야 합니다: {value!r}")
+            filled[key] = value
+        out["opts"] = filled
+    if complexity is not None and not m.complexities:
+        raise GenError("complexity", f"{m.label} 은 복잡도가 없는 모델입니다")
+    if m.complexities:
+        if complexity is None:
+            complexity = DEFAULT_COMPLEXITY
+        if not isinstance(complexity, str) or complexity not in m.complexities:
+            raise GenError("complexity", f"복잡도는 {' · '.join(m.complexities)} 가운데 하나여야 합니다: {complexity!r}")
+        out["complexity"] = complexity
+    return out
+
+
+def count_problem(model, count) -> str | None:
+    """장 수 덮어쓰기 값이 그 모델(이름)의 범위 1…max_n 안인가 → 안내 문구(받으면 None). 모르는 모델이면 표의 가장 큰 상한으로 본다."""
+    m = get(model)
+    limit = m.max_n if m is not None else max(x.max_n for x in MODELS.values())
+    if type(count) is not int or not 1 <= count <= limit:
+        return f"장 수는 1–{limit} 사이의 정수여야 합니다" + (f"({m.label})" if m is not None else "") + f": {count!r}"
+    return None
+
+
+def gen_entry_problem(entry) -> str | None:
+    """읽은 항목(crop_gen.json 의 한 크롭)이 저장 꼴인가 → 문제 문구(맞으면 None). 저장 꼴 = 키는 GEN_KEYS 안, 모델 묶음과 장 수
+    가운데 하나는 있고, 모델 묶음은 gen_bundle 이 만든 것과 같으며(필요한 칸 전부·없는 칸 없음), n 은 1 이상 표의 가장 큰 상한
+    이하의 정수. n 이 그 모델의 상한을 넘는 것은 문제가 아니다(저장 뒤 모델이 바뀐 경우 — effective_gen 이 낮춘다)."""
+    if not isinstance(entry, dict) or not entry:
+        return "항목이 객체가 아니거나 비어 있습니다"
+    extra = sorted(str(k) for k in set(entry) - set(GEN_KEYS))
+    if extra:
+        return f"모르는 키: {', '.join(extra)}"
+    if "model" not in entry:
+        if set(entry) != {"n"}:
+            return "모델 없이 품질·옵션·복잡도만 적을 수 없습니다"
+    else:
+        try:
+            bundle = gen_bundle(entry["model"], entry.get("quality"), entry.get("opts"), entry.get("complexity"))
+        except GenError as e:
+            return str(e)
+        if bundle != {k: v for k, v in entry.items() if k != "n"}:
+            return "모델 묶음에 빠진 칸이 있습니다"
+    if "n" in entry and count_problem(None, entry["n"]):
+        return f"장 수가 잘못되었습니다: {entry['n']!r}"
+    return None
+
+
+def effective_gen(prepare: dict, entry=None) -> dict:
+    """그 패치의 「효과 값」 — 프로젝트 실행 설정(prepare: model·quality·n·complexity·image_size·thinking_level)에 패치별 생성 설정
+    항목(entry — 없으면 None)을 얹은 값. Prepare·스펙 보기·AI 작성·전환 미리 보기·목록이 모두 이 함수 하나만 쓴다(D531).
+
+      {"model", "quality", "opts", "complexity", "n", "inherit": {"model": bool, "n": bool}, "clamped": int | None}
+
+      model       항목에 모델 묶음이 있으면 그 모델, 없으면 prepare["model"]
+      quality     작업(jobs[].quality)·생성 조건 키에 들어갈 값 — 프로젝트 값을 따르면 job_quality(model, prepare["quality"]),
+                  모델 묶음이면 그 묶음의 quality(품질을 고르지 않는 모델은 FIXED_QUALITY)
+      opts        job_opts(model, …)(비율 없이 — 비율은 Prepare 가 크롭 크기로 더한다). 옵션이 없는 모델은 None
+      complexity  프로젝트 값을 따르면 prepare["complexity"] 그대로(2.6 이 아니어도 — 쓰는 쪽이 모델로 가린다), 모델 묶음이면
+                  그 묶음의 complexity(복잡도가 없는 모델은 None)
+      n           항목에 n 이 있으면 그 값, 없으면 int(prepare["n"]). 항목이 있는 패치(모델 묶음이든 장 수든)는 효과 모델의
+                  상한(max_n)으로 낮추고 낮추기 전 값을 clamped 에 적는다(D535). 항목이 없는 패치는 낮추지 않는다(지금 그대로)
+      inherit     프로젝트 값을 따르는가(모델 묶음 · 장 수)
+
+    entry 가 None 이면 Prepare 가 지금까지 쓰던 값과 글자 그대로 같다(D533 — 기존 프로젝트의 작업·생성 조건 키 불변).
+    entry 가 저장 꼴이 아니면 GenError("entry", …) — 쓰는 쪽이 그 패치만 「작업 없음」으로 남긴다(D537)."""
+    if entry is not None:
+        problem = gen_entry_problem(entry)
+        if problem:
+            raise GenError("entry", f"{GEN_BROKEN}({problem})")
+    entry = entry or {}
+    own = "model" in entry
+    if own:
+        model = entry["model"]
+        quality = entry["quality"] if MODELS[model].qualities else FIXED_QUALITY
+        opts = job_opts(model, entry.get("opts"))
+        complexity = entry.get("complexity")
+    else:
+        model = prepare["model"]
+        quality = job_quality(model, prepare["quality"])
+        opts = job_opts(model, {"image_size": prepare.get("image_size"), "thinking_level": prepare.get("thinking_level")})
+        complexity = prepare.get("complexity")
+    n, clamped = (entry["n"] if "n" in entry else int(prepare["n"])), None
+    m = get(model)
+    if entry and m is not None and n > m.max_n:
+        n, clamped = m.max_n, n
+    return {"model": model, "quality": quality, "opts": opts, "complexity": complexity, "n": n,
+            "inherit": {"model": not own, "n": "n" not in entry}, "clamped": clamped}

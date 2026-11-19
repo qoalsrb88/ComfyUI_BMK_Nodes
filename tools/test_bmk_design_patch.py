@@ -60220,6 +60220,8 @@ V2_FORBIDDEN = (
 # 네이티브 대화상자 호출: alert( · window.confirm( · globalThis.prompt( … — 다른 객체의 메서드(el.prompt()·DPDialog.confirm())와
 # 같은 이름의 함수·메서드 선언(function confirm(…) {·confirm(message) {)은 호출이 아니다.
 V2_NATIVE_DIALOG = re.compile(r"(?<![\w$.])(?:(?:window|globalThis|self|top|parent)\s*\.\s*)?(alert|confirm|prompt)\s*\(")
+# 전역 객체를 대괄호로 거친 호출(window["confirm"](…) · globalThis['alert'](…) · self[`prompt`](…))도 네이티브 대화상자다.
+V2_NATIVE_BRACKET = re.compile(r"""(?<![\w$.])(?:window|globalThis|self|top|parent)\s*\[\s*["'`](?:alert|confirm|prompt)["'`]\s*\]""")
 V2_DECLARATION = re.compile(r"\s*\([^()]*\)\s*\{")
 
 
@@ -60242,6 +60244,9 @@ def v2_file_problems(name: str, raw: bytes) -> list[str]:
             continue  # 같은 이름의 함수·메서드 선언
         probs.append(f"네이티브 대화상자(alert·confirm·prompt): {text[max(0, m.start() - 20):m.end() + 20]!r}")
         break
+    m = V2_NATIVE_BRACKET.search(text)
+    if m:
+        probs.append(f"네이티브 대화상자(전역 객체의 대괄호 호출): {text[max(0, m.start() - 20):m.end() + 20]!r}")
     return probs
 
 
@@ -60271,6 +60276,10 @@ def ux_v2a_entry_unit():
         "globalThis.confirm": b'if (globalThis.confirm("x")) {}\n',
         "self.alert": b'self.alert ("x");\n',
         "함수 안의 호출": b'function ask() { return confirm("x"); }\n',
+        "window 대괄호": b'if (window["confirm"]("x")) {}\n',
+        "globalThis 대괄호": b"globalThis['alert']('x');\n",
+        "self 대괄호(백틱)": b'const v = self[`prompt`]("x");\n',
+        "맨 confirm(대입 뒤)": b'const ok = confirm("x");\n',
         "바깥 스크립트": b'<script src="https://cdn.example/x.js"></script>\n',
         "바깥 글꼴": b'<link rel="stylesheet" href="//fonts.example/css">\n',
         "바깥 import": b'@import url("https://fonts.example/css");\n',
@@ -60288,6 +60297,11 @@ def ux_v2a_entry_unit():
     declared = ('const api = {\n  confirm(message) { return message; },\n  async prompt(text, more) {\n    return text;\n  },\n};\n'
                 'function alert(x) { return x; }\nclass Box { confirm() { return true; } }\n').encode()
     check(v2_file_problems("v2_x.js", declared) == [], f"V2E 같은 이름의 메서드·함수 선언은 호출이 아님: {v2_file_problems('v2_x.js', declared)}")
+    # UX v2-B D563: 페이지 상자(DPDialog)의 메서드 호출은 평범하게 써도 된다 — 문자열 이어 붙이기로 돌아가지 않아도 통과한다.
+    dialog_calls = ('const dlg = window.DPDialog;\nif (await dlg.confirm(["x"], {ok: "확인"})) {}\nawait window.DPDialog.confirm(["x"]);\n'
+                    'await DPDialog?.confirm(["x"]);\nconst fn = dlg && dlg.confirm;\nawait this.dialog.confirm(lines);\n'
+                    'const names = {confirm: "확인", alert: "알림"};\nconst label = opts["confirm"] || "확인";\n').encode()
+    check(v2_file_problems("v2_x.js", dialog_calls) == [], f"V2E DPDialog 의 메서드 호출은 허용(D563): {v2_file_problems('v2_x.js', dialog_calls)}")
     present = sorted(f.name for f in web.iterdir() if f.is_file() and f.name.startswith("v2"))
     check(all(V2_WEB_FILES.fullmatch(name) for name in present), f"V2E web_design_patch 의 v2* 파일 이름 꼴: {present}")
     for name in present:
@@ -62076,6 +62090,427 @@ def ux_v2a_body_unit():
           "V2B 잘못된 _v2 → 작업 없음")
 
 
+# ══════════════════════════════════════════════════════════════════════
+# UX v2 Phase V2-B (STUDIO_UX_V2B_SPEC — 패치별 모델 · --only 이름 = 묶음)
+# ══════════════════════════════════════════════════════════════════════
+# 불변 기준(D533 ①): 구현 전 판 e9b16ee 에서 아래 합성 프로젝트(_v2b_project)를 프로젝트 모델마다 Prepare 한 결과
+# {jobs, prepare_settings, report} 의 sha256. 패치별 생성 설정 파일이 없는 프로젝트는 이 값이 그대로여야 한다 —
+# 이 표는 고치지 않는다(값이 달라졌다면 기존 프로젝트의 작업·생성 조건 키·프롬프트가 바뀐 것이다).
+V2B_PINNED = {
+    "gpt-image-2.6-sunburst": "e952ea560b75ca6e88fb9e9dbfcd71542b59ebbe9a9a5e89a37c81a4bb5c6542",
+    "gpt-image-2.6-flare": "6a285b38116a937f7998776ada78cca77f450da076b65402fb92bb1f2d62b2eb",
+    "gpt-image-2.5-sunburst": "6ae742657627e0c0ff3d02e75dfae3bd6e81443386da601c26cf13bdfcc7b24e",
+    "gpt-image-2.5-flare": "e63429a7629a9182e3267d3c31a926974eb0c8c98981209bf047595e67385990",
+    "seedream-5.5": "4da1b44348dd18062031a58689af14d563d39a0f9616957dadf68ed8d2ae073b",
+    "ideogram-4.5": "c9f15d06ce07af8afdf406b1283180b9198574e5df5be74f4a4aae7ed3c01589",
+    "nano-banana-2.1": "1fbd83f75847b3899950872aedfee1653ef26fcf38a0f85a77db3f3a5fa632b2",
+    "nano-banana-2": "4a647e0c60da5449dd60b7ab257eced725b14c4030e4a3c3b2ba75982038ffa9",
+    "nano-banana-pro": "197ad9230a9f4fe89bd5de6d6a64fa9aa557f6d43e008b84562aa3fe8cdf7176",
+}
+V2B_RECTS = [("001_square", [0, 0, 256, 256]), ("002_tall", [256, 0, 448, 344]), ("003_wide", [448, 0, 748, 100]),
+             ("004_panel", [0, 400, 192, 528])]
+
+
+def _v2b_args(pl, name, **kw):
+    return dict(pl.defaults()["prepare"], model=name, quality="high", variants="V1,V4", n=2, calls_per_cell=1,
+                complexity="medium") | kw
+
+
+def _v2b_project(dp, out, name, model):
+    """합성 프로젝트 — 크롭 넷(정사각 · 9:16 · 3:1 · 3:2)에 스펙 셋: 002 = 직접 입력 글(본문 경로), 003 = 지시문만(작업 없음),
+    004 = 그 모델로 쓴 AI 작성본(본문 경로). 001 은 스펙 없음(템플릿 경로). 반환 (핸들, root, {이름: crop_id})."""
+    dprompt = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_prompt")
+    base = np.full((544, 768, 3), (60, 100, 140), dtype=np.uint8)
+    base[::16, :, 1] = 180  # 평탄화·지문이 단색에 기대지 않게 줄무늬
+    handle, root = _fx_project(dp, out, name, V2B_RECTS, base)
+    m = store.load_manifest(root)
+    ids = {c["name"]: c["id"] for c in m["crops"]}
+    stamp = "2026-11-19T00:00:00+00:00"
+
+    def write(crop_name, **fields):
+        crop = next(c for c in m["crops"] if c["name"] == crop_name)
+        ov = dprompt.v2_update({}, **{k: v for k, v in fields.items() if k != "prompt"})
+        if "prompt" in fields:
+            v2 = dprompt.v2_of(ov) or dprompt.v2_of({"_v2": {}})
+            roles = dprompt.v2_roles(dprompt.spec_from_manifest(crop, None, "", {}, ov), root)
+            source, body = fields["prompt"]
+            ov = dprompt.v2_update(ov, prompt={
+                "source": source, "body_en": body, "summary_ko": "" if source == "manual" else "가장자리를 정리합니다.",
+                "input_hash": dprompt.v2_input_hash(v2, model, roles, manual=source == "manual"), "written_at": stamp})
+        path = Path(root, "specs", crop["id"] + ".json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((json.dumps(ov, ensure_ascii=False, indent=1) + "\n").encode("utf-8"))
+
+    write("002_tall", purpose="correct", user_instruction_ko="소매 주름을 정리", prompt=("manual", "Clean up the sleeve folds in @image1."))
+    write("003_wide", purpose="remove", user_instruction_ko="끈을 지워줘")
+    write("004_panel", purpose="detail", user_instruction_ko="가장자리를 또렷하게", prompt=("assist", "Tidy the panel edge in @image1."))
+    return handle, root, ids
+
+
+def _v2b_old_inputs_fp(root, m):
+    """e9b16ee 의 store.prepare_inputs_fp 식 그대로(재료 여덟 줄) — 패치별 생성 설정 파일이 없을 때의 지문이 이 값과 같아야 한다."""
+    src = m.get("source") or {}
+    refs_dir, gloss = src.get("refs_dir") or "", src.get("glossary") or ""
+    lay = src.get("layout") if isinstance(src.get("layout"), dict) else {}
+    rows = [store._spec_files_fp(root, m), store._dir_fp(os.path.join(root, "specs")), store._file_fp(os.path.join(root, "refs.json")),
+            store._file_fp(os.path.join(root, "layout.json")), store._file_fp(os.path.join(root, "glossary.json")),
+            [gloss, store._file_fp(gloss)], [refs_dir, store._dir_fp(refs_dir)], lay.get("rev")]
+    return hashlib.sha256(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
+
+
+def _v2b_pack(m, report):
+    return hashlib.sha256(json.dumps({"jobs": m["jobs"], "prepare_settings": m["prepare_settings"], "report": report},
+                                     ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+@contextlib.contextmanager
+def _v2b_env(dp, out):
+    """서버 모드 · Forge 백엔드 이름 · mock 원장 · 고정 시각 — Prepare 보고의 시간·백엔드 줄이 실행마다 같게."""
+    from unittest.mock import patch
+    rn = dp.runner
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(dp.folder_paths, "get_output_directory", return_value=str(out / "output")))
+        stack.enter_context(patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1", rn.MOCK_ENV: ""}))
+        stack.enter_context(patch.object(rn, "mock_enabled", return_value=True))
+        stack.enter_context(patch.object(dp.time, "time", return_value=1000.0))
+        yield
+
+
+def ux_v2b_core_unit():
+    """UX v2-B 공용 자리(명세 D527–D533·D554) — 기존 프로젝트의 Prepare 바이트 불변, 패치별 생성 설정 파일, 효과 값, 입력 지문,
+    모델 한 줄의 새 칸. --quick 포함."""
+    section("UX v2-B — 공용 자리 · 불변 기준 (ux_v2b_core_unit)")
+    from tempfile import mkdtemp
+
+    dp = _dp_package()
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    models = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_models")
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="ux_v2b_core_", dir=OUT_ROOT.resolve()))
+    pre = dp.BMKDesignPatchPrepare()
+
+    # ── D533 ①: 파일이 없는 프로젝트의 Prepare 결과는 e9b16ee 와 바이트가 같다(모델 9개)
+    printed = {}
+    with _v2b_env(dp, out):
+        for name in models.MODELS:
+            h, root, _ids = _v2b_project(dp, out, "pin-" + name, name)
+            _, _, report = pre.run(h, **_v2b_args(pl, name))
+            m = store.load_manifest(root)
+            printed[name] = _v2b_pack(m, report)
+            check(printed[name] == V2B_PINNED.get(name), f"V2BC1 파일 없는 프로젝트의 Prepare 바이트 불변 {name}")
+            check(m["prepare_inputs"] == _v2b_old_inputs_fp(root, m), f"V2BC1 파일 없는 프로젝트의 입력 지문 식 불변 {name}")
+            check(not Path(root, "crop_gen.json").exists(), f"V2BC1 Prepare 는 패치별 생성 설정 파일을 만들지 않음 {name}")
+    if os.environ.get("DP_V2B_PRINT"):
+        print(json.dumps(printed, indent=1))
+
+    # ── 모델 표: 복잡도 선택지 = 2.6 계열, 화면용 한 줄의 새 칸(D554)
+    check({n for n, m in models.MODELS.items() if m.complexities} == set(store.COMPLEXITY_MODELS)
+          and all(m.complexities in ((), models.COMPLEXITIES) for m in models.MODELS.values()), "V2BC2 복잡도가 있는 모델 = 2.6 계열")
+    for name, m in models.MODELS.items():
+        row = models.describe(name)
+        check((row["max_refs"], row["supports_quality"], row["complexities"]) == (m.max_inputs - 1, bool(m.qualities), list(m.complexities)),
+              f"V2BC2 모델 한 줄의 새 칸 {name}")
+    limited = models.describe("ideogram-4.5", {"ideogram_4_5": 3}, checked=True)
+    check(limited["max_inputs"] == 3 and limited["max_refs"] == 2, "V2BC2 max_refs 는 서버 목록의 실제 입력 상한에서 한 장을 뺀 수")
+
+    # ── 효과 값: 항목이 없으면 Prepare 가 쓰던 식 그대로(D531·D533)
+    for name in models.MODELS:
+        for quality in ("high", "low", "max"):
+            prep = _v2b_args(pl, name, quality=quality, image_size="4K", thinking_level="high", n=3)
+            eff = models.effective_gen(prep)
+            check(eff == {"model": name, "quality": models.job_quality(name, quality),
+                          "opts": models.job_opts(name, {"image_size": "4K", "thinking_level": "high"}), "complexity": "medium", "n": 3,
+                          "inherit": {"model": True, "n": True}, "clamped": None}, f"V2BC3 항목 없는 효과 값 = 지금 식 {name} {quality}")
+    prep = _v2b_args(pl, "gpt-image-2.5-sunburst", n=10)
+    check(models.effective_gen(prep)["n"] == 10 and models.effective_gen(dict(prep, model="seedream-5.5"))["n"] == 10,
+          "V2BC3 항목 없는 패치의 장 수는 낮추지 않음(지금 그대로 — 제출 전 판정이 막는다)")
+
+    # ── 모델 묶음 만들기(D529·D542): 필요한 칸을 전부 채우고, 없는 칸·선택지 밖의 값은 거절
+    check(models.gen_bundle("gpt-image-2.6-flare") == {"model": "gpt-image-2.6-flare", "quality": "max", "complexity": "high"}
+          and models.gen_bundle("gpt-image-2.5-flare", "low") == {"model": "gpt-image-2.5-flare", "quality": "low"}
+          and models.gen_bundle("seedream-5.5") == {"model": "seedream-5.5"}
+          and models.gen_bundle("ideogram-4.5") == {"model": "ideogram-4.5", "quality": "high"}
+          and models.gen_bundle("nano-banana-2.1", opts={"image_size": "4K"})
+          == {"model": "nano-banana-2.1", "opts": {"image_size": "4K", "thinking_level": "medium"}}
+          and models.gen_bundle("nano-banana-2") == {"model": "nano-banana-2", "opts": {"image_size": "2K", "thinking_level": "minimal"}}
+          and models.gen_bundle("nano-banana-pro", opts={}) == {"model": "nano-banana-pro", "opts": {"image_size": "2K"}},
+          "V2BC4 모델 묶음은 그 모델의 기본값으로 전부 채움")
+    check(list(models.gen_bundle("gpt-image-2.6-sunburst", "high", None, "low")) == ["model", "quality", "complexity"]
+          and list(models.gen_bundle("nano-banana-2.1")) == ["model", "opts"], "V2BC4 모델 묶음의 키 순서")
+    for args, key in ((("no-such-model",), "model_id"), ((None,), "model_id"), ((["seedream-5.5"],), "model_id"),
+                      (("seedream-5.5", "high"), "quality"), (("ideogram-4.5", "max"), "quality"), (("gpt-image-2.5-flare", 3), "quality"),
+                      (("ideogram-4.5", None, {"image_size": "2K"}), "opts"), (("nano-banana-2.1", None, {"aspect_ratio": "1:1"}), "opts"),
+                      (("nano-banana-2.1", None, {"image_size": "8K"}), "opts"), (("nano-banana-2", None, {"thinking_level": "medium"}), "opts"),
+                      (("nano-banana-pro", None, {"thinking_level": "high"}), "opts"), (("nano-banana-2.1", None, "2K"), "opts"),
+                      (("nano-banana-2.1", None, {"image_size": 2}), "opts"),
+                      (("gpt-image-2.5-sunburst", None, None, "low"), "complexity"), (("gpt-image-2.6-sunburst", None, None, "max"), "complexity"),
+                      (("seedream-5.5", None, None, "high"), "complexity")):
+        try:
+            models.gen_bundle(*args)
+            check(False, f"V2BC4 모델 묶음 거절 {args}")
+        except models.GenError as e:
+            check(e.key == key and str(e), f"V2BC4 모델 묶음 거절 {args} → {e.key}")
+    check(models.count_problem("seedream-5.5", 8) is None and models.count_problem("seedream-5.5", 9) is not None
+          and models.count_problem("gpt-image-2.5-flare", 10) is None and models.count_problem("gpt-image-2.5-flare", 11) is not None
+          and models.count_problem("ideogram-4.5", 0) is not None and models.count_problem("ideogram-4.5", True) is not None
+          and models.count_problem("ideogram-4.5", 2.0) is not None and models.count_problem("ideogram-4.5", "2") is not None
+          and models.count_problem(None, 10) is None and models.count_problem(None, 11) is not None, "V2BC4 장 수 범위는 그 모델의 상한")
+
+    # ── 읽은 항목 검사(D537)·효과 값(모델 묶음·장 수·상한으로 낮춤 D535)
+    good = [{"n": 3}, {"model": "seedream-5.5"}, {"model": "seedream-5.5", "n": 10}, {"model": "ideogram-4.5", "quality": "low", "n": 1},
+            {"model": "gpt-image-2.6-flare", "quality": "max", "complexity": "low"},
+            {"model": "nano-banana-2.1", "opts": {"image_size": "1K", "thinking_level": "high"}, "n": 2}]
+    bad = [None, [], {}, "seedream-5.5", {"model": "x"}, {"quality": "high"}, {"n": 2, "quality": "high"}, {"n": 0}, {"n": 11}, {"n": True}, {"n": "2"},
+           {"model": "ideogram-4.5"}, {"model": "seedream-5.5", "quality": "standard"}, {"model": "gpt-image-2.6-flare", "quality": "max"},
+           {"model": "gpt-image-2.5-flare", "quality": "max", "complexity": "high"}, {"model": "nano-banana-2.1", "opts": {"image_size": "2K"}},
+           {"model": "nano-banana-2.1", "opts": {"image_size": "2K", "thinking_level": "medium", "aspect_ratio": "1:1"}},
+           {"model": "seedream-5.5", "inherit": False}, {"model": "seedream-5.5", "count": 2}, {"model_id": "seedream-5.5"}]
+    check(all(models.gen_entry_problem(e) is None for e in good), "V2BC5 저장 꼴의 항목은 통과")
+    for e in bad:
+        check(isinstance(models.gen_entry_problem(e), str), f"V2BC5 저장 꼴이 아닌 항목 거절 {e!r}")
+        if e is not None:
+            try:
+                models.effective_gen(_v2b_args(pl, "gpt-image-2.5-flare"), e)
+                check(False, f"V2BC5 효과 값도 거절 {e!r}")
+            except models.GenError as err:
+                check(err.key == "entry" and models.GEN_BROKEN in str(err), f"V2BC5 효과 값도 거절 {e!r}")
+    prep = _v2b_args(pl, "gpt-image-2.6-sunburst", quality="xhigh", n=4, image_size="4K", thinking_level="high")
+    check(models.effective_gen(prep, {"n": 7}) == {"model": "gpt-image-2.6-sunburst", "quality": "xhigh", "opts": None, "complexity": "medium", "n": 7,
+                                                   "inherit": {"model": True, "n": False}, "clamped": None}, "V2BC5 장 수만 덮어쓴 효과 값")
+    check(models.effective_gen(prep, {"model": "nano-banana-2", "opts": {"image_size": "1K", "thinking_level": "high"}})
+          == {"model": "nano-banana-2", "quality": models.FIXED_QUALITY, "opts": {"image_size": "1K", "thinking_level": "high"}, "complexity": None, "n": 4,
+              "inherit": {"model": False, "n": True}, "clamped": None}, "V2BC5 모델 묶음의 효과 값(프로젝트의 해상도·추론을 이어받지 않음)")
+    check(models.effective_gen(prep, {"model": "ideogram-4.5", "quality": "low", "n": 2})
+          == {"model": "ideogram-4.5", "quality": "low", "opts": None, "complexity": None, "n": 2, "inherit": {"model": False, "n": False}, "clamped": None}
+          and models.effective_gen(prep, {"model": "gpt-image-2.6-flare", "quality": "max", "complexity": "low"})["complexity"] == "low",
+          "V2BC5 모델 묶음 + 장 수 · 복잡도는 묶음의 것")
+    low = models.effective_gen(dict(prep, n=10), {"model": "seedream-5.5"})
+    check((low["n"], low["clamped"], low["inherit"]["n"]) == (8, 10, True), "V2BC5 모델을 덮어쓴 패치의 물려받은 장 수도 그 모델의 상한으로")
+    low = models.effective_gen(dict(prep, model="ideogram-4.5", quality="high"), {"n": 10})
+    check((low["n"], low["clamped"]) == (8, 10) and models.effective_gen(prep, {"n": 10})["clamped"] is None,
+          "V2BC5 저장 뒤 모델이 바뀌어 상한을 넘은 장 수는 낮춤(D535)")
+
+    # ── crop_gen.json 읽기·쓰기(D527·D539·D541)
+    _, root, ids = _v2b_project(dp, out, "store", "seedream-5.5")
+    path = Path(root, store.CROP_GEN_NAME)
+    m = store.load_manifest(root)
+    check(store.load_crop_gen(root) == {"schema": store.CROP_GEN_SCHEMA, "rev": 0, "crops": {}} and store.crop_gen_entries(root) == {}
+          and not path.exists(), "V2BS1 파일이 없으면 rev 0·빈 crops(쓰지 않음)")
+    fp0 = store.prepare_inputs_fp(root, m)
+    check(fp0 == _v2b_old_inputs_fp(root, m), "V2BS1 파일이 없으면 입력 지문은 옛 식 그대로")
+    result, rev, changed = store.update_crop_gen(root, lambda crops: None, expect_rev=0)
+    check((rev, changed) == (0, False) and not path.exists(), "V2BS1 바뀐 것이 없으면 파일을 만들지 않음")
+    a, b = ids["001_square"], ids["002_tall"]
+    result, rev, changed = store.update_crop_gen(root, lambda crops: crops.update({a: {"model": "ideogram-4.5", "quality": "low"}}) or "done", expect_rev=0)
+    raw1 = path.read_bytes()
+    check((result, rev, changed) == ("done", 1, True) and json.loads(raw1) == {"schema": store.CROP_GEN_SCHEMA, "rev": 1, "crops": {a: {"model": "ideogram-4.5", "quality": "low"}}}
+          and raw1.endswith(b"\n") and b"\r" not in raw1, "V2BS2 첫 쓰기 = rev 1")
+    fp1 = store.prepare_inputs_fp(root, m)
+    check(fp1 != fp0 and _v2b_old_inputs_fp(root, m) == fp0, "V2BS2 파일이 생기면 입력 지문이 달라짐(옛 재료는 그대로)")
+    _, rev, changed = store.update_crop_gen(root, lambda crops: crops.update({a: {"model": "ideogram-4.5", "quality": "low"}}), expect_rev=1)
+    check((rev, changed) == (1, False) and path.read_bytes() == raw1 and store.prepare_inputs_fp(root, m) == fp1,
+          "V2BS2 같은 내용을 다시 쓰면 rev·파일·지문 그대로")
+    expect_raises(lambda: store.update_crop_gen(root, lambda crops: crops.clear(), expect_rev=0), "V2BS3 낡은 rev 는 거절", exc=store.CropGenConflict)
+    check(issubclass(store.CropGenConflict, ValueError) and path.read_bytes() == raw1, "V2BS3 거절 뒤 파일 그대로")
+
+    def half(crops):
+        crops[b] = {"n": 3}
+        raise RuntimeError("둘째 변경이 거절됨")
+
+    expect_raises(lambda: store.update_crop_gen(root, half, expect_rev=1), "V2BS3 mutate 가 실패하면 아무것도 쓰지 않음", exc=RuntimeError)
+    check(path.read_bytes() == raw1, "V2BS3 전부 되거나 전부 안 됨(파일 바이트 그대로)")
+    _, rev, changed = store.update_crop_gen(root, lambda crops: crops.update({b: {"n": 3}}), expect_rev=None)
+    check((rev, changed) == (2, True) and list(store.crop_gen_entries(root)) == [a, b], "V2BS4 expect_rev None 은 보지 않고 씀·rev 2")
+    _, rev, changed = store.update_crop_gen(root, lambda crops: crops.clear(), expect_rev=2)
+    check((rev, changed) == (3, True) and json.loads(path.read_bytes()) == {"schema": store.CROP_GEN_SCHEMA, "rev": 3, "crops": {}},
+          "V2BS4 crops 가 비어도 파일과 rev 는 남음")
+    check(store.prepare_inputs_fp(root, m) not in (fp0, fp1), "V2BS4 빈 crops 파일도 지문의 재료(파일이 있을 때만)")
+    for label, raw in (("JSON 아님", b"{"), ("목록", b"[]"), ("스키마 다름", b'{"schema": "x", "rev": 1, "crops": {}}'),
+                       ("rev 문자열", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": "1", "crops": {}}).encode()),
+                       ("rev 불", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": True, "crops": {}}).encode()),
+                       ("rev 음수", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": -1, "crops": {}}).encode()),
+                       ("crops 목록", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": 1, "crops": []}).encode()),
+                       ("항목이 객체 아님", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": 1, "crops": {a: 3}}).encode()),
+                       ("크롭 id 꼴 아님", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": 1, "crops": {"../x": {"n": 2}}}).encode()),
+                       ("모르는 머리 키", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": 1, "crops": {}, "note": "x"}).encode())):
+        path.write_bytes(raw)
+        expect_raises(lambda: store.load_crop_gen(root), f"V2BS5 깨진 파일은 읽기 오류: {label}")
+        expect_raises(lambda: store.update_crop_gen(root, lambda crops: crops.update({a: {"n": 2}}), expect_rev=None),
+                      f"V2BS5 깨진 파일은 덮어쓰지 않음: {label}")
+        check(path.read_bytes() == raw, f"V2BS5 깨진 파일의 내용 그대로: {label}")
+    path.unlink()
+    check(store.prepare_inputs_fp(root, m) == fp0, "V2BS6 파일을 치우면 지문이 처음 값으로")
+
+
+def ux_v2b_invariant_unit():
+    """UX v2-B 불변·효과(명세 D530·D533·D535·D537) — 감독관이 구현 전에 쓴 시험이다(갈래 G 의 완료 조건 · 갈래는 이 묶음을 고치지 않는다).
+    패치별 생성 설정이 있어도 프로젝트 값을 따르는 패치의 작업은 바이트가 같고, 덮어쓴 패치만 그 모델의 규칙으로 만들어진다. --quick 포함."""
+    section("UX v2-B — Prepare 불변 · 패치별 효과 값 (ux_v2b_invariant_unit)")
+    from tempfile import mkdtemp
+
+    dp = _dp_package()
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    models = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_models")
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="ux_v2b_inv_", dir=OUT_ROOT.resolve()))
+    pre = dp.BMKDesignPatchPrepare()
+
+    def dump(value):
+        return json.dumps(value, ensure_ascii=False).encode("utf-8")
+
+    def put(root, entries):
+        """crops 를 통째로 entries 로 바꾼다(검사 없이 — 손으로 고친 파일 흉내도 이 길로)."""
+        def mutate(crops):
+            crops.clear()
+            crops.update(entries)
+        store.update_crop_gen(root, mutate, expect_rev=None)
+
+    def rekey(job):
+        return store.cell_key(job["model"], job["quality"], job["size"], job["background"], job["prompt"], [i["sha"] for i in job["inputs"]],
+                              job["template_version"], job["variant"], complexity=job.get("complexity"), opts=job.get("opts"))
+
+    def same_values(pl_args, name):
+        """프로젝트 값과 같은 값을 그 모델의 묶음으로 적은 항목(D533 ②)."""
+        m = models.get(name)
+        return models.gen_bundle(name, pl_args["quality"] if m.qualities else None,
+                                 models.job_opts(name, {k: pl_args[k] for k in m.opts}) if m.opts else None,
+                                 pl_args["complexity"] if m.complexities else None) | {"n": pl_args["n"]}
+
+    with _v2b_env(dp, out):
+        # ── D533 ①: 빈 crops 파일이 있어도 Prepare 결과(작업·기록·보고)는 e9b16ee 와 바이트가 같다 · ②: 프로젝트 값과 같은 덮어쓰기는 같은 작업
+        for name in models.MODELS:
+            args = _v2b_args(pl, name)
+            h, root, ids = _v2b_project(dp, out, "empty-" + name, name)
+            put(root, {ids["001_square"]: {"n": 9}})
+            put(root, {})
+            check(Path(root, store.CROP_GEN_NAME).exists(), f"V2BI1 빈 crops 파일 준비 {name}")
+            h, _, report = pre.run(h, **args)
+            m = store.load_manifest(root)
+            check(_v2b_pack(m, report) == V2B_PINNED[name], f"V2BI1 빈 crops 파일 — Prepare 바이트 불변 {name}")
+            check(m["prepare_inputs"] == store.prepare_inputs_fp(root, m) != _v2b_old_inputs_fp(root, m),
+                  f"V2BI1 파일이 있으면 입력 지문에 그 파일이 들어감 {name}")
+            jobs0, settings0 = dump(m["jobs"]), dump(m["prepare_settings"])
+            put(root, {cid: same_values(args, name) for cid in ids.values()})
+            h, _, _ = pre.run(h, **args)
+            m = store.load_manifest(root)
+            check(dump(m["jobs"]) == jobs0 and dump(m["prepare_settings"]) == settings0,
+                  f"V2BI2 프로젝트 값과 같은 덮어쓰기 = 같은 작업·같은 키(다시 과금되지 않음) {name}")
+            check(all(rekey(j) == j["cell_key"] for j in m["jobs"]), f"V2BI2 생성 조건 키는 작업 기록에서 그대로 다시 계산됨 {name}")
+
+        # ── D533 ①·③: 다른 크롭만 덮어씀 — 따르는 패치의 작업은 바이트 그대로, 풀면 처음과 같다
+        for project_model, target, entry in (
+                ("gpt-image-2.6-sunburst", "001_square", {"model": "ideogram-4.5", "quality": "low"}),
+                ("seedream-5.5", "002_tall", {"model": "nano-banana-2.1", "opts": {"image_size": "1K", "thinking_level": "high"}, "n": 3}),
+                ("nano-banana-2", "001_square", {"model": "gpt-image-2.6-flare", "quality": "xhigh", "complexity": "low"}),
+                ("ideogram-4.5", "002_tall", {"n": 5})):
+            args = _v2b_args(pl, project_model)
+            h, root, ids = _v2b_project(dp, out, f"mix-{project_model}-{target}", project_model)
+            h, _, report0 = pre.run(h, **args)
+            m0 = store.load_manifest(root)
+            check(_v2b_pack(m0, report0) == V2B_PINNED[project_model], f"V2BI3 기준 {project_model}")
+            cid = ids[target]
+            put(root, {cid: entry})
+            h, _, report1 = pre.run(h, **args)
+            m1 = store.load_manifest(root)
+            others0 = [j for j in m0["jobs"] if j["crop_id"] != cid]
+            others1 = [j for j in m1["jobs"] if j["crop_id"] != cid]
+            check(dump(others1) == dump(others0) and [j["crop_id"] for j in m1["jobs"]] == [j["crop_id"] for j in m0["jobs"]],
+                  f"V2BI3 따르는 패치의 작업은 바이트 그대로 {project_model} ← {target}")
+            check(dump(m1["prepare_settings"]) == dump(m0["prepare_settings"]),
+                  f"V2BI3 prepare_settings 는 프로젝트 값 한 벌 그대로 {project_model}")
+            eff = models.effective_gen(args, entry)
+            mine = [j for j in m1["jobs"] if j["crop_id"] == cid]
+            crop = next(c for c in m1["crops"] if c["id"] == cid)
+            w, h_ = crop["rect"][2] - crop["rect"][0], crop["rect"][3] - crop["rect"][1]
+            want_opts = models.job_opts(eff["model"], eff["opts"], src=(w, h_))
+            want_size = (list(models.output_size(eff["model"], w, h_, args["size_rule"], opts=eff["opts"])[:2]) if models.is_forge_only(eff["model"])
+                         else list(store.gpt_output_size(w, h_, args["size_rule"])[:2]))
+            check(len(mine) == 1 and (mine[0]["model"], mine[0]["quality"], mine[0]["n"], mine[0].get("opts"), mine[0]["size"])
+                  == (eff["model"], eff["quality"], eff["n"], want_opts, want_size), f"V2BI4 덮어쓴 패치는 그 모델의 규칙으로 {project_model} ← {entry}")
+            check(len(mine) == 1 and mine[0].get("complexity") == (eff["complexity"] if eff["model"] in store.COMPLEXITY_MODELS else None),
+                  f"V2BI4 복잡도 기록은 2.6 일 때만 {entry}")
+            check(all(rekey(j) == j["cell_key"] for j in m1["jobs"]), f"V2BI4 키 함수는 그대로(작업 기록으로 다시 계산) {project_model}")
+            if "model" in entry:
+                check(len(mine) == 1 and mine[0]["cell_key"] not in {j["cell_key"] for j in m0["jobs"]}, f"V2BI4 모델이 다르면 새 생성 조건 {entry}")
+                check("패치별 모델 1개 크롭" in report1, f"V2BI4 반영 보고에 패치별 모델 크롭 수: {report1.splitlines()[:4]}")
+            else:
+                check(len(mine) == 1 and mine[0]["cell_key"] in {j["cell_key"] for j in m0["jobs"]}, "V2BI4 장 수만 바꾸면 같은 생성 조건(n 은 키 밖)")
+                check("패치별 모델" not in report1, "V2BI4 장 수만 덮어쓴 패치는 「패치별 모델」 수에 넣지 않음")
+            put(root, {})
+            h, _, _ = pre.run(h, **args)
+            m2 = store.load_manifest(root)
+            check(dump(m2["jobs"]) == dump(m0["jobs"]) and dump(m2["prepare_settings"]) == dump(m0["prepare_settings"]),
+                  f"V2BI5 덮어썼다 풀면 작업 목록이 처음과 바이트가 같음 {project_model} ← {target}")
+
+        # ── AI 작성본은 효과 모델이 바뀌면 낡는다(D551) · 직접 입력 글은 그대로 본문 경로
+        args = _v2b_args(pl, "seedream-5.5")
+        h, root, ids = _v2b_project(dp, out, "stale", "seedream-5.5")
+        put(root, {ids["004_panel"]: {"model": "ideogram-4.5", "quality": "high"}, ids["002_tall"]: {"model": "ideogram-4.5", "quality": "high"}})
+        h, _, report = pre.run(h, **args)
+        m = store.load_manifest(root)
+        by = {cid: [j for j in m["jobs"] if j["crop_id"] == cid] for cid in ids.values()}
+        check(by[ids["004_panel"]] == [] and "작성본이 낡았습니다" in report, "V2BI6 모델을 바꾼 패치의 AI 작성본은 낡음 → 작업 없음")
+        check(len(by[ids["002_tall"]]) == 1 and by[ids["002_tall"]][0]["variant"] == "B1_body" and by[ids["002_tall"]][0]["model"] == "ideogram-4.5",
+              "V2BI6 직접 입력 글은 모델을 바꿔도 본문 경로")
+
+        # ── D535: 상한을 넘는 장 수는 낮추고 보고에 경고 · D537: 읽지 못한 항목은 그 패치만 작업 없음 · 깨진 파일은 반영 실패
+        args = _v2b_args(pl, "gpt-image-2.5-sunburst")
+        h, root, ids = _v2b_project(dp, out, "clamp", "gpt-image-2.5-sunburst")
+        h, _, report0 = pre.run(h, **args)
+        m0 = store.load_manifest(root)
+        put(root, {ids["001_square"]: {"model": "seedream-5.5", "n": 10}, ids["002_tall"]: {"model": "retired-model"}})
+        h, _, report = pre.run(h, **args)
+        m = store.load_manifest(root)
+        mine = [j for j in m["jobs"] if j["crop_id"] == ids["001_square"]]
+        check(len(mine) == 1 and mine[0]["n"] == 8 and mine[0]["model"] == "seedream-5.5", f"V2BI7 장 수를 그 모델의 상한으로 낮춤")
+        check(any(ids["001_square"] in line and "장 수" in line and "8" in line for line in report.splitlines()), "V2BI7 낮춘 것을 반영 보고에 경고")
+        check(not [j for j in m["jobs"] if j["crop_id"] == ids["002_tall"]]
+              and any(ids["002_tall"] in line and "작업 없음" in line and models.GEN_BROKEN in line for line in report.splitlines()),
+              "V2BI8 읽지 못한 항목은 그 패치만 작업 없음(프로젝트 모델로 조용히 만들지 않음)")
+        check(dump([j for j in m["jobs"] if j["crop_id"] == ids["004_panel"]]) == dump([j for j in m0["jobs"] if j["crop_id"] == ids["004_panel"]]),
+              "V2BI8 다른 패치의 작업은 그대로")
+        Path(root, store.CROP_GEN_NAME).write_bytes(b"{")
+        before = Path(root, store.MANIFEST_NAME).read_bytes()
+        expect_raises(lambda: pre.run(h, **args), "V2BI9 깨진 패치별 생성 설정 파일이면 반영 실패")
+        check(Path(root, store.MANIFEST_NAME).read_bytes() == before, "V2BI9 실패한 반영은 매니페스트를 바꾸지 않음")
+
+
+# ── 아래 묶음들은 갈래가 채운다(갈래마다 자기 묶음 안에서만 — 다른 묶음·위의 감독관 묶음은 고치지 않는다) ───────────────
+def ux_v2b_gen_unit():
+    """UX v2-B 갈래 G — 전환 미리 보기의 덮어쓴 패치(D534) · 스펙 보기·AI 작성의 효과 모델(D531·D551) · 옮긴 영역의 AI 작성 409(D562).
+    --quick 포함."""
+    section("UX v2-B — 전환 미리 보기 · 스펙·AI 작성의 효과 모델 (ux_v2b_gen_unit)")
+    # (갈래 G 가 채운다)
+
+
+#
+# ── 갈래 R ──────────────────────────────────────────────────────────────
+#
+def ux_v2b_route_unit():
+    """UX v2-B 갈래 R — GET·POST /crop_gen(D538–D546) · env 의 caps.v2_crop_model·모델 한 줄(D554·D556). --quick 포함."""
+    section("UX v2-B — crop_gen 라우트 · env (ux_v2b_route_unit)")
+    # (갈래 R 이 채운다)
+
+
+#
+# ── 갈래 P ──────────────────────────────────────────────────────────────
+#
+def ux_v2b_plan_unit():
+    """UX v2-B 갈래 P — 계획의 모델별 묶음 run.groups(D547) · 승인 상자(D548·D549) · DPSubmit.applyChecked(D561) · v1 표시(D558) ·
+    안전망 세마포어(D550). --quick 포함."""
+    section("UX v2-B — 계획 묶음 · 승인 상자 · 무료 반영 (ux_v2b_plan_unit)")
+    # (갈래 P 가 채운다)
+
+
+#
+# ── 갈래 D(통합 뒤) ─────────────────────────────────────────────────────
+#
+def ux_v2b_dev_unit():
+    """UX v2-B 갈래 D — 가짜 Forge 를 상대로 모델이 섞인 실행(D550 · 명세 ❓7). --quick 포함."""
+    section("UX v2-B — 가짜 Forge 의 섞인 모델 실행 (ux_v2b_dev_unit)")
+    # (갈래 D 가 채운다)
+
+
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -63207,7 +63642,7 @@ def forge_models_unit():
     check(row == {"name": "ideogram-4.5", "label": "Ideogram 4.5", "kind": "ideogram", "available": True, "why": None,
                   "qualities": ["low", "medium", "high"], "default_quality": "high", "opts": {}, "opt_defaults": {},
                   "ratios": [], "ratio_sizes": {}, "ratio_tolerance": None, "family": None, "fallback": None, "max_inputs": 5, "max_n": 8,
-                  "fan_out": False}, f"FM7 화면용 모델 한 줄 {row}")
+                  "fan_out": False, "max_refs": 4, "supports_quality": True, "complexities": []}, f"FM7 화면용 모델 한 줄 {row}")
     row = dpm.describe("seedream-5.5", gone, checked=True)
     check(row["available"] is False and row["why"] and row["qualities"] == [] and row["default_quality"] is None and row["fan_out"] is True
           and dpm.describe("seedream-5.5")["available"] is True, "FM7 빠진 모델은 이유와 함께, 대조 전에는 참")
@@ -63364,7 +63799,8 @@ def forge_models2_unit():
                   "opt_defaults": {"image_size": "2K", "thinking_level": "medium"}, "ratios": list(dpm.RATIOS),
                   "ratio_sizes": {k: list(v) for k, v in dpm.RATIO_SIZES.items()}, "ratio_tolerance": 0.01,
                   "family": "nano-banana",
-                  "fallback": "nano-banana-2", "max_inputs": 14, "max_n": 8, "fan_out": True} and "Forge 에 없습니다" in row["why"],
+                  "fallback": "nano-banana-2", "max_inputs": 14, "max_n": 8, "fan_out": True,
+                  "max_refs": 13, "supports_quality": False, "complexities": []} and "Forge 에 없습니다" in row["why"],
           f"FN6 화면용 한 줄(빠진 모델 — 대체 모델 이름) {row}")
     row = dpm.describe("nano-banana-pro")
     check(row["available"] is True and row["fallback"] is None and row["opts"] == {"image_size": ["1K", "2K", "4K"]}
@@ -74281,6 +74717,18 @@ if __name__ == "__main__":
         ux_v2a_spec_unit()
     if want("ux_v2a_assist_unit"):
         ux_v2a_assist_unit()
+    if want("ux_v2b_core_unit"):
+        ux_v2b_core_unit()
+    if want("ux_v2b_invariant_unit"):
+        ux_v2b_invariant_unit()
+    if want("ux_v2b_gen_unit"):
+        ux_v2b_gen_unit()
+    if want("ux_v2b_route_unit"):
+        ux_v2b_route_unit()
+    if want("ux_v2b_plan_unit"):
+        ux_v2b_plan_unit()
+    if want("ux_v2b_dev_unit"):
+        ux_v2b_dev_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
