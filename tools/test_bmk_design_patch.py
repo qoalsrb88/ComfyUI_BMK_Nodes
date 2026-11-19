@@ -2418,9 +2418,17 @@ def node_integration(psd05, crops03):
         optional = list(cls.INPUT_TYPES().get("optional") or {})
         sig = inspect.signature(getattr(cls, cls.FUNCTION)).parameters
         named = [n for n, p in sig.items() if p.kind != p.VAR_KEYWORD]  # 유료 노드의 **_stale(옛 워크플로의 없는 입력)은 뺀다
-        check(list(req) + optional + hidden == named[1:]
-              and all(sig[o].default is not inspect.Parameter.empty for o in optional),
+        # Prepare 의 해상도·추론 입력은 서버 모드에서만 노드 입력으로 보인다(로컬판의 노드 위젯은 그대로) — 함수 인자에는 늘 있다
+        server_only = ["image_size", "thinking_level"] if nid == "BMKDesignPatchPrepare" else []
+        check(list(req) + optional + hidden == [n for n in named[1:] if n not in server_only]
+              and all(sig[o].default is not inspect.Parameter.empty for o in optional + server_only),
               f"{nid} 입력 이름(+optional 기본값 있음 +hidden) = 함수 인자")
+        if server_only:
+            from unittest.mock import patch as _patch
+            with _patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
+                served = cls.INPUT_TYPES()
+            check(list(served["required"]) + list(served.get("optional") or {}) + list(served.get("hidden") or {}) == named[1:]
+                  and not set(server_only) & set(optional), f"{nid} 서버 모드의 입력 = 함수 인자 전부, 로컬판에는 두 입력이 없음")
     outs = [k for k, v in dp.NODE_CLASS_MAPPINGS.items() if getattr(v, "OUTPUT_NODE", False) is True]
     check(outs == ["BMKDesignPatchSpecDraft", "BMKDesignPatchRun", "BMKDesignPatchReview", "BMKDesignPatchExportPSD",
                    "BMKDesignPatchRefCut"], f"OUTPUT_NODE {outs}")
@@ -61423,6 +61431,25 @@ def forge_models2_unit():
     pinned = key("nano-banana-2.1", good)
     check(good == {"image_size": "2K", "thinking_level": "medium", "aspect_ratio": "4:5"} and pinned == "45d3aca0d5a4c115b323d552",
           f"FN5 나노바나나 생성 조건 키 고정값(예상 크기 표·옵션 이름이 키의 재료다 — 바뀌면 같은 요청이 다시 과금 대상) {pinned}")
+    # 표 전체를 고정한다: 비율마다 그 비율의 크롭(1K 예상 크기 그대로)에서 Prepare 가 쓰는 길(output_size · job_opts)로 얻은 재료의 키
+    recipe = []
+    for name in names:
+        for label, (a, b) in dpm.RATIO_SIZES.items():
+            for tier in dpm.IMAGE_SIZES:
+                opts = dpm.job_opts(name, {"image_size": tier}, src=(a, b))
+                W, H, _info = dpm.output_size(name, a, b, "user_k", opts)
+                check(opts.get("aspect_ratio") == label and dpm.size_problem(name, [W, H], opts) is None,
+                      f"FN5 비율 {label} 의 크롭은 그 비율로 맞고 크기·옵션이 서로 맞음 {name} {tier}")
+                recipe.append(store.cell_key(name, dpm.FIXED_QUALITY, [W, H], "auto", **args, opts=opts))
+    digest = hashlib.sha256(",".join(recipe).encode("ascii")).hexdigest()[:24]
+    check(len(set(recipe)) == len(recipe) == 90 and digest == "6ecc5f1277b18b1cb329e648",
+          f"FN5 나노바나나 계열의 키 재료 전체(모델 3 × 비율 10 × 해상도 3) 고정값 — 예상 크기 표를 고치면 여기서 걸린다 {digest}")
+    check(dpm.size_problem("nano-banana-pro", [1024, 1024], {"aspect_ratio": "4:5", "image_size": "4K"})
+          and dpm.size_problem("nano-banana-pro", [3712, 4608], {"aspect_ratio": "4:5", "image_size": "4K"}) is None
+          and dpm.size_problem("nano-banana-pro", [1856, 2304], {"aspect_ratio": "4:5", "image_size": "4K"})
+          and dpm.size_problem("nano-banana-pro", [1024, 1024], {"image_size": "4K"}) is None
+          and dpm.size_problem("seedream-5.5", [2048, 1536], {"aspect_ratio": "4:5"}) is None,
+          "FN5 크기 기록과 옵션(비율·해상도)이 어긋난 작업은 막는다 — 옵션에 비율이 없으면 표의 값인지만 본다")
 
     # ── 계열 대체·화면용 한 줄 ──
     catalog = {row.get("checkpoint") or row.get("id"): row.get("max_input_images") for row in spec["catalog"]["response"]["models"]}
