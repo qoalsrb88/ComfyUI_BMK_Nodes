@@ -6211,8 +6211,8 @@ def m2_board_unit():
         check(scripts[:3] == ["env.js", "dialog.js", "forge_import.js"] and scripts.count("forge_import.js") == 1,
               "S1 Forge 가져오기 스크립트는 dialog 뒤에 한 번만 배치")
         check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-              == ["env.js", "dialog.js", "forge_import.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
-              and not re.search(r"<script(?![^>]*\bsrc=\"(?:env|dialog|forge_import|layout_geom|viewer|rows|layout_edit|ref_edit|checklist|pipeline|mask_edit|board)\.js\")", html)
+              == ["env.js", "dialog.js", "forge_import.js", "submit.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
+              and not re.search(r"<script(?![^>]*\bsrc=\"(?:env|dialog|forge_import|submit|layout_geom|viewer|rows|layout_edit|ref_edit|checklist|pipeline|mask_edit|board)\.js\")", html)
               and "on" + "click=" not in html.lower(),
               "html 에 인라인 스크립트·이벤트 속성 없음, layout_geom → viewer → rows → layout_edit → ref_edit → checklist → pipeline → mask_edit → board 순서")
         check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin)' in js,
@@ -15987,7 +15987,7 @@ def layout_js_unit():
           f"layout_edit.js 서버 주소 = apiUrl 상대 경로 5개뿐 {sorted(paths)}")
     check("textContent" in ed and "replaceChildren" in ed, "layout_edit.js textContent·replaceChildren")
     check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-          == ["env.js", "dialog.js", "forge_import.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
+          == ["env.js", "dialog.js", "forge_import.js", "submit.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
           "board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board")
     check(all(f'id="{i}"' in html for i in ("btn-edit", "layout-head", "layout-list", "layout-panel")), "board.html 크롭 편집 모드 요소 4개")
     vj = code["viewer.js"]
@@ -22748,7 +22748,7 @@ def refs_js_unit():
     check("textField(a)" in rp and '"TEXTAREA"' in rj and "renderSoon" in rj, "패널 다시 그리기 = 글자 입력칸 포커스 복원, 입력 중이면 미룸")
     # board.html·board.js·viewer.js·board.css 연결
     scripts = re.findall(r'<script src="([^"]+)" defer></script>', html)
-    check(scripts == ["env.js", "dialog.js", "forge_import.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
+    check(scripts == ["env.js", "dialog.js", "forge_import.js", "submit.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
           f"board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board {scripts}")
     check(all(f'id="{i}"' in html for i in ("btn-refs", "ref-head", "ref-list", "ref-view", "ref-sheets", "ref-viewer", "ref-panel"))
           and "레퍼런스 (<kbd>T</kbd>)" in html, "board.html 레퍼런스 모드 요소 7개·도움말")
@@ -29138,6 +29138,9 @@ async function until(cond, ms = 3000) {
 
 const ctx = vm.createContext({ window: {}, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval, console });
 vm.runInContext(fs.readFileSync(IN.pipelineJs, "utf8"), ctx, { filename: "pipeline.js" });
+// 서버 모드의 승인 상자·작업 제출 공용 모듈(submit.js — pipeline.js 가 서버 모드에서 window.DPSubmit 을 부른다). 화면 주소는 A() 와 같은 origin.
+Object.assign(ctx, { URL, AbortController, location: new URL(`${ORIGIN}/bmk/design_patch/board/`) });
+vm.runInContext(fs.readFileSync(IN.pipelineJs.replace(/pipeline\.js$/, "submit.js"), "utf8"), ctx, { filename: "submit.js" });
 const P = ctx.window.DPPipeline;
 const boardSrc = fs.readFileSync(IN.boardJs, "utf8");
 const boardFn = (name) => {
@@ -42461,7 +42464,7 @@ def mask_js_unit():
           and "if (maskCv || !crop" in vj,
           "viewer.js 마스크 겹침 훅(setMaskLayer — 선택 크롭 겹침 대신)·showSeam·curSeam(3차 ui-r3-03)·N 이 onPick 에 구간을 넘김")
     check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-          == ["env.js", "dialog.js", "forge_import.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
+          == ["env.js", "dialog.js", "forge_import.js", "submit.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
           and all(f'id="{i}"' in html for i in ("btn-mask", "mask-list", "mask-panel")) and re.search(r'<section id="mask-panel"[^>]*hidden>', html)
           and "마스크 (<kbd>K</kbd>)" in html,
           "board.html: mask_edit.js 가 pipeline 뒤·board 앞, 마스크 모드 요소 3개(패널은 처음 hidden)·도움말 '마스크 (K)' 표")
@@ -60602,6 +60605,319 @@ def ux_v2a_dev_unit():
 def ux_v2a_submit_unit():
     """UX v2-A 유료 제출 공용 모듈 DPSubmit + 무료 반영 요약(명세 D523–D525). --quick 포함."""
     section("UX v2-A — 공용 모듈 DPSubmit · 반영 요약 (ux_v2a_submit_unit)")
+    from tempfile import TemporaryDirectory
+    from unittest.mock import patch
+    import bmk_design_patch_jobs as jobs
+    import bmk_design_patch_models as models
+
+    web = PKG / "web_design_patch"
+    raw = (web / "submit.js").read_bytes()
+    source = raw.decode("utf-8")
+    pipeline = (web / "pipeline.js").read_text(encoding="utf-8")
+    check(b"\r" not in raw and not re.search(r"<form\b|\b(?:alert|confirm|prompt)\s*\(|innerHTML", source),
+          "V2S 공용 모듈 LF·sandbox DOM")
+    check(not re.search(r'fetch\([^;\n]*jobs/prompt', pipeline)
+          and "window.DPSubmit.post(body)" in pipeline and "window.DPSubmit.ask(lines" in pipeline,
+          "V2S v1 유료 승인·제출은 DPSubmit 사용")
+    check(jobs.board._STATIC.get("submit.js") == "text/javascript", "V2S 정적 파일 제공")
+
+    out = OUT_ROOT / "ux_v2a_submit"
+    out.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=out) as tmp:
+        root = str(Path(tmp) / "project")
+        scope = _fj_scope(Path(tmp))
+        before = store.new_manifest("project")
+        before["jobs"] = [{"cell_key": k, "crop_id": "a"} for k in ("gone1", "gone2", "kept")]
+        before["candidates"] = [{"key": str(i), "origin_info": {"cell_key": k}, "file": root}
+                                for i, k in enumerate(("gone1", "gone1", "gone2", "kept", "already_old"))] + [{"origin": "manual"}]
+        before["candidates"][0]["origin_info"] = {"call_id": "gone1_r1"}
+        after = {**before, "jobs": [{"cell_key": k, "crop_id": "a"} for k in ("kept", "added")],
+                 "crops": [{"id": cid} for cid in ("c", "a", "b")], "candidates": []}
+        expected = {"jobs": 2, "new_jobs": 1, "kept_jobs": 1, "gone_jobs": 2, "old_cands": 3, "no_job": ["c", "b"]}
+
+        def run(stage, *, fail=False, unreadable=0, malformed=False, server=True):
+            store.save_manifest(root, before)
+            load = store.load_manifest
+            reads = []
+
+            def snapshot(path):
+                reads.append(path)
+                if len(reads) == unreadable:
+                    raise OSError(root)
+                return load(path)
+
+            def execute(prompt):
+                if fail:
+                    raise ValueError("반영 중단")
+                store.save_manifest(root, dict(after, crops=[{"id": root}]) if malformed else after)
+                return {"outputs": {"dp_review": {}}}
+
+            with patch.object(jobs.compat, "server_mode", return_value=server), \
+                    patch.object(jobs, "execute", execute), patch.object(store, "load_manifest", snapshot):
+                worker = jobs.JobRunner()
+                try:
+                    pid = worker.submit(scope, root, stage, {})["prompt_id"]
+                    record = _fj_wait(lambda: worker.history(scope, root, pid), "V2S 작업 기록 대기")[pid]
+                    return record, len(reads)
+                finally:
+                    worker.close(2)
+
+        record, reads = run("apply")
+        check(record.get("apply_summary") == expected and reads == 2, "V2S 매니페스트 전후의 여섯 값·크롭 순서")
+        check(json.dumps(root, ensure_ascii=False)[1:-1] not in json.dumps(record, ensure_ascii=False)
+              and record["outputs"] == {"dp_review": {}},
+              "V2S 기록에 후보 경로가 없음·기존 출력 보존")
+        for stage, options, status, count in (("apply", {"fail": True}, "error", 1), ("export", {}, "success", 0),
+                                              ("apply", {"unreadable": 1}, "success", 1), ("apply", {"unreadable": 2}, "success", 2),
+                                              ("apply", {"malformed": True}, "success", 2), ("apply", {"server": False}, "success", 0)):
+            record, reads = run(stage, **options)
+            check("apply_summary" not in record and record["status"]["status_str"] == status and reads == count,
+                  f"V2S 요약 생략·작업 결과 보존 {stage} {options}")
+
+    node = shutil.which("node")
+    if not node:
+        skip("V2S node 없음 — 화면 VM 시험 생략")
+        return
+    # 기존 v1 VM의 DOM 대역을 재사용한다.
+    dom = _PL_JS_HARNESS.split("class El {", 1)[1].split("async function mouse(", 1)[0]
+    harness = r'''
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import vm from "node:vm";
+const [web, catalogFile] = process.argv.slice(2);
+const source = name => fs.readFileSync(web + "/" + name, "utf8");
+const catalog = JSON.parse(fs.readFileSync(catalogFile, "utf8"));
+const plain = value => JSON.parse(JSON.stringify(value));
+const eq = (a, b) => assert.deepEqual(plain(a), b);
+const results = {};
+async function test(name, fn) {
+  try { await fn(); results[name] = true; } catch (e) { results[name] = e.stack; }
+}
+const flush = () => new Promise(resolve => setImmediate(resolve));
+''' + "class El {" + dom + r'''
+El.prototype.remove = function () { this.parent.children = this.parent.children.filter(c => c !== this); this.parent = null; };
+const root = "project & one", only = "a,b", hash = "123456789abc";
+const model = catalog.find(m => m.fan_out);
+const prepare = { model: model.name, quality: model.default_quality, n: 3, ...model.opt_defaults };
+const base = { run: { hash, need: 2, pre: 1, backend: "forge", prepare }, apply_pending: [] };
+const state = { crops: [{ id: "a", name: "a_미정", layout_diff: { name: "확정" } },
+                        { id: "ignored", name: "선택밖_미정" }], layout_added: [{ id: "b", name: "추가" }] };
+const summary = { jobs: 3, new_jobs: 2, kept_jobs: 1, gone_jobs: 1, old_cands: 4, no_job: ["c"] };
+const completed = { status: { status_str: "success", completed: true }, outputs: {}, apply_summary: summary };
+const reply = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
+
+function studio({ plans = [base], env = {}, board = state, history = [reply({ job: completed })], submit } = {}) {
+  const doc = new Doc(), calls = [], actions = [], timers = new Map();
+  const location = new URL("https://example.org/bmk/design_patch/board/?ui=v2");
+  let now = 0, sequence = 0, keys, lockable = true, reads = 0;
+  const ctx = vm.createContext({ window: {}, document: doc, location, URL, URLSearchParams, AbortController,
+    Date: class extends Date { static now() { return now; } },
+    setTimeout(fn, ms) { timers.set(++sequence, { at: now + ms, fn }); return sequence; },
+    clearTimeout(id) { timers.delete(id); } });
+  const next = list => list.length > 1 ? list.shift() : list[0];
+  plans = [...plans]; history = [...history];
+  ctx.window.DPEnv = { serverMode: true, backend: "forge", caps: { models: catalog }, ...env };
+  ctx.window.DPDialog = {
+    lock(o) { if (keys || !lockable) return false; keys = o.keys; return true; }, unlock() { keys = null; }
+  };
+  ctx.fetch = async (url, options) => {
+    const u = new URL(url), path = u.pathname.replace("/bmk/design_patch/", "");
+    assert.equal(u.origin, location.origin);
+    const body = options.body && JSON.parse(options.body);
+    calls.push({ path, query: Object.fromEntries(u.searchParams), body, method: options.method || "GET", at: now });
+    if (path === "jobs/prompt") {
+      actions.push(body.stage);
+      return submit ? submit(body) : reply({ prompt_id: body.stage === "apply" ? "job" : "paid" });
+    }
+    if (path === "state") return reply(board);
+    if (path === "pipeline") return reply({ settings: { prepare } });
+    if (path === "pipeline/plan") {
+      const p = next(plans);
+      actions.push("plan"); return p.json ? p : reply(p);
+    }
+    assert.equal(path, "jobs/history/job");
+    reads++;
+    const response = next(history);
+    return typeof response === "function" ? response(options) : response;
+  };
+  vm.runInContext(source("submit.js"), ctx);
+  const api = ctx.window.DPSubmit, paid = () => api.submitPaid("run", { root, only, plan: { run: { hash: "caller" } } });
+  const elements = tag => doc.body.all().filter(e => e.tagName === tag);
+  function click(ok, trusted = true) {
+    if (trusted) actions.push(ok ? "approve" : "cancel");
+    elements("BUTTON")[ok ? 0 : 1].fire("click", { isTrusted: trusted });
+  }
+  async function advance(ms) {
+    const end = now + ms;
+    await flush();
+    while (true) {
+      const first = [...timers].sort((a, b) => a[1].at - b[1].at)[0];
+      if (!first || first[1].at > end) break;
+      const [id, t] = first;
+      now = t.at; timers.delete(id); t.fn(); await flush();
+    }
+    now = end;
+    await flush();
+  }
+  return { ctx, api, paid, calls, actions, click, elements, doc, advance, reads: () => reads,
+    block() { lockable = false; }, key(key, type = "keydown") {
+      let prevented = false;
+      keys({ type, key, stopPropagation() {}, preventDefault() { prevented = true; } });
+      return prevented;
+    } };
+}
+for (const [name, response, expected] of [
+  ["성공", reply({ prompt_id: "id", number: 2 }, 201), { ok: true, prompt_id: "id" }],
+  ["빈 작업 번호", reply({ prompt_id: "" }), { ok: false, reason: "unknown", error: "작업 응답을 확인하지 못했습니다(HTTP 200)" }],
+  ["409 사유", reply({ reason: "changed", error: "바뀜", hash, pending: ["x"] }, 409),
+    { ok: false, reason: "changed", error: "바뀜", hash, pending: ["x"] }],
+  ["409 사유 없음", reply({ error: "응답 오류" }, 409), { ok: false, reason: "unknown", error: "응답 오류" }],
+  ["500", reply({ reason: "busy", error: "서버 오류" }, 500), { ok: false, reason: "unknown", error: "서버 오류" }],
+  ["JSON 아님", { ok: true, status: 204, json: async () => { throw Error(); } },
+    { ok: false, reason: "unknown", error: "작업 응답을 확인하지 못했습니다(HTTP 204)" }],
+  ["연결 끊김", null, { ok: false, reason: "unknown", error: "끊김" }]
+]) await test("post " + name, async () => {
+  const s = studio({ submit() { if (!response) throw Error("끊김"); return response; } });
+  const body = { root, stage: "apply", expect: "2:8" };
+  eq(await s.api.post(body), expected); eq(s.calls[0].body, body); assert.equal(s.calls[0].method, "POST");
+});
+
+await test("상자 잠금·문구·신뢰 클릭·키·취소", async () => {
+  const s = studio(), a = s.api.ask(["<line>", "다음"], ["주의"], "검토");
+  assert(s.api.asking()); assert.equal(await s.api.ask(["둘"]), false);
+  const sheet = s.doc.activeElement;
+  eq(sheet.attrs, { role: "dialog", "aria-modal": "true", "aria-label": "검토", tabindex: "-1" });
+  assert.equal(sheet.className, "sheet"); assert.equal(sheet.parent.className, "overlay");
+  eq(s.elements("P").map(p => [p.textContent, p.className]), [["<line>", ""], ["다음", ""], ["주의", "warn"]]);
+  s.click(true, false); s.click(false, false);
+  for (const key of ["Tab", "Enter", " ", "Spacebar"]) assert(s.key(key));
+  assert(s.api.asking()); assert(s.key("Escape")); assert.equal(await a, false); assert(!s.api.asking());
+  const b = s.api.ask(["셋"]); s.click(true); assert.equal(await b, true);
+  s.block(); assert.equal(await s.api.ask([]), false); assert(!s.api.asking());
+});
+await test("무료 단계·로컬·선택·백엔드", async () => {
+  const s = studio();
+  for (const stage of ["apply", "export"]) assert((await s.api.submitFree(stage, { root, approve: hash })).ok);
+  eq(s.calls.map(c => c.body), [{ root, stage: "apply" }, { root, stage: "export" }]);
+  assert.equal((await s.api.submitFree("run", { root })).reason, "unsupported");
+  assert.equal((await s.api.submitPaid("reroll", { root, only })).reason, "unsupported");
+  assert.equal((await s.api.submitPaid("run", { root, only: " , " })).reason, "no_selection");
+  s.ctx.window.DPEnv.backend = null; assert.equal((await s.paid()).reason, "no_backend");
+  s.ctx.window.DPEnv.serverMode = false;
+  for (const r of [await s.paid(), await s.api.submitFree("apply", { root }), await s.api.wait(root, "job"), await s.api.post({ root })])
+    assert.equal(r.reason, "server_only");
+  assert.equal(await s.api.plan(root, only), null); assert.equal(s.calls.length, 2);
+});
+await test("모델 표 전체의 v1·v2 표시 일치", () => {
+  const s = studio(); vm.runInContext(source("pipeline.js"), s.ctx);
+  for (const m of [...catalog, { name: "unknown-model" }]) {
+    for (const opts of [m.opt_defaults, {}, { image_size: "bad", thinking_level: "bad" }]) {
+      for (const p of [{ model: m.name, quality: m.default_quality, ...opts }, { model: m.name, quality: "high", opts }]) {
+        const v1 = s.ctx.window.DPPipeline.runText({ prepare: p, need: 2, free: 0, reasons: [] });
+        assert.equal(v1.line, "Run: 승인 필요(선택 0크롭) 2건 · 모델 " + s.api.modelText(p) + " · 복구 0");
+      }
+    }
+  }
+});
+const pending = { ...base, apply_pending: ["변경"] };
+for (const auto of [false, true]) await test(auto ? "자동 반영 후 계획·요약·승인" : "직접 승인·중복 제출", async () => {
+  const preview = { ...base, run: { ...base.run, prepare: undefined } };
+  const s = studio({ plans: auto ? [pending, preview, base] : [preview, base] });
+  const result = s.paid();
+  assert.equal((await s.paid()).reason, "busy"); await flush();
+  const lines = s.elements("P").map(p => p.textContent);
+  const expectedLines = ["Forge 로 생성 2건을 요청합니다. 사내 사용량이 잡힙니다.", "모델 " + s.api.modelText(prepare),
+    "잡 2건 · 그림 6장", "이 모델은 장마다 따로 생성합니다"];
+  if (auto) expectedLines.push("자동 반영: 새 조건 2개 · 옛 조건이 되는 후보 4장 · 작업 없음 1개");
+  eq(lines, [...expectedLines, "다시 생성(사전 승인) 1건도 함께 실행(선택과 무관) — 사내 사용량이 잡힙니다."]);
+  assert.equal(s.elements("P").at(-1).className, "warn");
+  const initial = auto ? ["plan", "apply", "plan"] : ["plan"];
+  s.click(true, false); await flush(); eq(s.actions, initial);
+  s.click(true); const r = await result;
+  eq(r, auto ? { ok: true, prompt_id: "paid", summary } : { ok: true, prompt_id: "paid" });
+  eq(s.actions, [...initial, "approve", "plan", "run"]); eq(s.calls.at(-1).body, { root, stage: "run", approve: hash, only });
+  eq(s.calls.map(c => c.path), ["state", "pipeline/plan", ...(auto ? ["jobs/prompt", "jobs/history/job", "pipeline/plan"] : []),
+    "pipeline", "pipeline/plan", "jobs/prompt"]);
+  for (const c of s.calls) {
+    if (c.method === "GET") eq(c.query, c.path === "pipeline/plan" ? { root, only } : { root });
+    if (c.body?.stage === "apply") eq(c.body, { root, stage: "apply" });
+  }
+});
+for (const [name, plans, approve, reason] of [
+  ["거절", [base], false, "cancelled"],
+  ["승인 중 해시 변경", [base, { ...base, run: { ...base.run, hash: "other" } }], true, "stale"],
+  ["승인 중 미반영", [base, pending], true, "stale"]
+]) await test(name, async () => {
+  const s = studio({ plans }), result = s.paid(); await flush();
+  s.click(approve); assert.equal((await result).reason, reason);
+  assert.equal(s.calls.filter(c => c.body).length, 0);
+  assert.equal(s.actions.filter(a => a === "plan").length, approve ? 2 : 1);
+});
+for (const [name, config, reason, detail] of [
+  ["반영 409", { plans: [pending], submit: () => reply({ reason: "confirm_settings", error: "확인 필요" }, 409) },
+   "apply_failed", "confirm_settings · 확인 필요"],
+  ["반영 실패 기록", { plans: [pending], history: [reply({ job: { status: { status_str: "error", completed: false,
+    messages: [["execution_error", { exception_message: "읽기 실패" }]] } } })] }, "apply_failed", "읽기 실패"],
+  ["반영 후 미반영", { plans: [pending, pending] }, "apply_needed", null],
+  ["승인 대상 없음", { plans: [{ ...base, run: { hash: "" } }] }, "nothing_to_approve", "승인할 것이 없습니다"],
+  ["계획 오류", { plans: [{ run: { error: "계산 실패" }, apply_pending: ["변경"] }] }, "plan_error", "계산 실패"],
+  ["반영 후 계획 오류", { plans: [pending, { run: { error: "계산 실패" } }] }, "plan_error", "계산 실패"],
+  ["이름 미정", { board: { crops: [{ id: "a", name: "옛 이름", layout_diff: { name: "a_미정" } }],
+    layout_added: [{ id: "b", name: "b_미정" }] } }, "unnamed", "이름 미정 크롭 2개(a_미정, b_미정) — ② 크롭에서 이름을 정한 뒤 승인하세요"]
+]) await test(name, async () => {
+  const s = studio(config), result = await s.paid();
+  assert.equal(result.reason, reason); if (detail) assert.equal(result.error, detail);
+  if (reason === "apply_needed") eq(result.pending, pending.apply_pending);
+  assert(!s.api.asking()); assert(!s.actions.includes("run"));
+  if (reason === "unnamed" || name === "계획 오류") assert(!s.calls.some(c => c.body));
+});
+await test("mock 문구·승인 후 해시", async () => {
+  const s = studio({ env: { backend: "mock" }, plans: [{ ...base, run: { ...base.run, backend: "mock" } }] });
+  const result = s.paid(); await flush();
+  eq(s.elements("P").map(p => p.textContent), ["[MOCK] 과금 없음 — 생성 2건", "mock 백엔드 — 승인 코드가 mock 에 묶여 있어 유료 실행을 승인하지 못합니다."]);
+  s.click(true); assert((await result).ok); eq(s.actions, ["plan", "approve", "plan", "run"]);
+  assert.equal(s.calls.at(-1).body.approve, hash);
+});
+await test("계획 202 한 번만 재시도", async () => {
+  const busy = reply({ busy: true }, 202);
+  for (const last of [base, busy]) {
+    const s = studio({ plans: [busy, last, base] }), result = s.api.plan(root, only);
+    await s.advance(499); assert.equal(s.calls.length, 1);
+    await s.advance(1); eq(await result, last === base ? base : { busy: true }); eq(s.calls.map(c => c.at), [0, 500]);
+  }
+});
+const readError = reply({ error: "읽기 실패" }, 503);
+await test("기록 재시도 간격·연속 실패 횟수 초기화", async () => {
+  const s = studio({ history: [readError, readError, reply({}), readError, readError, reply({ job: completed })] });
+  const result = s.api.wait(root, "job", { intervalMs: 1 });
+  await s.advance(4999); assert.equal(s.reads(), 5); await s.advance(1);
+  eq(await result, { done: true, ok: true, record: completed }); eq(s.calls.map(c => c.at), [0, 1000, 2000, 3000, 4000, 5000]);
+});
+await test("기록 3회 실패·미완료 반영", async () => {
+  const s = studio({ plans: [pending], history: [readError] }), result = s.paid();
+  await s.advance(2000); assert.equal((await result).reason, "apply_failed"); assert.equal(s.reads(), 3);
+  assert(!s.api.asking()); assert(!s.actions.includes("run"));
+  const w = s.api.wait(root, "job"); await s.advance(2000); eq(await w, { done: false, reason: "read_failed" });
+});
+await test("대기 시간 초과·응답이 지연되는 조회", async () => {
+  const delayed = ({ signal }) => new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(Error("timeout"))));
+  for (const response of [reply({}), delayed, () => new Promise(() => {})]) {
+    const s = studio({ history: [response] }), result = s.api.wait(root, "job", { timeoutMs: 1500 });
+    await s.advance(1500); eq(await result, { done: false, reason: "timeout" });
+    await s.advance(6000); assert.equal(s.reads(), typeof response === "function" ? 1 : 2);
+  }
+});
+console.log(JSON.stringify(results));
+'''
+    script = out / "submit.mjs"
+    script.write_text(harness, encoding="utf-8")
+    catalog = out / "models.json"
+    catalog.write_text(json.dumps([models.describe(name) for name in models.MODELS]), encoding="utf-8")
+    proc = subprocess.run([node, str(script), str(web), str(catalog)], capture_output=True, text=True, encoding="utf-8", timeout=40)
+    check(proc.returncode == 0 and bool(proc.stdout.strip()), f"V2S 제출 VM 실행 {proc.stderr[-1600:]}")
+    if proc.returncode == 0 and proc.stdout.strip():
+        for case, result in json.loads(proc.stdout).items():
+            check(result is True, f"V2S {case}" if result is True else f"V2S {case}: {result}")
 
 
 def ux_v2a_spec_unit():

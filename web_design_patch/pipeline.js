@@ -1893,28 +1893,8 @@ window.DPPipeline = (() => {
     }
 
     function forgeAsk(need, warnings = [], lines = null) {
-      if (ask || !window.DPDialog || !window.DPDialog.lock({ keys: askKeys })) return Promise.resolve(false);
-      return new Promise((resolve) => {
-        const box = el("div", "overlay"), sheet = el("div", "sheet");
-        const close = (ok) => {
-          ask = null;
-          box.remove();
-          window.DPDialog.unlock();
-          resolve(ok);
-        };
-        sheet.setAttribute("role", "dialog");
-        sheet.setAttribute("aria-modal", "true");
-        sheet.setAttribute("aria-label", "생성 승인");
-        for (const line of lines || [`Forge 로 생성 ${need}건을 요청합니다. 사내 사용량이 잡힙니다.`]) sheet.append(el("p", "", line));
-        for (const warning of warnings) sheet.append(el("p", "warn", warning));
-        btns(sheet, button("승인", "생성 승인", (e) => e.isTrusted && close(true), "primary"),
-          button("취소", "Esc", (e) => e.isTrusted && close(false)));
-        box.append(sheet);
-        document.body.append(box);
-        ask = { box, close };
-        sheet.setAttribute("tabindex", "-1");
-        sheet.focus();
-      });
+      if (ask) return Promise.resolve(false);
+      return window.DPSubmit.ask(lines || [`Forge 로 생성 ${need}건을 요청합니다. 사내 사용량이 잡힙니다.`], warnings);
     }
 
     async function approve(e, kind, label, pair) {
@@ -2081,18 +2061,8 @@ window.DPPipeline = (() => {
       if (stage !== "draft") wave = null;
       render();
       if (SM()) {
-        let d;
-        try {
-          const body = Object.assign({ root: opts.root, stage }, stage === "reroll" ? {} : { approve: hash, only });
-          const response = await fetch(opts.apiUrl("jobs/prompt"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-          const result = await response.json().catch(() => null);
-          if (!result || response.status >= 500 || (!response.ok && !(response.status >= 400 && response.status < 500 && typeof result.reason === "string" && result.reason))
-              || (response.ok && (typeof result.prompt_id !== "string" || !result.prompt_id))) {
-            throw new Error(result && result.error || `작업 응답을 확인하지 못했습니다(HTTP ${response.status})`);
-          }
-          d = response.ok ? { ok: true, prompt_id: result.prompt_id }
-            : { ok: false, reason: result.reason, error: result.error || `HTTP ${response.status}`, hash: result.hash, pending: result.pending };
-        } catch (e) { d = { ok: false, reason: "unknown", error: e.message }; }
+        const body = Object.assign({ root: opts.root, stage }, stage === "reroll" ? {} : { approve: hash, only });
+        const d = await window.DPSubmit.post(body);
         paying = null;
         if (d.reason === "unknown") (asked[stage] = asked[stage] || []).push({ hash, id: `server-${Date.now()}`, lost: true });
         else if (submitted(d)) asked[stage] = [];
