@@ -2447,7 +2447,7 @@ window.DPPipeline = (() => {
       };
       return ["model", "quality", "size_rule", "variants", "ref_style", "complexity"].some((k) =>
         !same(base[k], values[k]) && (k !== "complexity" || /^gpt-image-2\.6-/.test(values.model))
-        && (k !== "size_rule" || !(ratioModel(base.model) && ratioModel(values.model))))
+        && (k !== "size_rule" || !ratioModel(values.model)))
         || ["image_size", "thinking_level"].some((k) => !same(base[k], values[k]) && modelInfo(values.model)?.opts?.[k]?.length
           && !same(modelSettings(base)[k], modelSettings(values)[k]));
     }
@@ -2576,8 +2576,21 @@ window.DPPipeline = (() => {
       // 확인 필요 항목은 확인된 것이 되므로(§2.1) 확인 창에 그 값·출처(추정·노드 기본값)와 저장값에서 바뀌는 키를 적는다. 보낸 값 = 확인 창의 값
       if (!(await reload()) || !PS.P) return;
       const P0 = PS.P;
-      const D = Object.fromEntries(Object.entries(P0.derived.settings).map(([sec, values]) => [sec,
-        Object.fromEntries(Object.entries(values).map(([key, value]) => [key, hiddenPath(sec, key) && P0.settings ? P0.settings[sec][key] : value]))]));
+      function fillValues(p) {
+        const values = Object.fromEntries(Object.entries(p.derived.settings).map(([sec, fields]) => [sec,
+          Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, hiddenPath(sec, key) && p.settings ? p.settings[sec][key] : value]))]));
+        const options = modelInfo(values.prepare?.model)?.opts;
+        const keep = ["image_size", "thinking_level"].filter((key) => !options?.[key]?.length);
+        // 마지막 실행에 없던 옵션의 유도 기본값은 저장값도, 아직 저장하지 않은 편집도 덮지 않는다.
+        if (values.prepare && p.settings?.prepare) {
+          for (const key of keep) {
+            if (key in p.settings.prepare) values.prepare[key] = p.settings.prepare[key];
+            else delete values.prepare[key];
+          }
+        }
+        return { values, keep };
+      }
+      const { values: D, keep } = fillValues(P0);
       const secs = Object.keys(P0.widgets).filter((sec) => !P0.settings || JSON.stringify(P0.settings[sec]) !== JSON.stringify(D[sec])
         || confirmOf(P0).some((c) => c.startsWith(sec + ".")));
       if (!secs.length) {
@@ -2599,8 +2612,11 @@ window.DPPipeline = (() => {
         try { lines.push(await preparePreview(D.prepare, P0)); }
         catch (e) { opts.toast(e.message, "err"); return; }
       }
-      if (!await askFree(lines.concat("Prepare·Import 가 바뀌면 다음 반영에서 생성 조건이 바뀌어 다시 과금 대상이 될 수 있습니다. 계속할까요?").join("\n"), () => !!PS.P && secs.every((sec) =>
-        Object.keys(D[sec]).every((key) => same(D[sec][key], hiddenPath(sec, key) && PS.P.settings ? PS.P.settings[sec][key] : PS.P.derived.settings[sec][key]))))) return;
+      if (!await askFree(lines.concat("Prepare·Import 가 바뀌면 다음 반영에서 생성 조건이 바뀌어 다시 과금 대상이 될 수 있습니다. 계속할까요?").join("\n"), () => {
+        if (!PS.P) return false;
+        const current = fillValues(PS.P).values;
+        return secs.every((sec) => Object.keys(D[sec]).every((key) => same(D[sec][key], current[sec]?.[key])));
+      })) return;
       // 확인 창을 닫은 때의 편집값 — 리셋이 덮는 것은 이 값뿐. 저장을 기다리는 사이 칸은 켜져 있어 그 뒤에 친 값(바꾼 키·새 키)은 보내지 않은
       // 새 편집이라 남긴다(saveSection 과 같은 뜻 — 지우면 칸이 blur 뒤 저장값으로 돌아가고, 바로 누른 [저장]은 친 값 대신 저장값을 '저장 성공'으로)
       const f0 = Object.fromEntries(secs.map((sec) => [sec, Object.assign({}, form[sec])]));
@@ -2621,7 +2637,7 @@ window.DPPipeline = (() => {
             if (!(k in f) && !same(before, sv[k])) f[k] = before;
           }
           for (const k of Object.keys(f)) {
-            if (k in f0[sec] && f[k] === f0[sec][k]) {
+            if (k in f0[sec] && f[k] === f0[sec][k] && !(sec === "prepare" && keep.includes(k))) {
               delete f[k];
               delete e0[k];
             } else e0[k] = sv[k]; // 남긴 편집의 기준값 = 이 창이 방금 저장한 값(다른 창 값으로 묻지 않게)

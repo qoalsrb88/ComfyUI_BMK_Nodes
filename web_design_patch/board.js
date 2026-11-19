@@ -1379,6 +1379,8 @@
 
   function renderDetail() {
     const d = $("detail");
+    const openPrompt = d.openPrompt;
+    delete d.openPrompt;
     d.replaceChildren();
     const sb = $("btn-star");
     const on = !!(curCand() && curCand().picked);
@@ -1426,17 +1428,25 @@
       const r = row(d, "프롬프트", c.prompt_rewritten === true ? "공급자가 프롬프트를 고쳐 씀" : "프롬프트가 서버에서 바뀜");
       r.classList.add("dp-prompt-detail");
       if (c.prompt_used === true) {
-        const text = el("pre", "pp-prompt dp-server-prompt");
-        text.hidden = true;
+        const call = c.call_id, slot = c.slot, key = JSON.stringify([ROOT, call, slot]);
+        const candidate = JSON.stringify([ROOT, c.key, call, slot]);
+        // 폴링 중에도 같은 후보의 글 상자를 이어 쓴다. 조회 중인 응답도 이 상자에 도착한다.
+        const expanded = openPrompt?.candidate === candidate;
+        const text = expanded ? openPrompt.text : el("pre", "pp-prompt dp-server-prompt");
+        if (expanded) d.openPrompt = openPrompt;
+        text.hidden = !expanded;
         text.tabIndex = 0;
         const b = el("button", "inline", "서버가 쓴 프롬프트 보기");
         b.type = "button";
-        b.setAttribute("aria-expanded", "false");
-        const call = c.call_id, slot = c.slot, key = JSON.stringify([ROOT, call, slot]);
+        b.setAttribute("aria-expanded", String(expanded));
         b.addEventListener("click", async () => {
           text.hidden = !text.hidden;
           b.setAttribute("aria-expanded", String(!text.hidden));
-          if (text.hidden) return;
+          if (text.hidden) {
+            delete d.openPrompt;
+            return;
+          }
+          d.openPrompt = { candidate, text };
           if (!promptCache.has(key)) {
             promptCache.set(key, (async () => {
               try {
@@ -1449,7 +1459,9 @@
             })());
           }
           text.textContent = "불러오는 중…";
-          const prompt = await promptCache.get(key);
+          const request = promptCache.get(key);
+          const prompt = await request;
+          if (prompt === null && promptCache.get(key) === request) promptCache.delete(key);
           text.textContent = prompt === null ? "프롬프트를 불러오지 못했습니다" : prompt;
         });
         r.append(b);
