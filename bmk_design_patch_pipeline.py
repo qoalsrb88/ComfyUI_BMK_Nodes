@@ -698,7 +698,7 @@ def _derive_prepare(m: dict, out: dict, frm: dict, conf: set, notes: list) -> No
             notes.append(f"prepare: 매니페스트 prepare_settings 를 쓸 수 없음({e}) — jobs 에서 읽음")
         else:
             out.update(vals)
-            frm.update({f"prepare.{k}": "manifest" for k in vals})
+            frm.update({f"prepare.{k}": "manifest" for k in vals if k in ps or k not in _PREPARE_OPTS})
             return
     jobs = _jobs_of(m)
     if not jobs:

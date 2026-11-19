@@ -61996,6 +61996,13 @@ def forge_models2_settings_unit():
                 check(False, f"FIX-P1 로컬 저장·템플릿이 옛 절을 허용해야 함: {error}")
             pre.run(lh, **local_values)
             lm = st.load_manifest(lr)
+            legacy_prepare = dict(lm["prepare_settings"])
+            legacy_prepare.pop("complexity")
+            local_der = pl.derive(lr, dict(lm, prepare_settings=legacy_prepare))
+            local_sources = {k: v for k, v in local_der["from"].items() if k.startswith("prepare.")}
+            check(local_der["settings"]["prepare"] == legacy_prepare | {"complexity": pl.defaults()["prepare"]["complexity"]}
+                  and local_sources == {"prepare." + k: "manifest" for k in local_values},
+                  "FIX-P10 로컬 Prepare 유도값·출처와 생략한 complexity의 기존 출처 보존")
             settled(lr, lm)
             settings = dict(pl.defaults(lr), prepare=local_values)
             preview = pl.switch_preview(lr, lm, settings, prepare=local_values)
@@ -62003,6 +62010,10 @@ def forge_models2_settings_unit():
             check(not set(option_keys) & pl.prepare_record(dict(lm, prepare_settings={}))[1].keys(),
                   "FIX-P1 로컬 jobs 유도 기록에 서버 전용 키 없음")
         prompt = pl.build_prompt("apply", loaded, root)
+        gpt_der = pl.derive(lr, lm)
+        check(all(gpt_der["from"]["prepare." + k] == "default" for k in option_keys)
+              and [gpt_der["settings"]["prepare"][k] for k in option_keys] == ["2K", "medium"],
+              "FIX-P10 GPT Prepare 기록에 없는 해상도·추론의 값과 출처는 노드 기본값")
         check(all(prompt[pl.NODE_KEYS["prepare"]]["inputs"][k] == values[k] for k in option_keys),
               "FM2S1 실행 설정에서 Prepare 입력까지 두 값 전달")
 
@@ -62132,13 +62143,36 @@ def forge_models2_settings_unit():
         check(not flags[2], "FIX-P7 Seedream 은 원래 quad 와 달라도 요청 원장 기준")
         pm["candidates"][0]["quad"] = [10.75, 10.25, 18.5, 10.75, 17.75, 20.25, 10.5, 19.75]
         check(not placed_flags()[0], "FIX-P7 기울어진 소수 좌표 quad 는 정수 반올림 없이 8×10 테두리로 판정")
-        for bad_quad in (None, [0, 0, 1], [0] * 8):
-            for c in pm["candidates"][:2]:
-                if bad_quad is None:
-                    c.pop("quad", None)
-                else:
-                    c["quad"] = bad_quad
-            check(placed_flags() == [True, False, False], f"FIX-P7 quad 누락·손상 시 현재 크롭으로 판정 {bad_quad}")
+        rect = [100, 0, 900, 1000]
+        for case, quad, expected in (
+            ("누락", None, (800, 1000)),
+            ("좌표 수 부족", [0, 0, 1], (800, 1000)),
+            ("폭·높이 없음", [0] * 8, (800, 1000)),
+            ("일직선", [0, 0, 30, 30, 60, 60, 90, 90], (800, 1000)),
+            ("테두리 절반 미만", [0, 0, 45, 44, 90, 90, 44, 45], (800, 1000)),
+            ("역방향·정확히 절반", [45, 0, 0, 45, 45, 90, 90, 45], (90, 90)),
+        ):
+            cand = dict(pm["candidates"][0])
+            if quad is None:
+                del cand["quad"]
+            else:
+                cand["quad"] = quad
+            original = copy.deepcopy(cand)
+            check(bd._state_placement_size(cand, rect) == expected and cand == original,
+                  f"FIX-P9 원래 자리 판정·후보 사본 보존 {case}")
+
+        hidden = copy.deepcopy(pm["candidates"][2])
+        hidden_cell = "a" * 24
+        hidden.update(key="removed-target-candidate", tid="removed-target")
+        hidden["origin_info"].update(cell_key=hidden_cell, call_id=rn.call_id_for(hidden_cell, 0))
+        pm["candidates"].append(hidden)
+        st.save_manifest(pr, pm)
+        with patch.object(rn, "_read_json", wraps=rn._read_json) as reads:
+            visible = bd.build_state(pr)["targets"][0]["candidates"]
+        paths = [call.args[0] for call in reads.call_args_list]
+        check(len(visible) == 3 and rn._lpath(pr, job["cell_key"], 0, "req") in paths
+              and rn._lpath(pr, hidden_cell, 0, "req") not in paths,
+              "FIX-P9 상태에 실린 Seedream 후보의 요청만 읽고 제거된 타깃의 원장은 조회하지 않음")
 
         integration_cases = (
             ("gpt-to-nano", args("gpt-image-2.5-sunburst"), args("nano-banana-2.1"), 2),
@@ -62234,7 +62268,10 @@ def forge_models2_settings_unit():
                       name, "standard", j["size"], dp._BACKGROUND, j["prompt"], [i["sha"] for i in j["inputs"]],
                       dp.dprompt.TEMPLATE_VERSION, j["variant"], opts=j["opts"]) for j in nm["jobs"]),
                       f"FM2S3 고정 품질·생성 조건에 작업 옵션 반영 {name}")
-                derived = pl.derive(nr, nm)["settings"]
+                nano_der = pl.derive(nr, nm)
+                check(all(nano_der["from"]["prepare." + k] == ("manifest" if k in effective else "default")
+                          for k in option_keys), f"FIX-P10 나노 Prepare 기록에 있는 옵션만 기록 출처 {name}")
+                derived = nano_der["settings"]
                 check(pl.drift(dict(derived, prepare=values), nm) == [], "FM2S3 저장값과 모델별 기본값은 같은 생성 조건")
                 old_jobs = pl.derive(nr, dict(nm, prepare_settings={}))
                 check(all(old_jobs["settings"]["prepare"][k] == v for k, v in effective.items())

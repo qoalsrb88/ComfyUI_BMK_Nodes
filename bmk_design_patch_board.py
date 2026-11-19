@@ -882,47 +882,39 @@ def _forge_candidate_flags(root, info):
 
 
 def _state_placement_size(cand, rect):
-    """후보가 놓인 원래 quad 의 실수 폭·높이. 손상된 quad 는 상태 응답용 사본에서만 현재 크롭으로 대체한다."""
+    """비율 판정에 쓸 원래 quad 의 폭·높이. 유효한 자리가 없으면 현재 크롭 크기를 쓴다."""
     quad = cand.get("quad")
-    if isinstance(quad, list) and len(quad) == 8 and all(type(v) in (int, float) and math.isfinite(v) for v in quad):
+    if isinstance(quad, list) and len(quad) == 8 and all(type(v) is int or type(v) is float and math.isfinite(v) for v in quad):
         xs, ys = quad[::2], quad[1::2]
         w, h = max(xs) - min(xs), max(ys) - min(ys)
-        if w > 0 and h > 0:
+        # 네 꼭짓점의 신발끈 합 = 두 대각선의 외적. 절댓값은 사각형 넓이의 두 배다.
+        twice_area = abs((xs[2] - xs[0]) * (ys[3] - ys[1]) - (ys[2] - ys[0]) * (xs[3] - xs[1]))
+        if w > 0 and h > 0 and twice_area >= w * h:
             return w, h
-    cand["quad"] = dpsd.quad_from_rect(rect)
     return rect[2] - rect[0], rect[3] - rect[1]
 
 
-def _forge_ratio_changes(root, m):
-    changed = set()
-    if not server_mode():
-        return changed
+def _forge_ratio_changed(root, cand, rect, ck, rep):
+    info = cand.get("origin_info") or {}
+    if not server_mode() or info.get("backend") != "forge":
+        return False
     try:
         from . import bmk_design_patch_models as models
     except ImportError:
         import bmk_design_patch_models as models
-    rects = {crop["id"]: crop["rect"] for crop in m["crops"]}
-    for cand in m["candidates"]:
-        info = cand.get("origin_info") or {}
-        rect = rects.get(cand.get("crop_id"))
-        if info.get("backend") != "forge" or rect is None:
-            continue
-        model = models.get(info.get("model"))
-        if model is not None and model.ratios:
-            requested = _state_placement_size(cand, rect)
-        else:
-            ck, _, rep = _cell_of(cand)
-            runner = _runner()
-            if not ck or rep is None or runner is None:
-                continue
-            try:
-                req = runner._read_json(runner._lpath(root, ck, rep, "req"))
-            except (OSError, ValueError, TypeError):
-                continue
-            requested = req.get("size") if isinstance(req, dict) else None
-        if models.ratio_off(requested, cand.get("src_size")):
-            changed.add(cand["key"])
-    return changed
+    model = models.get(info.get("model"))
+    if model is not None and model.ratios:
+        requested = _state_placement_size(cand, rect)
+    else:
+        runner = _runner()
+        if not ck or rep is None or runner is None:
+            return False
+        try:
+            req = runner._read_json(runner._lpath(root, ck, rep, "req"))
+        except (OSError, ValueError, TypeError):
+            return False
+        requested = req.get("size") if isinstance(req, dict) else None
+    return models.ratio_off(requested, cand.get("src_size"))
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2826,7 +2818,6 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
         flags["plan_v"] = plan["sig"] if plan["sig"] == f"r:{r_sig}|d:{d_sig}" and _plan_ok(plan) else None
     if since_rev is not None and since_rev == m["rev"]:
         return {"unchanged": True, "rev": m["rev"], **flags}
-    ratio_changes = _forge_ratio_changes(root, m)
     pref = _PREF.get(rk)
     rejects = m.get("rejects") or {}
     picks = m.get("picks") if isinstance(m.get("picks"), dict) else {}
@@ -2870,7 +2861,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                 edit = _edit_rec(m, c["key"])
                 adjust = store.cand_adjust(m, c["key"])
                 candidate_flags = _forge_candidate_flags(root, info)
-                if c["key"] in ratio_changes:
+                if _forge_ratio_changed(root, c, crop["rect"], ck, rep):
                     candidate_flags["ratio_changed"] = True
                 cands.append({
                     "key": c["key"], "n": n, "origin": c.get("origin"), "backend": info.get("backend"),
