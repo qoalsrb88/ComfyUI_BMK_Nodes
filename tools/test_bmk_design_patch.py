@@ -61457,6 +61457,181 @@ def forge_models2_dev_unit():
     """Forge 2단계 둘째 묶음 가짜 Forge 갈래 — 나노바나나 계열의 목록·요청 검사·장마다 따로 부르는 흉내.
     명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
     section("Forge 모델 가짜 Forge(둘째 묶음) — forge_models2_dev_unit")
+    import bmk_design_patch_forge_dev as dev
+    import bmk_design_patch_models as dpm
+    from unittest.mock import patch
+
+    fixture = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
+    models = fixture["models"]
+    names = ("nano-banana-2.1", "nano-banana-2", "nano-banana-pro")
+    catalog = copy.deepcopy(models["catalog"]["response"])
+    # 정본의 count가 모델 추가보다 늦게 갱신돼도 목록의 모든 값과 실제 개수는 그대로 검증한다.
+    catalog["count"] = len(catalog["models"])
+    token = dev.issue_token("models2_test")
+    headers = {"Authorization": "Bearer " + token}
+    with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": ""}):
+        fake = dev.FakeForge(clock=lambda: 1700000000.0)
+    encoded = io.BytesIO()
+    with Image.new("RGB", (48, 32), (40, 90, 180)) as picture:
+        picture.save(encoded, format="PNG")
+    uri = "data:image/png;base64," + base64.b64encode(encoded.getvalue()).decode()
+    serial = 0
+
+    def payload(name, **changes):
+        nonlocal serial
+        serial += 1
+        data = copy.deepcopy(models["requests"][name]["request"])
+        data.update(request_id="models2-" + str(serial), input_images=[[uri, uri]])
+        data.update(changes)
+        return data
+
+    async def call(method, path, data=None, *, instance=fake, auth=headers):
+        status, response_headers, body = await instance.handle(
+            method, path, auth, json.dumps(data).encode() if data is not None else None)
+        return status, json.loads(body) if response_headers.get("Content-Type") == "application/json" else body
+
+    async def generate(data):
+        status, submitted = await call("POST", "/api/image/generate", data)
+        check(status == 200 and set(submitted) == set(fixture["generate"]["response"]), "FND 제출은 정본 모양으로 접수")
+        if status != 200:
+            raise AssertionError("가짜 Forge 나노바나나 요청 접수 실패")
+        status, job = await call("GET", "/api/image/jobs/" + submitted["job_id"])
+        check(status == 200, "FND 접수된 잡 조회")
+        return job, fake.requests[-1]
+
+    async def failed(data, label):
+        job, record = await generate(data)
+        check(job["status"] == "failed" and job["result_data"] is None and job["error_category"] == "ailabs"
+              and isinstance(job["error_message"], str) and bool(job["error_message"])
+              and record["provider_calls"] == [] and record["used_input_indices"] == [],
+              "FND3 공급자 호출 없는 실패 잡: " + label)
+        check(record["keys"] == sorted(data) and record["checkpoint"] == data["checkpoint"],
+              "FND3 실패한 요청도 키·checkpoint 기록: " + label)
+        return job
+
+    async def result_size(job):
+        status, png = await call("GET", job["result_data"]["images"][0], auth={})
+        with Image.open(io.BytesIO(png)) as picture:
+            size = picture.size
+            check(status == 200 and picture.format == "PNG", "FND4 결과는 무인증 PNG")
+            picture.verify()
+        return size
+
+    async def run():
+        path = models["catalog"]["path"]
+        check(await call("GET", path) == (200, catalog), "FND1 세 모델을 포함한 정본 목록·실제 개수")
+        for name in names:
+            checkpoint = models["names"][name]
+            fake.retire(checkpoint)
+            current = (await call("GET", path))[1]
+            expected = dict(catalog, models=[row for row in catalog["models"] if row["checkpoint"] != checkpoint],
+                            count=catalog["count"] - 1)
+            check(current == expected, "FND1 퇴역은 지정한 나노바나나 하나만 제거: " + name)
+            job, record = await generate(payload(name))
+            check(job["status"] == "completed" and record["retired"] and record["checkpoint"] == checkpoint
+                  and record["effective_checkpoint"] != checkpoint
+                  and job["request_data"]["checkpoint"] == record["effective_checkpoint"],
+                  "FND1 퇴역 요청의 기존 대체 모델 기록 유지: " + name)
+            fake.retire(checkpoint, False)
+            check(await call("GET", path) == (200, catalog), "FND1 퇴역 해제는 전체 목록 복구")
+        checkpoints = [models["names"][name] for name in names]
+        for retired in ([checkpoint] for checkpoint in checkpoints):
+            with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": " , ".join(retired)}):
+                env_fake = dev.FakeForge()
+            current = (await call("GET", path, instance=env_fake))[1]
+            check(current == dict(catalog, models=[row for row in catalog["models"] if row["checkpoint"] not in retired],
+                                  count=catalog["count"] - len(retired)), "FND1 환경 변수도 세 id 각각에 적용")
+        with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": " , ".join(checkpoints)}):
+            env_fake = dev.FakeForge()
+        check((await call("GET", path, instance=env_fake))[1]
+              == dict(catalog, models=[row for row in catalog["models"] if row["checkpoint"] not in checkpoints],
+                      count=catalog["count"] - len(checkpoints)), "FND1 환경 변수로 세 모델 동시 퇴역")
+
+        for name in names:
+            spec, limits = models["requests"][name], models["limits"][name]
+            data = payload(name)
+            job, record = await generate(data)
+            count = data["num_outputs"]
+            check(job["status"] == "completed" and len(job["result_data"]["images"]) == count
+                  and set(job["result_data"]) == set(models["job"]["seedream_partial"]["result_data"])
+                  and job["result_data"]["result_metadata"] == [{"call_index": i} for i in range(count)],
+                  "FND2 정본 요청은 장별 메타데이터로 완료·prompt_used 없음: " + name)
+            check(record == {"keys": sorted(data), "checkpoint": data["checkpoint"], "provider_calls": list(range(count)),
+                             "effective_checkpoint": data["checkpoint"], "retired": False, "input_count": 2,
+                             "used_input_indices": [0, 1], "job_id": job["id"], "reused": False,
+                             "successful_calls": list(range(count))}, "FND2 받은 요청 기록의 기존 꼴 유지: " + name)
+            expected_size = tuple(side * dpm.IMAGE_SIZES[data["image_size"]] for side in dpm.RATIO_SIZES[data["aspect_ratio"]])
+            check(await result_size(job) == expected_size, "FND2 기본 해상도 PNG는 모델 표의 예상 크기: " + name)
+            before = len(fake.jobs)
+            status, again = await call("POST", "/api/image/generate", data)
+            check(status == 200 and again["job_id"] == job["id"] and again["status"] == "completed"
+                  and len(fake.jobs) == before and fake.requests[-1]["reused"] and not fake.requests[-1]["provider_calls"],
+                  "FND2 재제출은 새 잡·공급자 호출 없음: " + name)
+
+            for key in spec["never"]:
+                await failed(payload(name, **{key: None}), name + " 금지 키 " + key)
+            for key in ("aspect_ratio", *limits["opts"]):
+                missing = payload(name)
+                del missing[key]
+                await failed(missing, name + " 누락 " + key)
+                invalid = (None, [], {}, True, 0, "", "unsupported")
+                invalid += {"aspect_ratio": ("4/5", "auto", "16:10"), "image_size": ("2k", "8K", "2048x2048"),
+                            "thinking_level": ("low", "MEDIUM")}[key]
+                if key == "thinking_level" and name == "nano-banana-2":
+                    invalid += ("medium",)
+                for value in invalid:
+                    await failed(payload(name, **{key: value}), name + " 잘못된 " + key)
+            if name == "nano-banana-pro":
+                for value in ("minimal", "medium", "high", []):
+                    await failed(payload(name, thinking_level=value), name + " 추론 옵션 금지")
+            for thinking in limits["opts"].get("thinking_level", ()):
+                job, _ = await generate(payload(name, thinking_level=thinking, input_images=[]))
+                check(job["status"] == "completed", "FND3 모델별 추론 선택지 허용: " + name + " " + thinking)
+
+            limit = limits["max_inputs"]
+            for groups in ([[uri] * (limit + 1)], [[uri] * 7, [uri] * (limit - 6)]):
+                await failed(payload(name, input_images=groups), name + " 입력 상한 초과")
+            for groups in ([], [[]], [[uri] * limit], [[uri] * 7, [uri] * (limit - 7)]):
+                job, record = await generate(payload(name, input_images=groups, num_outputs=limits["max_n"]))
+                check(job["status"] == "completed" and len(job["result_data"]["images"]) == limits["max_n"]
+                      and record["input_count"] == sum(map(len, groups))
+                      and record["used_input_indices"] == list(range(sum(map(len, groups))))
+                      and record["provider_calls"] == list(range(limits["max_n"])),
+                      "FND3 입력 0·14장과 출력 8장 허용·그룹 경계에서 절삭 없음: " + name)
+
+            resolutions = tuple(dpm.IMAGE_SIZES)
+            for index, ratio in enumerate(dpm.RATIOS):
+                for image_size in resolutions:
+                    job, _ = await generate(payload(name, aspect_ratio=ratio, image_size=image_size, input_images=[], num_outputs=1))
+                    check(job["status"] == "completed", "FND4 모든 비율·해상도 조합 허용: " + name)
+                    # 비율 전부와 해상도 세 단계를 실제 PNG로 확인한다.
+                    if image_size == resolutions[index % len(resolutions)]:
+                        expected_size = tuple(side * dpm.IMAGE_SIZES[image_size] for side in dpm.RATIO_SIZES[ratio])
+                        check(await result_size(job) == expected_size, "FND4 예상 크기의 PNG: " + name + " " + ratio + " " + image_size)
+
+            for marker, indices in (("[[fake:partial=2]]", [0, 2]), ("[[fake:partial=1]]", [0]),
+                                    ("[[fake:partial=0]]", []), ("[[fake:empty]]", [])):
+                job, record = await generate(payload(name, num_outputs=3, prompt=marker))
+                result = job["result_data"]
+                check(job["status"] == "completed" and len(result["images"]) == len(indices)
+                      and len(result["result_ids"]) == len(indices) and len(result["thumbnails"]) == len(indices)
+                      and result["result_metadata"] == [{"call_index": i} for i in indices]
+                      and record["provider_calls"] == [0, 1, 2] and record["successful_calls"] == indices
+                      and "warning" not in result and "warning" not in job,
+                      "FND5 부분 성공·빈 완료는 Seedream과 같은 장별 호출·경고 없음: " + name)
+            for autopilot in (None, {"candidate_prompt": "다른 글"}):
+                data = payload(name, prompt="원문 [[fake:changed]]", prompt_autopilot=autopilot)
+                if autopilot is None:
+                    del data["prompt_autopilot"]
+                job, _ = await generate(data)
+                check(job["status"] == "completed" and all("prompt_used" not in item for item in job["result_data"]["result_metadata"]),
+                      "FND5 changed 표지·autopilot 값에도 prompt_used 없음: " + name)
+            await failed(payload(name, aspect_ratio=token, image_size=uri), name + " 잘못된 값 비노출")
+        snapshot = json.dumps({"calls": list(fake.calls), "requests": list(fake.requests), "jobs": fake.jobs}, ensure_ascii=False)
+        check(token not in snapshot and uri not in snapshot and "data:image/" not in snapshot and "Authorization" not in snapshot,
+              "FND6 요청 기록·잡 응답에 인증 헤더·입력 본문·잘못된 옵션 값 없음")
+
+    asyncio.run(run())
 
 
 def forge_models2_js_unit():
@@ -62729,7 +62904,9 @@ def forge_models_dev_unit():
             return result.size
 
     async def run():
-        catalog = models["catalog"]
+        catalog = copy.deepcopy(models["catalog"])
+        # 목록의 모든 값을 대조하고 count는 확장된 모델 목록의 실제 길이로 검증한다.
+        catalog["response"]["count"] = len(catalog["response"]["models"])
         check(await call(catalog["method"], catalog["path"]) == (200, catalog["response"]), "FMD1 모델 목록은 정본 전체 응답")
         for auth in ({}, {"Authorization": "Bearer " + dev.issue_token("models_test", 0, clock=lambda: 1700000000.0)}):
             check(await call(catalog["method"], catalog["path"], auth=auth)
