@@ -2418,9 +2418,17 @@ def node_integration(psd05, crops03):
         optional = list(cls.INPUT_TYPES().get("optional") or {})
         sig = inspect.signature(getattr(cls, cls.FUNCTION)).parameters
         named = [n for n, p in sig.items() if p.kind != p.VAR_KEYWORD]  # 유료 노드의 **_stale(옛 워크플로의 없는 입력)은 뺀다
-        check(list(req) + optional + hidden == named[1:]
-              and all(sig[o].default is not inspect.Parameter.empty for o in optional),
+        # Prepare 의 해상도·추론 입력은 서버 모드에서만 노드 입력으로 보인다(로컬판의 노드 위젯은 그대로) — 함수 인자에는 늘 있다
+        server_only = ["image_size", "thinking_level"] if nid == "BMKDesignPatchPrepare" else []
+        check(list(req) + optional + hidden == [n for n in named[1:] if n not in server_only]
+              and all(sig[o].default is not inspect.Parameter.empty for o in optional + server_only),
               f"{nid} 입력 이름(+optional 기본값 있음 +hidden) = 함수 인자")
+        if server_only:
+            from unittest.mock import patch as _patch
+            with _patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
+                served = cls.INPUT_TYPES()
+            check(list(served["required"]) + list(served.get("optional") or {}) + list(served.get("hidden") or {}) == named[1:]
+                  and not set(server_only) & set(optional), f"{nid} 서버 모드의 입력 = 함수 인자 전부, 로컬판에는 두 입력이 없음")
     outs = [k for k, v in dp.NODE_CLASS_MAPPINGS.items() if getattr(v, "OUTPUT_NODE", False) is True]
     check(outs == ["BMKDesignPatchSpecDraft", "BMKDesignPatchRun", "BMKDesignPatchReview", "BMKDesignPatchExportPSD",
                    "BMKDesignPatchRefCut"], f"OUTPUT_NODE {outs}")
@@ -61423,6 +61431,25 @@ def forge_models2_unit():
     pinned = key("nano-banana-2.1", good)
     check(good == {"image_size": "2K", "thinking_level": "medium", "aspect_ratio": "4:5"} and pinned == "45d3aca0d5a4c115b323d552",
           f"FN5 나노바나나 생성 조건 키 고정값(예상 크기 표·옵션 이름이 키의 재료다 — 바뀌면 같은 요청이 다시 과금 대상) {pinned}")
+    # 표 전체를 고정한다: 비율마다 그 비율의 크롭(1K 예상 크기 그대로)에서 Prepare 가 쓰는 길(output_size · job_opts)로 얻은 재료의 키
+    recipe = []
+    for name in names:
+        for label, (a, b) in dpm.RATIO_SIZES.items():
+            for tier in dpm.IMAGE_SIZES:
+                opts = dpm.job_opts(name, {"image_size": tier}, src=(a, b))
+                W, H, _info = dpm.output_size(name, a, b, "user_k", opts)
+                check(opts.get("aspect_ratio") == label and dpm.size_problem(name, [W, H], opts) is None,
+                      f"FN5 비율 {label} 의 크롭은 그 비율로 맞고 크기·옵션이 서로 맞음 {name} {tier}")
+                recipe.append(store.cell_key(name, dpm.FIXED_QUALITY, [W, H], "auto", **args, opts=opts))
+    digest = hashlib.sha256(",".join(recipe).encode("ascii")).hexdigest()[:24]
+    check(len(set(recipe)) == len(recipe) == 90 and digest == "6ecc5f1277b18b1cb329e648",
+          f"FN5 나노바나나 계열의 키 재료 전체(모델 3 × 비율 10 × 해상도 3) 고정값 — 예상 크기 표를 고치면 여기서 걸린다 {digest}")
+    check(dpm.size_problem("nano-banana-pro", [1024, 1024], {"aspect_ratio": "4:5", "image_size": "4K"})
+          and dpm.size_problem("nano-banana-pro", [3712, 4608], {"aspect_ratio": "4:5", "image_size": "4K"}) is None
+          and dpm.size_problem("nano-banana-pro", [1856, 2304], {"aspect_ratio": "4:5", "image_size": "4K"})
+          and dpm.size_problem("nano-banana-pro", [1024, 1024], {"image_size": "4K"}) is None
+          and dpm.size_problem("seedream-5.5", [2048, 1536], {"aspect_ratio": "4:5"}) is None,
+          "FN5 크기 기록과 옵션(비율·해상도)이 어긋난 작업은 막는다 — 옵션에 비율이 없으면 표의 값인지만 본다")
 
     # ── 계열 대체·화면용 한 줄 ──
     catalog = {row.get("checkpoint") or row.get("id"): row.get("max_input_images") for row in spec["catalog"]["response"]["models"]}
@@ -61454,18 +61481,1023 @@ def forge_models2_backend_unit():
     """Forge 2단계 둘째 묶음 서버 갈래 — 실행기의 opts 전달(원장·작업 보기), 나노바나나 요청 조립·제출 전 차단, 「프롬프트가
     서버에서 바뀜」 판정 정리. 명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
     section("Forge 모델 서버(둘째 묶음) — forge_models2_backend_unit")
+    from tempfile import mkdtemp
+    from unittest.mock import patch
+    import bmk_design_patch_models as models
+    import bmk_design_patch_forge_backend as fb
+    import bmk_design_patch_forge as fg
+    import bmk_design_patch_runner as rn
+    import bmk_design_patch_jobs as jb
+
+    contract = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))["models"]
+    names = ("nano-banana-2.1", "nano-banana-2", "nano-banana-pro")
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="models2_backend_", dir=OUT_ROOT.resolve()))
+    stamp = "2026-01-01T00:00:00+00:00"
+    cell = "0123456789abcdef01234567"
+    secret, org = "synthetic-models2-token", "synthetic-models2-organization"
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 40), "red").save(buf, "PNG")
+    png = buf.getvalue()
+
+    def json_bytes(value):
+        return (json.dumps(value, ensure_ascii=False, indent=1, allow_nan=False) + "\n").encode("utf-8")
+
+    def legacy_cases():
+        # 변경 전 원장의 키 순서·값을 고정한다. 현재 _JOB_FIELDS 로 기대값을 만들지 않는다.
+        for name, quality in (("gpt-image-2.6-sunburst", "max"), ("gpt-image-2.6-flare", "max"),
+                              ("gpt-image-2.5-sunburst", "max"), ("gpt-image-2.5-flare", "max"),
+                              ("seedream-5.5", "standard"), ("ideogram-4.5", "high")):
+            expected = {"cell_key": cell, "crop_id": "001_000000", "tid": "A", "variant": "V1_standard",
+                        "model": name, "quality": quality, "size": [2048, 1536], "n": 2, "background": "auto",
+                        "prompt": "프롬프트 원문 그대로",
+                        "inputs": [{"role": "canvas", "file": "inputs/crop.png", "sha": "abc", "source": "inputs/source.png"},
+                                   {"role": "ref", "file": "inputs/ref.png", "sha": "def"}],
+                        "template_version": "dp-prompt/1"}
+            if "2.6" in name:
+                expected["complexity"] = "medium"
+            for opts_case in ("missing", "none", "empty"):
+                root = str(out / (name + "-" + opts_case))
+                job = copy.deepcopy(expected)
+                job.update(reps=1, size_info={"method": "k"})
+                job["inputs"][0]["ignored"] = True
+                job["inputs"][1]["source"] = ""
+                if opts_case == "none":
+                    job["opts"] = None
+                    if "2.6" not in name:
+                        job["complexity"] = None
+                elif opts_case == "empty":
+                    job["opts"] = {}
+                view = rn._job_view(job)
+                check(set(view) == set(expected) and view == expected and json_bytes(view) == json_bytes(expected),
+                      f"FM2B 옵션 없는 작업 보기 키·값·바이트 불변 {name}/{opts_case}")
+                entry = {"cell_key": cell, "rep": 0, "call_id": cell + "_r0", "kind": "pending",
+                         "approved_by": "hash:fixture", "job": dict(view, opts={}) if opts_case == "empty" else view}
+                expected_req = {"schema": "bmk.design_patch.call/1", "call_id": cell + "_r0", "cell_key": cell, "rep": 0,
+                                **{k: v for k, v in expected.items() if k != "cell_key"},
+                                "backend": "forge", "approved_by": "hash:fixture", "kind": "pending",
+                                "attempt": 1, "history": [], "time": stamp}
+                with patch.object(rn, "_now", return_value=stamp):
+                    req = rn._begin_call(root, entry, "forge")["req"]
+                check(set(req) == set(expected_req) and req == expected_req
+                      and Path(rn._lpath(root, cell, 0, "req")).read_bytes() == json_bytes(expected_req),
+                      f"FM2B 옵션 없는 req.json 키·값·바이트 불변 {name}/{opts_case}")
+                manifest = {"crops": [{"id": "001_000000", "rect": [0, 0, 32, 24], "targets": [{"tid": "A"}]}]}
+                done = {"slots": [{"slot": 0, "file": "cands/result.png", "size": [32, 24]}]}
+                warnings = []
+                rn._add_candidates(manifest, dict(req, opts={}) if opts_case == "empty" else req, done, warnings)
+                origin = {"call_id": cell + "_r0", "cell_key": cell, "rep": 0, "slot": 0, "variant": "V1_standard",
+                          "model": name, "quality": quality}
+                if "2.6" in name:
+                    origin["complexity"] = "medium"
+                origin.update(backend="forge", tids=["A"])
+                actual = manifest["candidates"][0]["origin_info"]
+                check(not warnings and set(actual) == set(origin) and actual == origin and json_bytes(actual) == json_bytes(origin),
+                      f"FM2B 옵션 없는 origin_info 키·값·바이트 불변 {name}/{opts_case}")
+                check("모델 옵션" not in rn._change_reason(view, expected_req), "FM2B 양쪽 옵션 없음은 변경 사유 아님")
+
+    def project(name=names[0], *, n=2, reps=1):
+        root = store.project_root(str(out / str(len(list(out.iterdir())))), "proj")
+        os.makedirs(root)
+        manifest = store.new_manifest("proj")
+        arr = np.full((40, 32, 3), (255, 0, 0), dtype=np.uint8)
+        rel = store.save_png_ca(root, "inputs", arr)
+        inputs = [{"role": "canvas", "file": rel, "sha": store.pixel_sha(arr)}]
+        manifest["crops"].append({"id": "001_000000", "name": "001_part", "nnn": "001", "part": "part",
+                                 "rect": [0, 0, 32, 40], "rect_source": "vector", "source": rel, "source_kind": "base_crop",
+                                 "alpha_frac": 0.0, "targets": [{"tid": "A", "label": "part", "name_en": "",
+                                                                "mode": "ref_correct", "refs": []}],
+                                 "refs_auto": [], "warnings": []})
+        job = {"model": name, "quality": models.get(name).default_quality, "size": [1856, 2304], "background": "auto",
+               "prompt": "프롬프트 원문 그대로", "inputs": inputs, "n": n, "reps": reps, "crop_id": "001_000000",
+               "tid": "A", "variant": "V1_standard", "template_version": "dp-prompt/1"}
+        opts = models.job_opts(name, src=(32, 40))
+        if opts is not None:
+            job["opts"] = opts
+        if name in store.COMPLEXITY_MODELS:
+            job["complexity"] = "medium"
+        job["cell_key"] = store.cell_key(name, job["quality"], job["size"], job["background"], job["prompt"],
+                                          [i["sha"] for i in inputs], job["template_version"], job["variant"],
+                                          complexity=job.get("complexity"), opts=opts)
+        manifest["jobs"].append(job)
+        store.save_manifest(root, manifest)
+        return root, job, [store.resolve_path(root, rel)]
+
+    class Client:
+        """소켓 없는 Forge 대역. 생성·목록 요청과 동시 실행 수를 메모리에서만 센다."""
+        def __init__(self, *, peak=1, failure=None):
+            self.submissions, self.reads = [], []
+            self.active = self.peak = 0
+            self.target = peak
+            self.filled = asyncio.Event()
+            self.failure = failure
+            self.results = {}
+
+        async def _json(self, method, path, token, *, call):
+            self.reads.append((method, path))
+            return copy.deepcopy(contract["catalog"]["response"])
+
+        async def submit(self, token, body):
+            self.submissions.append(copy.deepcopy(body))
+            job_id = "models2-job-" + str(len(self.submissions))
+            self.results[job_id] = {"status": "completed", "images": ["https://forge.example/result.png"] * body["num_outputs"],
+                                    "metadata": [], "result_ids": []}
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            if self.active >= self.target:
+                self.filled.set()
+            return {"job_id": job_id}
+
+        async def job(self, token, job_id):
+            await asyncio.wait_for(self.filled.wait(), 5)
+            self.active -= 1
+            if self.failure:
+                raise self.failure
+            return copy.deepcopy(self.results[job_id])
+
+        async def fetch_media(self, url, limit):
+            return png
+
+    @contextlib.contextmanager
+    def active(root, client, concurrency=4):
+        ctx = {"client": client, "token_of": lambda: secret, "reject_token": lambda token: None,
+               "organization_id": org, "account": "models2-account", "root": root, "stop": lambda: False,
+               "options": {"concurrency": concurrency, "prompt_autopilot": False}}
+        token = rn.set_forge(ctx)
+        try:
+            yield fb.ForgeBackend(ctx)
+        finally:
+            rn.reset_forge(token)
+
+    async def run_plan(root, backend, concurrency=4):
+        plan = rn.plan_calls(store.load_manifest(root), root)
+        approval = rn.split_approval(plan, backend="forge")
+        calls = rn.split_approval(plan, approval["pending_hash"], backend="forge")["to_run"]
+        return await rn.run_calls(root, calls, backend, concurrency=concurrency)
+
+    async def request_cases():
+        for name in names:
+            root, job, paths = project(name)
+            spec = contract["requests"][name]
+            expected = spec["request"]
+            images = [base64.b64decode(i.split(",", 1)[1]) for i in expected["input_images"][0]]
+            body = fb.build_request(job, images, organization_id=expected["organization_id"],
+                                    request_id=expected["request_id"], prompt_autopilot=expected["prompt_autopilot"])
+            check(set(body) == set(expected) and body == expected and not set(body).intersection(spec["never"]),
+                  "FM2B 나노바나나 요청 정본 키·값·금지 키 " + name)
+            check(fb._INPUT_ERRORS[models.get(name).kind] == tuple(spec["errors"]["input"]) == (),
+                  "FM2B 나노바나나 입력 오류 문자열 없음 " + name)
+            client = Client()
+            with active(root, client) as backend:
+                report = await run_plan(root, backend)
+            record = rn.read_ledger(root, job["cell_key"])[0]
+            candidates = store.load_manifest(root)["candidates"]
+            check(report.done == 1 and len(client.submissions) == 1 and len(candidates) == 2
+                  and rn._job_view(job)["opts"] == job["opts"] == record["req"]["opts"]
+                  and all(c["origin_info"]["opts"] == job["opts"] for c in candidates),
+                  "FM2B 실행기 → 백엔드·req.json·후보 origin_info 옵션 전달 " + name)
+            check(client.submissions[0]["input_images"] == [["data:image/png;base64," + base64.b64encode(png).decode("ascii")]],
+                  "FM2B 입력 PNG 인코딩 경로 유지 " + name)
+            call_id = rn.call_id_for(job["cell_key"], 0)
+            check(fb.prompt_changed(root, call_id) == [False, False] and fb.prompt_used(root, call_id) == [None, None],
+                  "FM2B 서버 프롬프트 없는 슬롯은 표지·원문 없음 " + name)
+            changed = dict(job, opts=dict(job["opts"], image_size="4K"))
+            check(rn._change_reason(changed, job) == "새 생성 조건 — 이전 생성 조건 대비 변경: 모델 옵션",
+                  "FM2B 옵션만 다른 생성 조건의 변경 사유")
+
+            for count, peak in ((2, 4), (3, 2), (8, 1)):
+                r, j, _ = project(name, n=count, reps=4)
+                client = Client(peak=peak)
+                with active(r, client) as backend:
+                    report = await run_plan(r, backend)
+                check(report.done == 4 and len(client.submissions) == 4 and client.peak == peak
+                      and jb._forge_concurrency(r, 4) == models.job_slots(name, 4, count) == peak,
+                      f"FM2B 장마다 생성하는 모델의 실제 동시 수 {name}/{count}")
+
+        r, j, paths = project(n=8)
+        j["inputs"] *= 14
+        client = Client()
+        with active(r, client) as backend:
+            await backend.request(j, paths * 14, rn.call_id_for(j["cell_key"], 0))
+        check(len(client.submissions) == 1 and len(client.submissions[0]["input_images"][0]) == 14
+              and client.submissions[0]["num_outputs"] == 8, "FM2B 입력 14장·출력 8장의 경계 허용")
+
+        r, j, _ = project(reps=3)
+        client = Client(failure=fg.ForgeError("server", 503))
+        with active(r, client, concurrency=1) as backend:
+            report = await run_plan(r, backend, concurrency=1)
+        check(len(client.submissions) == 2 and report.stopped_reason == "auth"
+              and set(rn.read_ledger(r, j["cell_key"])) == {0, 1}
+              and not fb.read_sidecar(r, j["cell_key"], 2)["requests"], "FM2B 나노바나나 과부하 두 번 뒤 새 제출 중지")
+
+    async def blocked_cases():
+        bad_value = "https://forge.example/private"
+        for name in names:
+            base_opts = models.job_opts(name, src=(32, 40))
+            bad_opts = [None, {}, [], bad_value, {k: v for k, v in base_opts.items() if k != "aspect_ratio"},
+                        dict(base_opts, aspect_ratio=bad_value), dict(base_opts, aspect_ratio=[]),
+                        dict(base_opts, image_size=bad_value), dict(base_opts, image_size=2), dict(base_opts, extra="value")]
+            if name == "nano-banana-pro":
+                bad_opts.append(dict(base_opts, thinking_level="minimal"))
+            else:
+                bad_opts.extend(({k: v for k, v in base_opts.items() if k != "thinking_level"},
+                                 dict(base_opts, thinking_level="medium" if name == "nano-banana-2" else bad_value)))
+            changes = [{"opts": value} for value in bad_opts]
+            changes += [{"size": [123, 456]}, {"size": None}, {"quality": "high"}, {"inputs": [{}] * 15},
+                        {"n": 9}, {"n": True}]
+            for change in changes:
+                root, job, paths = project(name)
+                job.update(change)
+                if change == {"opts": None}:
+                    del job["opts"]
+                manifest = store.load_manifest(root)
+                manifest["jobs"] = [job]
+                client = Client()
+                with active(root, client) as backend:
+                    approval = rn.split_approval(rn.plan_calls(manifest, root), backend="forge")
+                    check(len(approval["blocked"]) == 1 and not approval["to_run"], "FM2B 잘못된 작업은 승인 전부터 차단")
+                    try:
+                        await backend.request(rn._job_view(job), paths, rn.call_id_for(job["cell_key"], 0))
+                        check(False, "FM2B 제출 전 차단 필요")
+                    except rn.CallError as exc:
+                        check(exc.phase == "blocked" and not exc.maybe_billed and not exc.retryable and bad_value not in str(exc),
+                              "FM2B 잘못된 옵션·비율·크기·입출력 수는 과금 전 차단·원값 비노출")
+                        if change.get("opts") == {k: v for k, v in base_opts.items() if k != "aspect_ratio"}:
+                            check(str(exc) == models.ratio_problem(name), "FM2B 비율 없는 크롭의 안내 문구")
+                check(not client.submissions and not client.reads and not rn.read_ledger(root, job["cell_key"])
+                      and not fb.read_sidecar(root, job["cell_key"], 0)["requests"],
+                      "FM2B 잘못된 작업의 가짜 Forge 요청·원장·사이드카 없음")
+            root, job, paths = project(name)
+            client = Client()
+            with active(root, client) as backend:
+                try:
+                    await backend.request(job, paths * 15, rn.call_id_for(job["cell_key"], 0))
+                    check(False, "FM2B 실제 입력 경로 15장 차단 필요")
+                except rn.CallError as exc:
+                    check(exc.phase == "blocked" and not exc.maybe_billed and "14장" in str(exc)
+                          and not client.submissions and not client.reads, "FM2B 실제 입력 경로도 14장 상한")
+        for name in ("gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare",
+                     "seedream-5.5", "ideogram-4.5"):
+            root, job, paths = project(name)
+            job["opts"] = {"image_size": "2K"}
+            client = Client()
+            with active(root, client) as backend:
+                check(rn.blocked_reason(job, backend="forge") == models.opts_problem(name, job["opts"]),
+                      "FM2B 옵션 없는 모델에 옵션이 붙으면 계획 차단 " + name)
+                try:
+                    await backend.request(job, paths, rn.call_id_for(job["cell_key"], 0))
+                    check(False, "FM2B 옵션 없는 모델은 opts 거절 필요")
+                except rn.CallError as exc:
+                    check(exc.phase == "blocked" and not exc.maybe_billed and not client.submissions and not client.reads,
+                          "FM2B 옵션 없는 모델에 opts 는 제출·과금 없음 " + name)
+
+    def prompt_cases():
+        root, job, _ = project("ideogram-4.5")
+        ck, call_id = job["cell_key"], rn.call_id_for(job["cell_key"], 0)
+        be = fb.ForgeBackend({"root": root})
+        sent = "가나다 café\nsecond line"
+        formatted = " \r\n" + unicodedata.normalize("NFD", "가나다 café") + " \t\r\nsecond line  \t\r\n"
+        rewritten = "  바뀐 원문\r\n둘째 줄 \t\n"
+        cases = [(sent, formatted, False, None), (formatted, sent, False, None),
+                 (sent, sent.replace("\n", "\r"), False, None), (sent, rewritten, True, rewritten),
+                 (sent, sent.replace("second line", "second  line"), True, sent.replace("second line", "second  line")),
+                 (sent, "A" * 10001, True, "A" * 10000), (sent, None, False, None), (sent, 12, False, None)]
+        for kept in ("aspect 16:9, at 3:30", r"C:\private\image.png", "host.example:1234", "192.0.2.1", "2001:db8::1"):
+            cases.append((sent, kept, True, kept))
+        for private in ("https://forge.example/private", "data:image/png;base64,fixture", "DATA:image/png;base64,fixture",
+                        "A" * 10001 + " https://forge.example/private", "A" * 10001 + " DATA:image/png;base64,fixture"):
+            cases.append((sent, private, True, None))
+        for original, used, changed, kept in cases:
+            side = {"schema": fb.SIDECAR_SCHEMA, "requests": []}
+            be._result(ck, 0, side, {"status": "completed", "images": ["unused"], "metadata": [{"prompt_used": used}]},
+                       original, recovery=False, model=job["model"])
+            actual = fb.read_sidecar(root, ck, 0)
+            check(actual["schema"] == "dp-forge/1" and actual["prompt_changed"] == [changed]
+                  and actual["prompt_used"] == [kept] and fb.prompt_changed(root, call_id) == [changed]
+                  and fb.prompt_used(root, call_id) == [kept], "FM2B 프롬프트 정규화·원문 보존·길이 상한·주소/data 검사")
+            if changed and kept is None:
+                check(str(used).encode() not in Path(rn._lpath(root, ck, 0, "forge")).read_bytes(),
+                      "FM2B 사적인 프롬프트는 디스크에 남기지 않음")
+        side = {"schema": fb.SIDECAR_SCHEMA, "requests": []}
+        be._result(ck, 0, side, {"status": "completed", "images": ["unused"] * 4,
+                               "metadata": [{"prompt_used": rewritten}, None, {"prompt_used": formatted}]},
+                   sent, recovery=True, model=job["model"])
+        check(fb.prompt_changed(root, call_id) == [True, False, False, False]
+              and fb.prompt_used(root, call_id) == [rewritten, None, None, None], "FM2B 복구도 슬롯 정렬·부족한 메타데이터 보존")
+        old = {"schema": fb.SIDECAR_SCHEMA, "requests": [], "prompt_changed": [True, False]}
+        rn._write_json(rn._lpath(root, ck, 0, "forge"), old)
+        check(fb.read_sidecar(root, ck, 0) == old and fb.prompt_changed(root, call_id) == [True, False]
+              and fb.prompt_used(root, call_id) == [], "FM2B 옛 사이드카 표지 유지·원문 없음")
+        check(fb.prompt_used(root, "invalid") == [] and fb.prompt_used(root, ck + "_r99") == [],
+              "FM2B 잘못된 호출·기록 없음은 빈 원문 목록")
+        for malformed in (None, "text", {}, [1], [True], [{}], [[]]):
+            rn._write_json(rn._lpath(root, ck, 0, "forge"), dict(old, prompt_used=malformed))
+            expect_raises(lambda: fb.read_sidecar(root, ck, 0), "FM2B 사이드카 prompt_used 형식 검사")
+            check(fb.prompt_used(root, call_id) == [], "FM2B 손상된 사이드카는 원문을 노출하지 않음")
+
+    async def all_model_prompt_cases():
+        rewritten = "서버가 바꾼 프롬프트"
+        for name in (*models.LOCAL_MODELS, "seedream-5.5"):
+            root, job, _ = project(name)
+            class Rewritten(Client):
+                async def job(self, token, job_id):
+                    result = await super().job(token, job_id)
+                    result["metadata"] = [{"prompt_used": job["prompt"]}, {"prompt_used": rewritten}]
+                    return result
+            client = Rewritten()
+            with active(root, client) as backend:
+                report = await run_plan(root, backend)
+            check(report.done == 1 and len(client.submissions) == 1 and not models.get(name).prompt_used,
+                  "B3 prompt_used 표지가 없는 모델도 서버 프롬프트를 받음 " + name)
+            call_id = rn.call_id_for(job["cell_key"], 0)
+            check(fb.prompt_changed(root, call_id) == [False, True] and fb.prompt_used(root, call_id) == [None, rewritten],
+                  "B3 모든 모델에서 슬롯별 프롬프트 변경 판정·원문 기록 " + name)
+
+    async def retry_case():
+        root, job, paths = project()
+        ck, call_id = job["cell_key"], rn.call_id_for(job["cell_key"], 0)
+        side = {"schema": fb.SIDECAR_SCHEMA, "requests": [{"id": "old-request", "attempt": 1, "state": "failed", "time": stamp}],
+                "job_id": "old-job", "result_ids": ["old-result"], "prompt_changed": [True], "prompt_used": ["old prompt"]}
+        rn._write_json(rn._lpath(root, ck, 0, "forge"), side)
+        class Retry(Client):
+            async def submit(self, token, body):
+                saved = fb.read_sidecar(root, ck, 0)
+                check(not set(saved).intersection(("job_id", "result_ids", "prompt_changed", "prompt_used")),
+                      "FM2B 새 제출 전에 지난 시도의 프롬프트 원문·표지도 제거")
+                return await super().submit(token, body)
+        with active(root, Retry()) as backend:
+            await backend.request(job, paths, call_id)
+        check(fb.prompt_used(root, call_id) == [None, None], "FM2B 재시도 결과에 옛 원문이 남지 않음")
+
+    try:
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1", rn.MOCK_ENV: ""}):
+            fb.forget_catalog()
+            legacy_cases()
+            asyncio.run(blocked_cases())
+            asyncio.run(request_cases())
+            prompt_cases()
+            asyncio.run(all_model_prompt_cases())
+            asyncio.run(retry_case())
+        raw = b"\n".join(path.read_bytes() for path in out.rglob("*.json"))
+        check(secret.encode() not in raw and org.encode() not in raw and b"https://forge.example" not in raw,
+              "FM2B 새 경로의 원장·사이드카에 인증값·조직·주소 없음")
+    finally:
+        fb.forget_catalog()
 
 
 def forge_models2_settings_unit():
     """Forge 2단계 둘째 묶음 설정 갈래 — 실행 설정의 해상도·추론, Prepare 의 작업 opts·예상 크기, 전환 미리 보기, env 의 모델 한 줄,
     후보 응답의 모델 옵션·프롬프트 표지. 명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
     section("Forge 모델 설정(둘째 묶음) — forge_models2_settings_unit")
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, patch
+
+    dp = _dp_package()
+    st, rn, bd = dp.store, dp.runner, dp.board
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    models = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_models")
+    srv = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_server")
+    fg = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge")
+    fb = bd._forge_backend()
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="models2_settings_", dir=OUT_ROOT.resolve()))
+    pre = dp.BMKDesignPatchPrepare()
+    base = np.full((128, 192, 3), (60, 100, 140), dtype=np.uint8)
+    rects = [("001_panel", [0, 0, 96, 64]), ("002_square", [96, 32, 192, 128])]
+    option_keys = ("image_size", "thinking_level")
+
+    def project(name, crops=rects):
+        return _fx_project(dp, out, name, crops, base)
+
+    def args(name, **kw):
+        return dict(pl.defaults()["prepare"], model=name, quality="high", variants="V1", n=2,
+                    calls_per_cell=2, complexity="medium") | kw
+
+    def keys(m):
+        return [j["cell_key"] for j in m["jobs"]]
+
+    def settled(root, m):
+        # 완료 원장만 합성한다. 생성·다운로드·네트워크를 실행하지 않는다.
+        for job in m["jobs"]:
+            for rep in range(job["reps"]):
+                rn._write_json(rn._lpath(root, job["cell_key"], rep, "done"), {"slots": []})
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(dp.folder_paths, "get_output_directory", return_value=str(out / "output")))
+        stack.enter_context(patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1", rn.MOCK_ENV: ""}))
+        # B 갈래의 새 읽기 함수는 이 worktree 에 아직 없을 수 있다.
+        used = stack.enter_context(patch.object(fb, "prompt_used", return_value=[], create=True))
+        h, root = project("settings")
+        values = args("nano-banana-2")
+        old = {"schema": pl.SCHEMA, "rev": 1, "confirm": [], **pl.defaults(root), "prepare": dict(values)}
+        for key in option_keys:
+            old["prepare"].pop(key)
+        path = Path(root, pl.PIPELINE_NAME)
+        raw = json.dumps(old, ensure_ascii=False).encode("utf-8")
+        path.write_bytes(raw)
+        loaded = pl.load(root)
+        check(loaded["prepare"] == values and loaded["confirm"] == [] and path.read_bytes() == raw,
+              "FM2S1 옛 설정의 두 기본값·확인 필요 없음·원본 불변")
+        saved = pl.update(root, 1, "prepare", loaded["prepare"])
+        check(saved["rev"] == 1 and path.read_bytes() == raw, "FM2S1 같은 설정 저장은 옛 파일 바이트 보존")
+        for name in models.MODELS:
+            settings = args(name, image_size="4K", thinking_level="medium")
+            check(pl.validate_section("prepare", settings) == settings, f"FM2S1 저장값은 모델과 무관한 선택지 {name}")
+        for key, bad in (("image_size", "8K"), ("thinking_level", "low"), ("image_size", None)):
+            expect_raises(lambda k=key, v=bad: pl.validate_section("prepare", values | {k: v}),
+                          "FM2S1 잘못된 옵션 저장 거부 " + key)
+        for server in (False, True):
+            with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1" if server else ""}):
+                optional = pre.INPUT_TYPES()["optional"]
+                check(list(optional) == ["complexity"] + (list(option_keys) if server else []),
+                      f"FM2S1 서버 입력 추가·로컬 입력 보존 {server}")
+                if server:
+                    check(optional["image_size"][1]["default"] == "2K"
+                          and optional["thinking_level"][1]["default"] == "medium", "FM2S1 노드 옵션 기본값")
+                expected = ("model", "quality", "size_rule", "variants", "n", "ref_style", "calls_per_cell", "complexity")
+                if server:
+                    expected += option_keys
+                check(pl.section_keys("prepare") == expected and tuple(pl.defaults()["prepare"]) == expected
+                      and tuple(pl.settings_widgets()["prepare"]) == expected,
+                      f"FIX-P1 호출 시점의 모드별 절 키·기본값·설정 API {server}")
+                inputs = pre.INPUT_TYPES()
+                check(set(pl.widget_table()["BMKDesignPatchPrepare"]) == set(inputs["required"]) | set(inputs["optional"]),
+                      f"FIX-P1 모드별 그래프 위젯 대조 {server}")
+        lh, lr = project("local-settings")
+        local_values = {k: v for k, v in args("gpt-image-2.5-sunburst").items() if k not in option_keys}
+        server_doc = {"schema": pl.SCHEMA, "rev": 1, "confirm": [], **pl.defaults(lr),
+                      "prepare": local_values | {"image_size": "4K", "thinking_level": "high"}}
+        local_path = Path(lr, pl.PIPELINE_NAME)
+        server_raw = json.dumps(server_doc, ensure_ascii=False).encode("utf-8")
+        local_path.write_bytes(server_raw)
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}), patch.object(rn, "mock_enabled", return_value=True):
+            local_doc = pl.load(lr)
+            check(local_doc["prepare"] == local_values and local_doc["confirm"] == []
+                  and local_path.read_bytes() == server_raw, "FIX-P1 서버 파일의 두 키를 로컬에서 조용히 무시·읽기 원본 불변")
+            expect_raises(lambda: pl.validate_section("prepare", server_doc["prepare"]),
+                          "FIX-P1 로컬 저장 검증은 서버 전용 키 거부", contains="모르는 키")
+            check(pl.prepare_record({"prepare_settings": server_doc["prepare"]}) == ("prepare_settings", local_values),
+                  "FIX-P1 로컬 Prepare 기록에 서버 전용 키 없음")
+            try:
+                saved_local = pl.update(lr, 1, "prepare", local_values | {"n": 3})
+                payload = json.loads(local_path.read_text(encoding="utf-8"))
+                check(payload["prepare"] == local_values | {"n": 3} and saved_local["settings"]["prepare"] == payload["prepare"],
+                      "FIX-P1 로컬 설정 파일 쓰기에 서버 전용 키 없음")
+                graph = pl.build_prompt("apply", saved_local["settings"], lr)
+                check(tuple(graph[pl.NODE_KEYS["prepare"]]["inputs"]) == ("project",) + tuple(local_values),
+                      "FIX-P1 로컬 템플릿은 이전 입력 그대로")
+            except ValueError as error:
+                check(False, f"FIX-P1 로컬 저장·템플릿이 옛 절을 허용해야 함: {error}")
+            pre.run(lh, **local_values)
+            lm = st.load_manifest(lr)
+            settled(lr, lm)
+            settings = dict(pl.defaults(lr), prepare=local_values)
+            preview = pl.switch_preview(lr, lm, settings, prepare=local_values)
+            check(preview.get("prepare") == local_values and preview.get("need") == 0, "FIX-P1 로컬 전환 미리 보기 꼴 불변")
+            check(not set(option_keys) & pl.prepare_record(dict(lm, prepare_settings={}))[1].keys(),
+                  "FIX-P1 로컬 jobs 유도 기록에 서버 전용 키 없음")
+        prompt = pl.build_prompt("apply", loaded, root)
+        check(all(prompt[pl.NODE_KEYS["prepare"]]["inputs"][k] == values[k] for k in option_keys),
+              "FM2S1 실행 설정에서 Prepare 입력까지 두 값 전달")
+
+        # 이 변경 전 동일 합성 프로젝트·고정 시각에서 수집한 jobs·prepare_settings·보고 바이트.
+        pinned = {
+            "gpt-image-2.6-sunburst": "1aa8273c8333bb2bb10e8cb200c4d3840d92579c0ed72680aa9044071e38f514",
+            "gpt-image-2.6-flare": "3f53b9e52ec0ee2820a4be3709ec2c1c5db655c74fcbb908b55c9294a85b03d5",
+            "gpt-image-2.5-sunburst": "d5ad02a5b4d52015a614dd887f7b991a59f6ae510e2e061a2bc2b903f022f124",
+            "gpt-image-2.5-flare": "63349cc76e8e8d4ae806a7ac473c51afd3ac5a0dd0fe2d330d2593689c19597c",
+            "seedream-5.5": "9542e9e985b662f70b469869833f5e3ce86f9cc52c3bab4ebf21479ffa455592",
+            "ideogram-4.5": "223f6514cd3e9fcc47c28f313c84451229e57b219be30efc60768a8c1fd85bc3",
+        }
+        with patch.object(rn, "mock_enabled", return_value=True), patch.object(dp.time, "time", return_value=1000.0):
+            for name, digest in pinned.items():
+                gh, gr = project(name)
+                gh, _, report = pre.run(gh, **args(name, image_size="4K", thinking_level="high"))
+                gm = st.load_manifest(gr)
+                packed = json.dumps({"jobs": gm["jobs"], "prepare_settings": gm["prepare_settings"], "report": report},
+                                    ensure_ascii=False).encode("utf-8")
+                check(hashlib.sha256(packed).hexdigest() == digest, f"FM2S2 기존 모델 Prepare 바이트 불변 {name}")
+                check(all("opts" not in j for j in gm["jobs"])
+                      and not set(option_keys) & gm["prepare_settings"].keys(), "FM2S2 옵션 없는 모델은 새 기록 키 없음")
+                derived = pl.derive(gr, gm)
+                check(not any(x.startswith("prepare.") for x in derived["confirm"]), "FM2S2 옛 Prepare 기록의 확인 필요 없음")
+                settings = derived["settings"]
+                settings["prepare"].update(image_size="1K", thinking_level="minimal")
+                check(pl.drift(settings, gm) == [], f"FM2S2 쓰지 않는 옵션의 갈라짐 없음 {name}")
+                settled(gr, gm)
+                preview = pl.switch_preview(gr, gm, settings, prepare=settings["prepare"])
+                check(preview.get("exact") is True and preview.get("need") == 0,
+                      f"FM2S2 쓰지 않는 옵션의 추가 승인 없음 {name}")
+                pre.run(gh, **settings["prepare"])
+                check(keys(st.load_manifest(gr)) == keys(gm), f"FM2S2 쓰지 않는 옵션의 키 불변 {name}")
+
+        for empty in (None, {}):
+            eh, er = project("empty-options")
+            values = args("gpt-image-2.5-sunburst")
+            with patch.object(models, "job_opts", return_value=empty):
+                pre.run(eh, **values)
+                em = st.load_manifest(er)
+                check(all("opts" not in j for j in em["jobs"]), f"FIX-P5 Prepare 는 빈 옵션 키 생략 {empty!r}")
+                settings = pl.derive(er, em)["settings"]
+                with patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+                    preview = pl.switch_preview(er, em, settings, prepare=values)
+                proposed = plans.call_args.args[0]["jobs"] if plans.called else []
+                check(preview.get("exact") is True and len(proposed) == len(em["jobs"])
+                      and all("opts" not in j for j in proposed), f"FIX-P5 전환 미리 보기도 빈 옵션 키 생략 {empty!r}")
+
+        with patch.object(rn, "mock_enabled", return_value=False):
+            for name in ("nano-banana-2.1", "nano-banana-2", "nano-banana-pro",
+                         "gpt-image-2.5-sunburst", "seedream-5.5", "ideogram-4.5"):
+                rh, rr = project("rule-" + name)
+                values = args(name)
+                pre.run(rh, **values)
+                rm = st.load_manifest(rr)
+                settled(rr, rm)
+                settings = pl.derive(rr, rm)["settings"]
+                changed = values | {"size_rule": "int_k_2560"}
+                rows = pl.drift(dict(settings, prepare=changed), rm)
+                preview = pl.switch_preview(rr, rm, settings, prepare=changed)
+                if models.get(name).ratios:
+                    check(rows == [], f"FIX-P2 비율 목록 모델의 크기 규칙은 갈라짐 아님 {name}")
+                    check(preview.get("exact") is True and preview.get("need") == 0 and preview.get("cells") == 0,
+                          f"FIX-P2 크기 규칙만 변경한 비율 모델의 미리 보기 0건 {name}")
+                    pre.run(rh, **changed)
+                    check(keys(st.load_manifest(rr)) == keys(rm), f"FIX-P2 비율 모델의 크기 규칙 변경은 키 불변 {name}")
+                    target = args("nano-banana-2" if name != "nano-banana-2" else "nano-banana-pro")
+                    base_preview = pl.switch_preview(rr, rm, settings, prepare=target)
+                    rule_preview = pl.switch_preview(rr, rm, settings, prepare=target | {"size_rule": "int_k_2560"})
+                    check(base_preview.get("exact") is True and rule_preview.get("exact") is True
+                          and base_preview.get("need") == rule_preview.get("need") == 4,
+                          "FIX-P2 비율 모델 사이 전환도 크기 규칙 차이를 무시")
+                else:
+                    check([r["field"] for r in rows] == ["size_rule"] and preview.get("exact") is False,
+                          f"FIX-P2 기존 모델의 크기 규칙 갈라짐·미리 보기 유지 {name}")
+
+        fh, fr = _fx_project(dp, out, "ratio-flags", [("001_panel", [0, 0, 813, 1000])],
+                             np.full((1000, 813, 3), (60, 100, 140), dtype=np.uint8))
+        pre.run(fh, **args("nano-banana-2.1"))
+        fm = st.load_manifest(fr)
+        fj = fm["jobs"][0]
+        req = dict(fj, backend="forge", rep=0, call_id=rn.call_id_for(fj["cell_key"], 0))
+        received = ([1856, 2304], [2048, 2048], [1636, 2000], [1600, 2000])
+        done = {"slots": [{"slot": i, "file": fj["inputs"][0]["file"], "size": size} for i, size in enumerate(received)]}
+        rn._add_candidates(fm, req, done, [])
+        req_path = Path(rn._lpath(fr, fj["cell_key"], 0, "req"))
+        rn._write_json(str(req_path), req)
+        for name, expected in (("nano-banana-2.1", [False, True, False, True]),
+                               ("seedream-5.5", [False, True, True, False])):
+            for cand in fm["candidates"]:
+                cand["origin_info"]["model"] = name
+            st.save_manifest(fr, fm)
+            candidates = [c for t in bd.build_state(fr)["targets"] for c in t["candidates"]]
+            check([c.get("ratio_changed", False) for c in candidates] == expected,
+                  f"FIX-P3 후보 모델별 크롭 대 출력·원장 대 출력 판정 {name}")
+        for cand in fm["candidates"]:
+            cand["origin_info"]["model"] = "nano-banana-2.1"
+        st.save_manifest(fr, fm)
+        req_path.unlink()
+        candidates = [c for t in bd.build_state(fr)["targets"] for c in t["candidates"]]
+        check([c.get("ratio_changed", False) for c in candidates] == [False, True, False, True],
+              "FIX-P3 비율 모델의 크롭 비교는 원장 요청 크기와 무관")
+
+        integration_cases = (
+            ("gpt-to-nano", args("gpt-image-2.5-sunburst"), args("nano-banana-2.1"), 2),
+            ("nano-to-gpt", args("nano-banana-2.1"), args("gpt-image-2.5-sunburst"), 4),
+            ("resolution", args("nano-banana-2.1"), args("nano-banana-2.1", image_size="4K"), 2),
+            ("thinking", args("nano-banana-2.1"), args("nano-banana-2.1", thinking_level="high"), 2),
+        )
+        with patch.object(rn, "mock_enabled", return_value=False):
+            for case, before_values, target, expected_need in integration_cases:
+                ih, ir = project("real-backend-" + case,
+                                 [("001_match", [0, 0, 80, 100]), ("002_mismatch", [90, 0, 172, 100])])
+                pre.run(ih, **before_values)
+                im = st.load_manifest(ir)
+                settled(ir, {"jobs": [j for j in im["jobs"] if models.opts_problem(j["model"], j.get("opts")) is None]})
+                legacy = copy.deepcopy(im)
+                for key in option_keys:
+                    legacy["prepare_settings"].pop(key, None)
+                current = pl.current(ir, legacy)
+                derived = pl.derive(ir, legacy)
+                check(not {"prepare.variants", "prepare.ref_style"} & set(current["confirm"])
+                      and all(derived["from"]["prepare." + k] == "manifest" for k in ("variants", "ref_style")),
+                      "FIX-P6 옛 Prepare 기록으로 처음 열어도 변형·참조 표기 확인 필요 없음")
+                settings = pl.derive(ir, im)["settings"]
+                # spy 는 호출만 기록한다. 실제 제출 전 판정을 교체하거나 우회하지 않는다.
+                with patch.object(fb, "blocked_reason", wraps=fb.blocked_reason) as guard, \
+                        patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+                    preview = pl.switch_preview(ir, im, settings, prepare=target)
+                proposed = copy.deepcopy(plans.call_args.args[0]["jobs"]) if plans.called else []
+                ratio_target = bool(models.get(target["model"]).ratios)
+                check(len(proposed) == 2 and all((bool(j.get("opts")) if ratio_target else "opts" not in j) for j in proposed),
+                      f"FIX-P6 미리 보기 사본은 대상 모델 옵션을 전달 {case}")
+                reasons = [fb.blocked_reason(j) for j in proposed]
+                check(guard.called and reasons == [None, models.ratio_problem(target["model"]) if ratio_target else None],
+                      f"FIX-P6 실제 백엔드 판정은 비율 불일치만 차단 {case}")
+                pre.run(ih, **target)
+                actual = st.load_manifest(ir)
+                ap = rn.split_approval(rn.plan_calls(actual, ir), "", backend=rn.BACKEND_FORGE)
+                check(proposed == actual["jobs"] and preview.get("exact") is True
+                      and preview.get("need") == len(ap["needs_approval"]) == expected_need
+                      and preview.get("cells") == expected_need // 2
+                      and sum(bool(e.get("blocked")) for e in ap["blocked"]) == (2 if ratio_target else 0),
+                      f"FIX-P6 실제 판정 포함 미리 보기 승인 수 = 반영 후 승인 수 {case}")
+                by_key = {j["cell_key"]: j for j in actual["jobs"]}
+                check(all(e["job"].get("opts") == by_key[e["cell_key"]].get("opts")
+                          and ("opts" in e["job"]) == bool(by_key[e["cell_key"]].get("opts"))
+                          for e in ap["needs_approval"] + ap["blocked"]),
+                      f"FIX-P6 승인 계획의 작업도 opts 규칙 유지 {case}")
+
+        # 나머지 Prepare 단위 사례는 제출 판정과 분리한다. 실제 백엔드 통합 판정은 위에서 검사한다.
+        with patch.object(rn, "blocked_reason", return_value=None):
+            ratio_crops = [("001_match", [0, 0, 80, 100]), ("002_mismatch", [90, 0, 172, 100])]
+            for name in ("nano-banana-2.1", "nano-banana-2", "nano-banana-pro"):
+                nh, nr = project(name, ratio_crops)
+                values = args(name)
+                nh, _, report = pre.run(nh, **values)
+                nm = st.load_manifest(nr)
+                effective = {"image_size": "2K"}
+                if name != "nano-banana-pro":
+                    effective["thinking_level"] = "medium" if name == "nano-banana-2.1" else "minimal"
+                check(nm["prepare_settings"] == {k: v for k, v in values.items() if k not in option_keys} | effective,
+                      f"FM2S3 Prepare 기록은 모델별 실제 옵션만 {name}")
+                matched, mismatched = nm["jobs"]
+                check(matched["opts"] == effective | {"aspect_ratio": "4:5"} and matched["size"] == [1856, 2304]
+                      and matched["size_info"]["method"] == "ratio" and matched["size_info"]["src"] == [80, 100]
+                      and matched["size_info"]["image_size"] == "2K" and matched["size_info"]["ratio"] == "4:5",
+                      f"FM2S3 맞는 크롭의 옵션·예상 크기 {name}")
+                problem = models.ratio_problem(name)
+                check(mismatched["opts"] == effective and mismatched["size_info"]["problem"] == problem
+                      and models.opts_problem(name, mismatched["opts"]) == problem and problem in report,
+                      f"FM2S3 안 맞는 크롭도 작업 생성·비율 없음·반영 경고 {name}")
+                check(all(j["quality"] == "standard" and "complexity" not in j and j["cell_key"] == st.cell_key(
+                      name, "standard", j["size"], dp._BACKGROUND, j["prompt"], [i["sha"] for i in j["inputs"]],
+                      dp.dprompt.TEMPLATE_VERSION, j["variant"], opts=j["opts"]) for j in nm["jobs"]),
+                      f"FM2S3 고정 품질·생성 조건에 작업 옵션 반영 {name}")
+                derived = pl.derive(nr, nm)["settings"]
+                check(pl.drift(dict(derived, prepare=values), nm) == [], "FM2S3 저장값과 모델별 기본값은 같은 생성 조건")
+                old_jobs = pl.derive(nr, dict(nm, prepare_settings={}))
+                check(all(old_jobs["settings"]["prepare"][k] == v for k, v in effective.items())
+                      and not any("prepare." + k in old_jobs["confirm"] for k in option_keys), "FM2S3 jobs 에서 옵션 복구")
+                changed = values | {"image_size": "4K"}
+                drift = pl.drift(dict(derived, prepare=changed), nm)
+                check([(d["field"], d["kind"]) for d in drift] == [("image_size", "cell")], "FM2S3 해상도 변경은 셀 갈라짐")
+                pre.run(nh, **changed)
+                enlarged = st.load_manifest(nr)
+                check(keys(enlarged) != keys(nm) and enlarged["jobs"][0]["size"] == [3712, 4608], "FM2S3 4K 는 새 키·예상 크기")
+                one = values | {"image_size": "1K"}
+                pre.run(nh, **one)
+                small = st.load_manifest(nr)
+                check(small["jobs"][0]["size"] == [928, 1152] and keys(small) != keys(nm), "FM2S3 1K 는 새 키·예상 크기")
+                high = one | {"thinking_level": "high"}
+                drift = pl.drift(dict(derived, prepare=high), small)
+                pre.run(nh, **high)
+                check((keys(st.load_manifest(nr)) != keys(small)) == (name != "nano-banana-pro")
+                      and [d["field"] for d in drift] == ([] if name == "nano-banana-pro" else ["thinking_level"]),
+                      f"FM2S3 추론 변경은 지원하는 모델만 새 키·갈라짐 {name}")
+                pre.run(nh, **values)
+                if name == "nano-banana-2":
+                    pre.run(nh, **(values | {"thinking_level": "minimal"}))
+                    check(keys(st.load_manifest(nr)) == keys(nm), "FM2S3 2의 medium 은 minimal 과 같은 키")
+
+            sh, sr = project("switch")
+            values = args("nano-banana-2.1")
+            sh = pre.run(sh, **values)[0]
+            transitions = [(values, 0), (values | {"image_size": "4K"}, 4),
+                           (values | {"image_size": "4K", "thinking_level": "high"}, 4),
+                           (args("nano-banana-2"), 4), (args("nano-banana-2", thinking_level="minimal"), 0),
+                           (args("nano-banana-pro"), 4), (args("gpt-image-2.5-sunburst"), 4), (args("nano-banana-2.1"), 0)]
+            for values, expected_need in transitions:
+                previous = st.load_manifest(sr)
+                snapshot = copy.deepcopy(previous)
+                settled(sr, previous)
+                settings = pl.derive(sr, previous)["settings"]
+                with patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+                    preview = pl.switch_preview(sr, previous, settings, prepare=values)
+                proposed = copy.deepcopy(plans.call_args.args[0]["jobs"]) if plans.called else []
+                sh = pre.run(sh, **values)[0]
+                actual = st.load_manifest(sr)
+                check(proposed == actual["jobs"] and previous == snapshot, "FM2S4 미리 보기 작업·키 = 실제 Prepare, 원본 불변")
+                plan = rn.plan_calls(actual, sr)
+                ap = rn.split_approval(plan, "", backend=rn.BACKEND_FORGE)
+                check(preview.get("exact") is True and preview.get("need") == len(ap["needs_approval"]) == expected_need
+                      and preview.get("cells") == len({e["cell_key"] for e in ap["needs_approval"]}) == expected_need // 2,
+                      "FM2S4 옵션만 변경·모델 전환·같은 유효 옵션·이전 키 복귀의 승인 건수")
+
+            # B 갈래가 쓸 후보 origin_info 를 직접 구성해 보드 응답 경로만 검증한다.
+            ch, cr = project("candidates")
+            pre.run(ch, **args("nano-banana-2.1"))
+            cm = st.load_manifest(cr)
+            job = cm["jobs"][0]
+            req = dict(job, backend="forge", rep=0, call_id=rn.call_id_for(job["cell_key"], 0))
+            done = {"slots": [{"slot": i, "file": job["inputs"][0]["file"], "size": job["size"]} for i in range(3)]}
+            rn._add_candidates(cm, req, done, [])
+            for cand in cm["candidates"]:
+                cand["origin_info"]["opts"] = dict(job["opts"])
+            st.save_manifest(cr, cm)
+            rows = bd.build_state(cr)
+            check(all(c["opts"] == job["opts"] for t in rows["targets"] for c in t["candidates"])
+                  and all(c["opts"] == j["opts"] for t, j in zip(rows["targets"], cm["jobs"]) for c in t["cells"]),
+                  "FM2S5 origin_info·작업 요약의 옵션이 후보·셀 응답까지 전달")
+            check(srv._public_json(rows, bd) == rows, "FM2S5 서버 응답 정리에서도 옵션 보존")
+            for name in ("ideogram-4.5", "gpt-image-2.6-sunburst"):
+                for cand in cm["candidates"]:
+                    cand["origin_info"]["model"] = name
+                    cand["origin_info"].pop("opts", None)
+                st.save_manifest(cr, cm)
+                text = "서버가 쓴 프롬프트\n" * 600
+                used.return_value = [text, None, "unchanged"]
+                with patch.object(fb, "prompt_changed", return_value=[True, True, False]):
+                    candidates = [c for t in bd.build_state(cr)["targets"] for c in t["candidates"]]
+                    flag = "prompt_rewritten" if name == "ideogram-4.5" else "prompt_changed"
+                    other = "prompt_changed" if flag == "prompt_rewritten" else "prompt_rewritten"
+                    check([c.get(flag, False) for c in candidates] == [True, True, False]
+                          and all(other not in c and "opts" not in c for c in candidates), "FM2S5 후보 자신의 모델로 표지 구분")
+                    check(candidates[0].get("prompt_used") is True and all("prompt_used" not in c for c in candidates[1:])
+                          and text[:100] not in json.dumps(candidates, ensure_ascii=False), "FIX-P4 상태에는 글 대신 존재 표지만")
+                    check([c.get("slot") for c in candidates] == [0, 1, 2]
+                          and all(c["call_id"] == req["call_id"] for c in candidates), "FIX-P4 후보의 call_id·정수 slot 전달")
+                    used.return_value = []
+                    candidates = [c for t in bd.build_state(cr)["targets"] for c in t["candidates"]]
+                    check(candidates[0][flag] and all("prompt_used" not in c for c in candidates), "FM2S5 옛 기록은 표지만")
+                    with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}):
+                        check(bd._forge_candidate_flags(cr, cm["candidates"][0]["origin_info"]) == {}, "FM2S5 로컬 후보 표지 불변")
+                for slot in (-1, True, None, 99):
+                    with patch.object(fb, "prompt_changed", return_value=[True]):
+                        check(bd._forge_candidate_flags(cr, dict(cm["candidates"][0]["origin_info"], slot=slot)) == {},
+                              "FM2S5 잘못된 슬롯은 표지 없음")
+            used.reset_mock()
+            check(bd._forge_candidate_flags(cr, {"backend": "mock", "slot": 0}) == {} and not used.called,
+                  "FM2S5 Forge 이외 후보는 기록 조회 없음")
+
+            async def prompt_query(query, scope):
+                token = bd.set_scope(scope)
+                try:
+                    response = await bd.prompt_handler(types.SimpleNamespace(query=query, path=bd.API + "/prompt"))
+                    return response.status, json.loads(response.text)
+                finally:
+                    bd.reset_scope(token)
+
+            scope = {"input": str(out), "output": str(out / "output"), "home": str(out), "org": "example", "account": "example"}
+            query = {"root": st.root_key(cr), "call": req["call_id"], "slot": "0"}
+            crop_query = {"root": query["root"], "crop": job["crop_id"]}
+            crop_status, crop_before = asyncio.run(prompt_query(crop_query, scope))
+            check(crop_status == 200 and set(crop_before) == {"crop", "name", "rev", "jobs", "targets", "spec_error"}
+                  and crop_before["jobs"][0]["prompt"] == job["prompt"]
+                  and crop_before["jobs"][0]["variant"] == job["variant"], "FIX-P4 기존 crop 질의 응답 계약")
+            used.return_value = [text, None, "다른 슬롯의 글"]
+            for slot, expected in (("0", text[:4000]), ("1", None), ("2", "다른 슬롯의 글"), ("99", None)):
+                status, body = asyncio.run(prompt_query(query | {"slot": slot}, scope))
+                check(status == 200 and body == {"prompt_used": expected}, f"FIX-P4 prompt 라우트의 슬롯별 본문 {slot}")
+            used.return_value = []
+            status, body = asyncio.run(prompt_query(query, scope))
+            check(status == 200 and body == {"prompt_used": None}, "FIX-P4 옛 기록은 null")
+            used.return_value = [None]
+            status, body = asyncio.run(prompt_query(query, scope))
+            check(status == 200 and body == {"prompt_used": None}, "FIX-P4 글을 보관하지 않은 슬롯은 null")
+            invalid = [{"call": ""}, {"call": "invalid"}, {"call": "../outside_r0"},
+                       {"call": "a" * 24 + "_r-1"}, {"slot": ""}, {"slot": "-1"}, {"slot": "1.0"},
+                       {"slot": "true"}, {"slot": " 0"}]
+            for change in invalid:
+                used.reset_mock()
+                status, _ = asyncio.run(prompt_query(query | change, scope))
+                check(status == 400 and not used.called, "FIX-P4 잘못된 call·slot 은 읽기 전에 400")
+            for missing in ("call", "slot"):
+                status, _ = asyncio.run(prompt_query({k: v for k, v in query.items() if k != missing}, scope))
+                check(status == 400, "FIX-P4 call·slot 은 함께 필요")
+            for scoped, expected in ((None, 401), (dict(scope, input=str(out / "another-account")), 404)):
+                used.reset_mock()
+                status, _ = asyncio.run(prompt_query(query, scoped))
+                check(status == expected and not used.called, "FIX-P4 프롬프트 조회도 기존 계정 격리 유지")
+            used.reset_mock()
+            check(asyncio.run(prompt_query(crop_query, scope)) == (crop_status, crop_before) and not used.called,
+                  "FIX-P4 crop 질의는 원래 응답 그대로·서버 글 조회 없음")
+
+        class Runner:
+            def __init__(self, **kw):
+                self.closed = False
+
+            def close(self, timeout=0):
+                self.closed = True
+
+        async def env_cases():
+            jobs = types.SimpleNamespace(JobRunner=Runner, routes=lambda runner: ())
+            transport = AsyncMock(side_effect=AssertionError("외부 호출 금지"))
+            catalog = {m.checkpoint: m.max_inputs for m in models.MODELS.values()}
+            for connected in (False, True):
+                cfg = srv.ServerConfig(data_dir=str(out / "env"), public_origin="https://studio.example",
+                                       forge=fg.ForgeConfig("https://forge.example", media_origins=("https://forge.example",)) if connected else None)
+                with patch.dict(os.environ, {rn.MOCK_ENV: ""}), patch.object(srv, "_server_secret", return_value=b"synthetic"), \
+                        patch.object(fb, "ensure_catalog", new=AsyncMock(return_value=catalog)) as ensure, \
+                        patch.object(fb, "catalog_failed", return_value=False):
+                    app = srv.make_app(cfg, jobs_module=jobs, forge_transport=transport)
+                    app.freeze()
+                    try:
+                        request = {"bmk_dp_session": {"name": "example", "tag": "synthetic",
+                                                     "scope": {"org": "example", "account": "example"}}}
+                        body = json.loads((await bd.env_handler(request)).text)
+                        if not connected:
+                            check("models" not in body["caps"] and not ensure.called, "FM2S6 Forge 미연결 env 는 models 없음")
+                            continue
+                        check(body["caps"]["models"] == [models.describe(n, catalog, checked=True) for n in models.MODELS],
+                              "FM2S6 실제 env 응답의 전체 모델 줄")
+                        by_name = {row["name"]: row for row in body["caps"]["models"]}
+                        row = by_name["nano-banana-2.1"]
+                        check(row["opt_defaults"] == {"image_size": "2K", "thinking_level": "medium"}
+                              and row["family"] == "nano-banana" and row["ratios"] == list(models.RATIOS)
+                              and row["ratio_tolerance"] == 0.01 and row["fallback"] is None, "FM2S6 새 env 필드 보존")
+                        retired = dict(catalog)
+                        retired.pop(models.get("nano-banana-2.1").checkpoint)
+                        ensure.return_value = retired
+                        body = json.loads((await bd.env_handler(request)).text)
+                        row = next(r for r in body["caps"]["models"] if r["name"] == "nano-banana-2.1")
+                        check(row["available"] is False and row["fallback"] == "nano-banana-2", "FM2S6 퇴역 모델의 계열 대체")
+                    finally:
+                        await app.cleanup()
+                    check(app[srv._RUNNER_KEY].closed, "FM2S6 앱 대역 종료")
+            check(not transport.called, "FM2S6 모든 env 검증은 외부 호출 없음")
+
+        asyncio.run(env_cases())
 
 
 def forge_models2_dev_unit():
     """Forge 2단계 둘째 묶음 가짜 Forge 갈래 — 나노바나나 계열의 목록·요청 검사·장마다 따로 부르는 흉내.
     명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
     section("Forge 모델 가짜 Forge(둘째 묶음) — forge_models2_dev_unit")
+    import bmk_design_patch_forge_dev as dev
+    import bmk_design_patch_models as dpm
+    from unittest.mock import patch
+
+    fixture = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
+    models = fixture["models"]
+    names = ("nano-banana-2.1", "nano-banana-2", "nano-banana-pro")
+    catalog = copy.deepcopy(models["catalog"]["response"])
+    # 정본의 count가 모델 추가보다 늦게 갱신돼도 목록의 모든 값과 실제 개수는 그대로 검증한다.
+    catalog["count"] = len(catalog["models"])
+    token = dev.issue_token("models2_test")
+    headers = {"Authorization": "Bearer " + token}
+    with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": ""}):
+        fake = dev.FakeForge(clock=lambda: 1700000000.0)
+    encoded = io.BytesIO()
+    with Image.new("RGB", (48, 32), (40, 90, 180)) as picture:
+        picture.save(encoded, format="PNG")
+    uri = "data:image/png;base64," + base64.b64encode(encoded.getvalue()).decode()
+    serial = 0
+
+    def payload(name, **changes):
+        nonlocal serial
+        serial += 1
+        data = copy.deepcopy(models["requests"][name]["request"])
+        data.update(request_id="models2-" + str(serial), input_images=[[uri, uri]])
+        data.update(changes)
+        return data
+
+    async def call(method, path, data=None, *, instance=fake, auth=headers):
+        status, response_headers, body = await instance.handle(
+            method, path, auth, json.dumps(data).encode() if data is not None else None)
+        return status, json.loads(body) if response_headers.get("Content-Type") == "application/json" else body
+
+    async def generate(data):
+        status, submitted = await call("POST", "/api/image/generate", data)
+        check(status == 200 and set(submitted) == set(fixture["generate"]["response"]), "FND 제출은 정본 모양으로 접수")
+        if status != 200:
+            raise AssertionError("가짜 Forge 나노바나나 요청 접수 실패")
+        status, job = await call("GET", "/api/image/jobs/" + submitted["job_id"])
+        check(status == 200, "FND 접수된 잡 조회")
+        return job, fake.requests[-1]
+
+    async def failed(data, label):
+        job, record = await generate(data)
+        check(job["status"] == "failed" and job["result_data"] is None and job["error_category"] == "ailabs"
+              and isinstance(job["error_message"], str) and bool(job["error_message"])
+              and record["provider_calls"] == [] and record["used_input_indices"] == [],
+              "FND3 공급자 호출 없는 실패 잡: " + label)
+        check(record["keys"] == sorted(data) and record["checkpoint"] == data["checkpoint"],
+              "FND3 실패한 요청도 키·checkpoint 기록: " + label)
+        return job
+
+    async def result_size(job):
+        status, png = await call("GET", job["result_data"]["images"][0], auth={})
+        with Image.open(io.BytesIO(png)) as picture:
+            size = picture.size
+            check(status == 200 and picture.format == "PNG", "FND4 결과는 무인증 PNG")
+            picture.verify()
+        return size
+
+    async def run():
+        path = models["catalog"]["path"]
+        check(await call("GET", path) == (200, catalog), "FND1 세 모델을 포함한 정본 목록·실제 개수")
+        for name in names:
+            checkpoint = models["names"][name]
+            fake.retire(checkpoint)
+            current = (await call("GET", path))[1]
+            expected = dict(catalog, models=[row for row in catalog["models"] if row["checkpoint"] != checkpoint],
+                            count=catalog["count"] - 1)
+            check(current == expected, "FND1 퇴역은 지정한 나노바나나 하나만 제거: " + name)
+            job, record = await generate(payload(name))
+            check(job["status"] == "completed" and record["retired"] and record["checkpoint"] == checkpoint
+                  and record["effective_checkpoint"] != checkpoint
+                  and job["request_data"]["checkpoint"] == record["effective_checkpoint"],
+                  "FND1 퇴역 요청의 기존 대체 모델 기록 유지: " + name)
+            fake.retire(checkpoint, False)
+            check(await call("GET", path) == (200, catalog), "FND1 퇴역 해제는 전체 목록 복구")
+        checkpoints = [models["names"][name] for name in names]
+        for retired in ([checkpoint] for checkpoint in checkpoints):
+            with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": " , ".join(retired)}):
+                env_fake = dev.FakeForge()
+            current = (await call("GET", path, instance=env_fake))[1]
+            check(current == dict(catalog, models=[row for row in catalog["models"] if row["checkpoint"] not in retired],
+                                  count=catalog["count"] - len(retired)), "FND1 환경 변수도 세 id 각각에 적용")
+        with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": " , ".join(checkpoints)}):
+            env_fake = dev.FakeForge()
+        check((await call("GET", path, instance=env_fake))[1]
+              == dict(catalog, models=[row for row in catalog["models"] if row["checkpoint"] not in checkpoints],
+                      count=catalog["count"] - len(checkpoints)), "FND1 환경 변수로 세 모델 동시 퇴역")
+
+        for name in names:
+            spec, limits = models["requests"][name], models["limits"][name]
+            data = payload(name)
+            job, record = await generate(data)
+            count = data["num_outputs"]
+            check(job["status"] == "completed" and len(job["result_data"]["images"]) == count
+                  and set(job["result_data"]) == set(models["job"]["seedream_partial"]["result_data"])
+                  and job["result_data"]["result_metadata"] == [{"call_index": i} for i in range(count)],
+                  "FND2 정본 요청은 장별 메타데이터로 완료·prompt_used 없음: " + name)
+            check(record == {"keys": sorted(data), "checkpoint": data["checkpoint"], "provider_calls": list(range(count)),
+                             "effective_checkpoint": data["checkpoint"], "retired": False, "input_count": 2,
+                             "used_input_indices": [0, 1], "job_id": job["id"], "reused": False,
+                             "successful_calls": list(range(count))}, "FND2 받은 요청 기록의 기존 꼴 유지: " + name)
+            expected_size = tuple(side * dpm.IMAGE_SIZES[data["image_size"]] for side in dpm.RATIO_SIZES[data["aspect_ratio"]])
+            check(await result_size(job) == expected_size, "FND2 기본 해상도 PNG는 모델 표의 예상 크기: " + name)
+            before = len(fake.jobs)
+            status, again = await call("POST", "/api/image/generate", data)
+            check(status == 200 and again["job_id"] == job["id"] and again["status"] == "completed"
+                  and len(fake.jobs) == before and fake.requests[-1]["reused"] and not fake.requests[-1]["provider_calls"],
+                  "FND2 재제출은 새 잡·공급자 호출 없음: " + name)
+
+            for key in spec["never"]:
+                await failed(payload(name, **{key: None}), name + " 금지 키 " + key)
+            for key in ("aspect_ratio", *limits["opts"]):
+                missing = payload(name)
+                del missing[key]
+                await failed(missing, name + " 누락 " + key)
+                invalid = (None, [], {}, True, 0, "", "unsupported")
+                invalid += {"aspect_ratio": ("4/5", "auto", "16:10"), "image_size": ("2k", "8K", "2048x2048"),
+                            "thinking_level": ("low", "MEDIUM")}[key]
+                if key == "thinking_level" and name == "nano-banana-2":
+                    invalid += ("medium",)
+                for value in invalid:
+                    await failed(payload(name, **{key: value}), name + " 잘못된 " + key)
+            if name == "nano-banana-pro":
+                for value in ("minimal", "medium", "high", []):
+                    await failed(payload(name, thinking_level=value), name + " 추론 옵션 금지")
+            for thinking in limits["opts"].get("thinking_level", ()):
+                job, _ = await generate(payload(name, thinking_level=thinking, input_images=[]))
+                check(job["status"] == "completed", "FND3 모델별 추론 선택지 허용: " + name + " " + thinking)
+
+            limit = limits["max_inputs"]
+            for groups in ([[uri] * (limit + 1)], [[uri] * 7, [uri] * (limit - 6)]):
+                await failed(payload(name, input_images=groups), name + " 입력 상한 초과")
+            for groups in ([], [[]], [[uri] * limit], [[uri] * 7, [uri] * (limit - 7)]):
+                job, record = await generate(payload(name, input_images=groups, num_outputs=limits["max_n"]))
+                check(job["status"] == "completed" and len(job["result_data"]["images"]) == limits["max_n"]
+                      and record["input_count"] == sum(map(len, groups))
+                      and record["used_input_indices"] == list(range(sum(map(len, groups))))
+                      and record["provider_calls"] == list(range(limits["max_n"])),
+                      "FND3 입력 0·14장과 출력 8장 허용·그룹 경계에서 절삭 없음: " + name)
+
+            resolutions = tuple(dpm.IMAGE_SIZES)
+            for index, ratio in enumerate(dpm.RATIOS):
+                for image_size in resolutions:
+                    job, _ = await generate(payload(name, aspect_ratio=ratio, image_size=image_size, input_images=[], num_outputs=1))
+                    check(job["status"] == "completed", "FND4 모든 비율·해상도 조합 허용: " + name)
+                    # 비율 전부와 해상도 세 단계를 실제 PNG로 확인한다.
+                    if image_size == resolutions[index % len(resolutions)]:
+                        expected_size = tuple(side * dpm.IMAGE_SIZES[image_size] for side in dpm.RATIO_SIZES[ratio])
+                        check(await result_size(job) == expected_size, "FND4 예상 크기의 PNG: " + name + " " + ratio + " " + image_size)
+
+            for marker, indices in (("[[fake:partial=2]]", [0, 2]), ("[[fake:partial=1]]", [0]),
+                                    ("[[fake:partial=0]]", []), ("[[fake:empty]]", [])):
+                job, record = await generate(payload(name, num_outputs=3, prompt=marker))
+                result = job["result_data"]
+                check(job["status"] == "completed" and len(result["images"]) == len(indices)
+                      and len(result["result_ids"]) == len(indices) and len(result["thumbnails"]) == len(indices)
+                      and result["result_metadata"] == [{"call_index": i} for i in indices]
+                      and record["provider_calls"] == [0, 1, 2] and record["successful_calls"] == indices
+                      and "warning" not in result and "warning" not in job,
+                      "FND5 부분 성공·빈 완료는 Seedream과 같은 장별 호출·경고 없음: " + name)
+            for autopilot in (None, {"candidate_prompt": "다른 글"}):
+                data = payload(name, prompt="원문 [[fake:changed]]", prompt_autopilot=autopilot)
+                if autopilot is None:
+                    del data["prompt_autopilot"]
+                job, _ = await generate(data)
+                check(job["status"] == "completed" and all("prompt_used" not in item for item in job["result_data"]["result_metadata"]),
+                      "FND5 changed 표지·autopilot 값에도 prompt_used 없음: " + name)
+            await failed(payload(name, aspect_ratio=token, image_size=uri), name + " 잘못된 값 비노출")
+        snapshot = json.dumps({"calls": list(fake.calls), "requests": list(fake.requests), "jobs": fake.jobs}, ensure_ascii=False)
+        check(token not in snapshot and uri not in snapshot and "data:image/" not in snapshot and "Authorization" not in snapshot,
+              "FND6 요청 기록·잡 응답에 인증 헤더·입력 본문·잘못된 옵션 값 없음")
+
+    asyncio.run(run())
 
 
 def forge_models2_js_unit():
@@ -62014,6 +63046,8 @@ def forge_models_backend_unit():
 
     async def request_cases():
         for name, spec in contract["requests"].items():
+            if models.get(name).area is None:  # 비율 목록 모델은 forge_models2_backend_unit 의 계약으로 검사한다.
+                continue
             root, job, paths = project(name)
             expected = copy.deepcopy(spec["request"])
             images = [base64.b64decode(item.split(",", 1)[1]) for item in expected["input_images"][0]]
@@ -62891,6 +63925,8 @@ def forge_models_settings_unit():
         with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1"}), \
                 patch.object(rn, "mock_enabled", return_value=False):
             for name in models.FORGE_ONLY:
+                if models.get(name).area is None:
+                    continue  # 비율 목록 모델은 forge_models2_settings_unit 에서 별도로 단정한다.
                 lim = fixture["limits"][name]
                 for rule in st.GPT_SIZE_RULES:
                     nh, nr = project(f"{name}-{rule}")
@@ -62899,7 +63935,8 @@ def forge_models_settings_unit():
                         nh, _, _ = pre.run(nh, **values)
                     nm = st.load_manifest(nr)
                     check(approvals.call_args.kwargs["backend"] == rn.BACKEND_FORGE, "FMS5 Prepare 승인 해시는 실행 백엔드 사용")
-                    check(nm["prepare_settings"] == values and len(nm["jobs"]) == len(rects),
+                    check(nm["prepare_settings"] == {k: v for k, v in values.items() if k not in ("image_size", "thinking_level")}
+                          and len(nm["jobs"]) == len(rects),
                           f"FMS5 위젯 값 보존·크롭별 작업 생성 {name} {rule}")
                     for job, (_, rect) in zip(nm["jobs"], rects):
                         w, h0 = rect[2] - rect[0], rect[3] - rect[1]
@@ -62974,7 +64011,8 @@ def forge_models_settings_unit():
             return [c for t in bd.build_state(rr)["targets"] for c in t["candidates"]]
 
         with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}), \
-                patch.object(bd._forge_backend(), "prompt_changed", return_value=[True, False, False, False]):
+                patch.object(bd._forge_backend(), "prompt_changed", return_value=[True, False, False, False]), \
+                patch.object(bd._forge_backend(), "prompt_used", return_value=[], create=True):
             rows = candidates()
             check([c.get("ratio_changed", False) for c in rows] == [True, False, False, False]
                   and [c.get("prompt_changed", False) for c in rows] == [True, False, False, False]
@@ -63094,7 +64132,9 @@ def forge_models_dev_unit():
             return result.size
 
     async def run():
-        catalog = models["catalog"]
+        catalog = copy.deepcopy(models["catalog"])
+        # 목록의 모든 값을 대조하고 count는 확장된 모델 목록의 실제 길이로 검증한다.
+        catalog["response"]["count"] = len(catalog["response"]["models"])
         check(await call(catalog["method"], catalog["path"]) == (200, catalog["response"]), "FMD1 모델 목록은 정본 전체 응답")
         for auth in ({}, {"Authorization": "Bearer " + dev.issue_token("models_test", 0, clock=lambda: 1700000000.0)}):
             check(await call(catalog["method"], catalog["path"], auth=auth)
@@ -68850,8 +69890,22 @@ def forge_f3_server_unit():
             if not mode:
                 local_derived = derived
             else:
-                check({k: v for k, v in derived.items() if k != "notes"}
-                      == {k: v for k, v in local_derived.items() if k != "notes"}, "F3S2 문구 분기가 유도값·설정 키를 바꾸지 않음")
+                # 서버 모드에만 있는 Prepare 두 칸(해상도·추론 — 2단계 둘째 묶음)을 뺀 나머지가 로컬판과 같다
+                server_only = ("image_size", "thinking_level")
+                names = server_only + tuple("prepare." + k for k in server_only)
+
+                def without(value):
+                    if isinstance(value, dict):
+                        return {k: without(v) for k, v in value.items() if k not in names}
+                    if isinstance(value, (list, tuple)):
+                        return [without(v) for v in value if not (isinstance(v, str) and v in names)]
+                    return value
+
+                check(without({k: v for k, v in derived.items() if k != "notes"})
+                      == without({k: v for k, v in local_derived.items() if k != "notes"}), "F3S2 문구 분기가 유도값·설정 키를 바꾸지 않음")
+                check(not any(name in json.dumps(local_derived, ensure_ascii=False) for name in server_only)
+                      and all(name in json.dumps(derived, ensure_ascii=False) for name in server_only),
+                      "F3S2 해상도·추론 두 칸은 서버 모드의 유도값에만 있다")
             wording(store.adopt_stale(crop, {}), "매니페스트 타깃이 레이어명 + _layer_targets 와 다름 — 다음 큐에서 Import PSD 가 반영", mode)
             parsed = store.parse_crop_layer_name(crop["layer_name"])
             for value, local in ((5, "_layer_targets 는 문자열이어야 합니다: 5"),

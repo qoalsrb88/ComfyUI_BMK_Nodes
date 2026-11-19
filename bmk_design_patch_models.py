@@ -314,9 +314,10 @@ def output_size(name: str, w: int, h: int, rule: str = "user_k", opts=None) -> t
     return W, H, info
 
 
-def size_problem(name, size) -> str | None:
+def size_problem(name, size, opts=None) -> str | None:
     """요청 크기가 그 모델의 창 안인가 → 안내 문구(안이면 None). GPT 계열은 여기서 보지 않는다(None).
-    정해진 비율로만 그리는 모델은 예상 크기 표(RATIO_SIZES × 해상도 단계)의 값이어야 한다."""
+    정해진 비율로만 그리는 모델은 예상 크기 표(RATIO_SIZES × 해상도 단계)의 값이어야 한다 — 작업의 opts 를 주면 그 opts 의
+    비율·해상도 단계가 정하는 예상 크기와 같은지까지 본다(크기 기록과 실제로 보낼 옵션이 어긋난 작업을 막는다)."""
     m = get(name)
     if m is None or m.kind == "gpt" or (m.area is None and not m.ratios):
         return None
@@ -328,6 +329,10 @@ def size_problem(name, size) -> str | None:
         return "요청 크기 기록이 잘못되었습니다 — 반영을 다시 실행해 주세요."
     if m.ratios:
         known = {(a * k, b * k) for a, b in (RATIO_SIZES[label] for label in m.ratios) for k in IMAGE_SIZES.values()}
+        if isinstance(opts, dict):
+            ratio, tier = opts.get(RATIO_OPT), opts.get("image_size")
+            if isinstance(ratio, str) and ratio in m.ratios and isinstance(tier, str) and tier in IMAGE_SIZES:
+                known = {tuple(side * IMAGE_SIZES[tier] for side in RATIO_SIZES[ratio])}
         return None if (W, H) in known else "요청 크기 기록이 잘못되었습니다 — 반영을 다시 실행해 주세요."
     if m.max_ratio is not None and max(W, H) > m.max_ratio * min(W, H):
         return f"크롭의 가로세로비가 {m.label} 의 한도(1:{m.max_ratio}–{m.max_ratio}:1)를 벗어납니다."
