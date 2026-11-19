@@ -44,13 +44,16 @@ def _inputs(root, m, crop, ov):
 
 
 def _linked(root, crop_id):
-    """레퍼런스 연결 파일(refs.json)에서 이 크롭에 닿는 것(레퍼런스 폴더·이 크롭의 연결)의 글. 다른 크롭의 연결 편집은 넣지 않는다 —
-    넣으면 남의 편집 때문에 이 크롭에서 쓰던 글·AI 작성 결과가 낡은 판으로 버려진다. 읽지 못하면 파일 지문 전체."""
+    """레퍼런스 연결 파일(refs.json)에서 이 크롭의 연결만 뽑은 글. 다른 크롭의 연결 편집은 넣지 않는다 — 넣으면 남의 편집 때문에
+    이 크롭에서 쓰던 글·AI 작성 결과가 낡은 판으로 버려진다. 파일이 없는 것과 이 크롭의 연결이 없는 것은 같은 값이다(다른 크롭의
+    첫 연결로 파일이 생겨도 그대로). 파일이 있는데 읽지 못하면 파일 지문 전체."""
     path = os.path.join(root, store._REFS_FILE)
+    if not os.path.exists(path):
+        return "null"
     try:
         with open(path, encoding="utf-8") as f:
             doc = json.load(f)
-        return json.dumps([doc.get("refs_dir"), (doc.get("links") or {}).get(crop_id)], ensure_ascii=False, sort_keys=True)
+        return json.dumps((doc.get("links") or {}).get(crop_id), ensure_ascii=False, sort_keys=True)
     except (OSError, ValueError, AttributeError):
         return json.dumps(store._file_fp(path))
 
