@@ -192,8 +192,8 @@ window.DPV2Canvas = (() => {
     ovImg.style.width = `${Math.max(1, x2 - x1)}px`;
     ovImg.style.height = `${Math.max(1, y2 - y1)}px`;
 
-    // 비파괴 스마트 필터 실시간 프리뷰 적용
-    const f = patch.meta.filters;
+    // 비파괴 스마트 필터 실시간 프리뷰 적용 (#C13-6②: 후보 key 별 필터 초안 사용)
+    const f = Store.getCandidateFilters(patch, cand);
     const filters = [];
     if (f.colorEnabled) {
       if (f.bright !== 0) filters.push(`brightness(${1 + f.bright / 100})`);
@@ -656,6 +656,8 @@ window.DPV2Canvas = (() => {
 
     const selList = Store.selectedPatches();
     const isMulti = selList.length > 1;
+    // #C13-3: 생성 흐름 또는 AI 작성 중에는 플로팅 바의 목적·지시문·AI 작성 입력도 잠근다
+    const specLocked = !!(Store.state.runFlowBusy || Store.state.assistBusy);
     const purpHost = $("fb-purposes");
     const themeMode = Store.activeTheme().mode;
     if (purpHost) {
@@ -669,8 +671,10 @@ window.DPV2Canvas = (() => {
           type: "button",
           className: "fb-purpose-chip" + (!commonPurp.mixed && commonPurp.value === pr.id ? " on" : ""),
           title: pr.hint,
+          disabled: specLocked,
           style: `--p-col:${pc};--p-soft:${pSoft};--p-border:${pBorder};`,
           onClick: () => {
+            if (Store.state.runFlowBusy || Store.state.assistBusy) return;
             for (const sp of selList) {
               sp.meta.purpose = pr.id;
               Store.markFieldDirty(sp.meta, "purpose");
@@ -760,13 +764,14 @@ window.DPV2Canvas = (() => {
       inp.placeholder = isMulti
         ? `${selList.length}개 영역 동시 선택 중 — 목적·모델 일괄 변경 또는 선택 생성`
         : purp.placeholder;
+      inp.disabled = specLocked;
     }
 
     const aiBtn = $("fb-ai-btn");
     if (aiBtn) {
       aiBtn.innerHTML = "";
       aiBtn.append(Data.icon("sparkles", 13), Store.state.assistBusy ? "작성 중…" : "AI 작성");
-      aiBtn.disabled = !!Store.state.assistBusy;
+      aiBtn.disabled = specLocked;
     }
 
     const mLabel = $("fb-model-label");
@@ -779,7 +784,7 @@ window.DPV2Canvas = (() => {
     const runBtn = $("fb-run-btn");
     if (runBtn) {
       runBtn.textContent = isMulti ? `${selList.length}개 생성` : "생성";
-      runBtn.disabled = !!(Store.state.S && Store.state.S.running);
+      runBtn.disabled = !!(Store.state.S && Store.state.S.running) || !!Store.state.runFlowBusy;
     }
   }
 
@@ -788,7 +793,8 @@ window.DPV2Canvas = (() => {
     const mc = $("mask-canvas");
     if (!mc) return;
     const ms = Store.state.mask;
-    if (!ms || !ms.layers || (Store.state.tool !== "brush" && Store.state.tool !== "eraser")) {
+    const curCand = Store.currentCandidate();
+    if (!ms || !ms.layers || !curCand || curCand.key !== ms.key || (Store.state.tool !== "brush" && Store.state.tool !== "eraser")) {
       mc.classList.add("hidden");
       return;
     }
@@ -941,9 +947,9 @@ window.DPV2Canvas = (() => {
     if (showHud) {
       const p = Store.primaryPatch();
       const cand = Store.currentCandidate(p);
-      // #C07-5: 마스크 편집 세션은 현재 선택된 후보와 일치할 때만 유지하고 다르면 전환한다
+      // #C07-5 · #C13-7: 마스크 편집 세션은 현재 선택된 후보와 일치할 때만 유지하되 미저장 획은 강제로 버리지 않는다
       if (!cand) {
-        Store.closeMaskSession();
+        if (Store.state.mask && !Store.state.mask.dirty) Store.closeMaskSession();
         Store.toast("먼저 생성된 후보가 있는 영역을 선택해 주세요.");
       } else if (!Store.state.mask || Store.state.mask.key !== cand.key) {
         Store.openMaskSession(cand.key);
@@ -989,7 +995,7 @@ window.DPV2Canvas = (() => {
             Store.openMaskSession(curCand.key);
             Store.toast("선택한 후보의 마스크를 불러오는 중입니다 — 잠시 후 다시 칠해 주세요.");
           } else {
-            Store.closeMaskSession();
+            if (Store.state.mask && !Store.state.mask.dirty) Store.closeMaskSession();
             Store.toast("후보가 생성된 영역을 먼저 선택한 뒤 브러시를 사용해 주세요.");
           }
           return;
@@ -1141,7 +1147,13 @@ window.DPV2Canvas = (() => {
 
       if ((dg.type === "move" || dg.type === "resize") && dg.moved && dg.patch) {
         const label = dg.type === "move" ? `영역 이동 (${dg.patch.name})` : `영역 크기 조절 (${dg.patch.name})`;
-        await Store.updateCrop(dg.patch.id, { rect: dg.patch.rect.slice() }, label);
+        try {
+          await Store.updateCrop(dg.patch.id, { rect: dg.patch.rect.slice() }, label);
+        } catch (err) {
+          Store.toast(`${label} 실패: ${(err && err.message) || "서버에서 거절했습니다."}`, "err");
+          await Store.loadLayout();
+          await Store.refreshAll(true);
+        }
       }
     });
 
@@ -1233,6 +1245,7 @@ window.DPV2Canvas = (() => {
     // 플로팅 바 컨트롤 바인딩
     const fbInp = $("fb-instruction");
     if (fbInp) fbInp.addEventListener("input", (e) => {
+      if (Store.state.runFlowBusy || Store.state.assistBusy) return;
       const p = Store.primaryPatch();
       if (!p) return;
       p.meta.user_instruction_ko = e.target.value;
@@ -1455,7 +1468,13 @@ window.DPV2Canvas = (() => {
       nudgeTimers.delete(id);
       const origRect = nudgeOriginals.get(id);
       nudgeOriginals.delete(id);
-      Store.updateCrop(id, { rect: rectCopy }, `영역 이동 (${name})`, false, origRect ? { rect: origRect } : null);
+      Store.updateCrop(id, { rect: rectCopy }, `영역 이동 (${name})`, false, origRect ? { rect: origRect } : null)
+        .catch(async (err) => {
+          // #C13-8②: 서버에서 이동이 거절되면 화면 좌표를 서버 값으로 복원한다
+          Store.toast(`영역 이동 실패: ${(err && err.message) || "서버에서 이동을 거절했습니다."}`, "err");
+          await Store.loadLayout();
+          await Store.refreshAll(true);
+        });
     }, 280));
     return true;
   }

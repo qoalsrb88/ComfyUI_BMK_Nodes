@@ -368,6 +368,8 @@ window.DPV2Inspector = (() => {
     if (cont1) cont1.classList.toggle("hidden", !patch);
 
     if (patch) {
+      // #C13-3: 생성 흐름 또는 AI 프롬프트 작성이 도는 동안 지시문·목적·AI 자동·원문·저장·프리셋 입력을 잠근다
+      const specLocked = !!(Store.state.runFlowBusy || Store.state.assistBusy);
       const msb = $("multi-select-banner");
       const headCard = $("single-patch-head-card");
       if (msb) msb.classList.toggle("hidden", !isMulti);
@@ -405,8 +407,10 @@ window.DPV2Inspector = (() => {
             type: "button",
             className: "purpose-btn" + (!commonPurp.mixed && commonPurp.value === pr.id ? " on" : ""),
             title: pr.hint,
+            disabled: specLocked,
             style: `--p-col:${pc};--p-soft:${pSoft};--p-border:${pBorder};`,
             onClick: () => {
+              if (Store.state.runFlowBusy || Store.state.assistBusy) return;
               for (const sp of selList) {
                 sp.meta.purpose = pr.id;
                 Store.markFieldDirty(sp.meta, "purpose");
@@ -486,14 +490,14 @@ window.DPV2Inspector = (() => {
         mbar.innerHTML = "";
         const baseSrc = Store.state.S && Store.state.S.canvas ? Api.apiUrl(Store.state.S.canvas.base_url) : "";
         mbar.append(Data.el("button", {
-          type: "button", className: "mention-chip",
+          type: "button", className: "mention-chip", disabled: specLocked,
           onClick: () => insertMention(patch, "@원본"),
         }, baseSrc ? Data.el("img", { src: baseSrc, alt: "" }) : null, Data.el("span", { text: "@원본" })));
 
         files.forEach((rf, i) => {
           const thumb = Api.apiUrl(rf.thumb_url || "");
           mbar.append(Data.el("button", {
-            type: "button", className: "mention-chip",
+            type: "button", className: "mention-chip", disabled: specLocked,
             onClick: () => insertMention(patch, `@참조${i + 1}`),
           }, thumb ? Data.el("img", { src: thumb, alt: "" }) : null, Data.el("span", { text: `@참조${i + 1}` })));
         });
@@ -501,12 +505,20 @@ window.DPV2Inspector = (() => {
 
       // 지시문 · AI 자동 · AI 요약 · 원문 오버라이드
       const chkAuto = $("chk-ai-auto");
-      if (chkAuto) chkAuto.checked = !!patch.meta.aiAuto;
+      if (chkAuto) {
+        chkAuto.checked = !!patch.meta.aiAuto;
+        chkAuto.disabled = specLocked;
+      }
       const instEl = $("inp-instruction");
       if (instEl) {
         if (document.activeElement !== instEl) instEl.value = patch.meta.user_instruction_ko || "";
         instEl.placeholder = curPurp.placeholder;
+        instEl.disabled = specLocked;
       }
+      const saveSpecBtn = $("btn-save-spec");
+      if (saveSpecBtn) saveSpecBtn.disabled = specLocked;
+      const presetsBtn = $("btn-prompt-presets");
+      if (presetsBtn) presetsBtn.disabled = specLocked;
 
       const aiDraftBtn = $("btn-ai-draft");
       if (aiDraftBtn) {
@@ -517,7 +529,7 @@ window.DPV2Inspector = (() => {
             ? "AI 프롬프트 작성 중…"
             : (patch.meta.body_en ? "AI 프롬프트 다시 작성" : "AI 프롬프트 미리 작성"),
         );
-        aiDraftBtn.disabled = !!Store.state.assistBusy;
+        aiDraftBtn.disabled = specLocked;
       }
 
       // D503 차단 상태 또는 미반영 새 크롭 배너
@@ -554,7 +566,10 @@ window.DPV2Inspector = (() => {
       const rawDet = $("raw-prompt-details");
       if (rawDet && !patch.meta.aiAuto) rawDet.open = true;
       const rawEl = $("inp-raw-prompt");
-      if (rawEl && document.activeElement !== rawEl) rawEl.value = patch.meta.body_en || "";
+      if (rawEl) {
+        if (document.activeElement !== rawEl) rawEl.value = patch.meta.body_en || "";
+        rawEl.disabled = specLocked;
+      }
       const fullEl = $("box-full-prompt");
       if (fullEl) {
         fullEl.classList.toggle("hidden", !patch.meta.prompt_en);
@@ -791,7 +806,7 @@ window.DPV2Inspector = (() => {
     if (rtCont) rtCont.classList.toggle("hidden", !canRetouch);
 
     if (canRetouch) {
-      const f = patch.meta.filters;
+      const f = Store.getCandidateFilters(patch, activeCand);
       setFilterCardUI("brush", f.brushEnabled, f.brushEnabled ? "활성" : "꺼짐");
       setFilterCardUI("edge", f.edgeEnabled, `${f.feather}px`);
       setFilterCardUI("transform", f.transformEnabled, "");
@@ -850,10 +865,12 @@ window.DPV2Inspector = (() => {
 
     const btnRun = $("btn-run-selected");
     if (btnRun) {
-      btnRun.disabled = targets.length === 0 || running;
+      btnRun.disabled = targets.length === 0 || running || !!Store.state.runFlowBusy;
       btnRun.textContent = running
         ? "서버에서 생성 중…"
-        : targets.length ? `선택 영역 ${targets.length}개 생성 시작` : "생성할 영역을 체크하세요";
+        : Store.state.runFlowBusy
+          ? "생성 준비 중…"
+          : targets.length ? `선택 영역 ${targets.length}개 생성 시작` : "생성할 영역을 체크하세요";
     }
 
     const progWrap = $("run-progress-wrap");
@@ -1149,6 +1166,7 @@ window.DPV2Inspector = (() => {
   }
 
   function insertMention(patch, tag) {
+    if (Store.state.runFlowBusy || Store.state.assistBusy) return;
     const cur = patch.meta.user_instruction_ko || "";
     const sep = cur && !cur.endsWith(" ") ? " " : "";
     patch.meta.user_instruction_ko = `${cur}${sep}${tag} `;
@@ -1209,6 +1227,10 @@ window.DPV2Inspector = (() => {
             Store.toast(saved.reason || "지시문 저장이 아직 연결되지 않았습니다.", "err");
             return { ok: false, count: written, aborted: true };
           }
+        }
+        // #C13-3: 자동 작성(force=false) 직전에 현재 출처·상태·자동 여부를 다시 확인해 직접 입력 글이나 이미 풀린 패치를 덮어쓰지 않는다
+        if (!force && (p.meta.promptSource === "manual" || p.meta.specState !== "blocked" || !p.meta.aiAuto)) {
+          continue;
         }
         // #C08-1③: 응답 대기 중 사용자가 원문 칸을 직접 고쳤는지 판별하기 위해 호출 전 스냅샷 보관
         const rawSnapshot = p.meta.body_en || "";
@@ -1290,10 +1312,9 @@ window.DPV2Inspector = (() => {
     return runAssistForPatches(Store.selectedPatches(), true);
   }
 
-  // ── 6.5 공용 가드 무료 반영 (#C10: 실행 설정 drift 시 「반영 확인」 + 중복·미완료 대기 차단) ──
+  // ── 6.5 공용 가드 무료 반영 (#C10 · #C13-4 · #C13-5: 실행 설정 drift 시 「반영 확인」 + 읽기 실패 중단 + 사라진 pendingApplyId 해제) ──
   let freeApplyBusy = false;
   let pendingApplyId = null;
-  let runFlowBusy = false;
 
   async function runGuardedFreeApply(root, { statusToast = "무료 반영 작업을 실행 중입니다…" } = {}) {
     if (freeApplyBusy) {
@@ -1306,26 +1327,51 @@ window.DPV2Inspector = (() => {
     }
     freeApplyBusy = true;
     try {
-      // 이전에 timeout 으로 끝을 보지 못한 반영이 있으면 완료 여부를 짧게 확인하고, 아직 대기/실행 중이면 중복 제출하지 않는다
+      // 이전에 timeout 으로 끝을 보지 못한 반영이 있으면 완료 여부와 서버 큐를 확인한다
       if (pendingApplyId) {
         const prev = await Api.waitJob(root, pendingApplyId, { timeoutMs: 2500, intervalMs: 1000 });
-        if (!prev || !prev.done) {
-          Store.toast("이전 무료 반영이 아직 대기 또는 실행 중입니다 — 끝난 뒤 다시 시도해 주세요.", "err");
-          return { ok: false, reason: "pending" };
+        if (prev && prev.done) {
+          pendingApplyId = null;
+          await Store.refreshAll(true);
+        } else {
+          // #C13-5: 서버 재시작 등으로 기록과 대기열에서 모두 사라졌으면 영구 차단을 풀고 새 반영을 허용한다
+          let stillQueued = null;
+          try {
+            const q = await Api.getJobQueue(root);
+            if (q && (Array.isArray(q.queue_running) || Array.isArray(q.queue_pending))) {
+              const rows = [...(q.queue_running || []), ...(q.queue_pending || [])];
+              stillQueued = rows.some((row) => Array.isArray(row) && row[1] === pendingApplyId);
+            }
+          } catch (_) {
+            stillQueued = null;
+          }
+          if (stillQueued === false) {
+            pendingApplyId = null;
+            await Store.refreshAll(true);
+            Store.toast("이전 무료 반영 결과를 확인하지 못했습니다 — 상태를 갱신해 새 반영을 진행합니다.");
+          } else {
+            Store.toast("이전 무료 반영이 아직 대기 또는 실행 중입니다 — 끝난 뒤 다시 시도해 주세요.", "err");
+            return { ok: false, reason: "pending" };
+          }
         }
-        pendingApplyId = null;
-        await Store.refreshAll(true);
       }
 
-      // 최신 파이프라인 설정 drift(prepare / import) 검사
+      // 최신 파이프라인 설정 drift(prepare / import) 검사 — #C13-4: 읽기 실패 시 확인 없이 진행하지 않고 중단
       let drifts = [];
       try {
         const pipe = await Api.getPipeline(root);
-        if (pipe) Store.state.P = pipe;
-        drifts = (pipe && Array.isArray(pipe.drift))
+        if (!pipe || typeof pipe !== "object") {
+          throw new Error("실행 설정 응답이 비어 있습니다");
+        }
+        Store.state.P = pipe;
+        drifts = Array.isArray(pipe.drift)
           ? pipe.drift.filter((d) => d && (d.section === "prepare" || d.kind === "import"))
           : [];
-      } catch (_) { /* 파이프라인 라우트 미지원 환경 무시 */ }
+      } catch (err) {
+        const msg = (err && err.message) || "실행 설정을 읽지 못했습니다";
+        Store.toast(`실행 설정을 읽지 못해 반영을 진행하지 않았습니다: ${msg}`, "err");
+        return { ok: false, reason: "plan_error", error: msg };
+      }
 
       if (drifts.length) {
         let planNotes = [];
@@ -1390,9 +1436,9 @@ window.DPV2Inspector = (() => {
     }
   }
 
-  // ── 7. 선택 영역 생성 실행 (#C06·#C09·#C10·#C11-1 선행 반영·미저장 스펙 저장 → D519 자동 assist → DPSubmit.submitPaid §3.6) ──
+  // ── 7. 선택 영역 생성 실행 (#C06·#C09·#C10·#C11-1·#C13-3 선행 반영·미저장 스펙 저장 → D519 자동 assist → DPSubmit.submitPaid §3.6) ──
   async function runSelectedGeneration(useSelectedOnly = false) {
-    if (runFlowBusy) {
+    if (Store.state.runFlowBusy) {
       Store.toast("앞선 제출을 처리하는 중입니다");
       return;
     }
@@ -1405,7 +1451,8 @@ window.DPV2Inspector = (() => {
       return;
     }
 
-    runFlowBusy = true;
+    Store.state.runFlowBusy = true;
+    Store.emit("selection");
     try {
       // 1) 미로드 패치 스펙 동기화(칸별 dirty 보존) 및 반영 전 새 영역 선행 반영(#C06·#C09-1·#C10)
       if (Api.can("v2_spec_edit")) {
@@ -1522,7 +1569,8 @@ window.DPV2Inspector = (() => {
         Store.toast(`생성 요청 실패: ${err.message}`, "err");
       }
     } finally {
-      runFlowBusy = false;
+      Store.state.runFlowBusy = false;
+      Store.emit("selection");
     }
   }
 
@@ -1694,6 +1742,7 @@ window.DPV2Inspector = (() => {
 
     const chkAuto = $("chk-ai-auto");
     if (chkAuto) chkAuto.addEventListener("change", (e) => {
+      if (Store.state.runFlowBusy || Store.state.assistBusy) return;
       const sel = Store.selectedPatches();
       for (const sp of sel) {
         sp.meta.aiAuto = e.target.checked;
@@ -1708,6 +1757,7 @@ window.DPV2Inspector = (() => {
 
     const instEl = $("inp-instruction");
     if (instEl) instEl.addEventListener("input", (e) => {
+      if (Store.state.runFlowBusy || Store.state.assistBusy) return;
       const p = Store.primaryPatch();
       if (!p) return;
       p.meta.user_instruction_ko = e.target.value;
@@ -1718,6 +1768,7 @@ window.DPV2Inspector = (() => {
 
     const rawEl = $("inp-raw-prompt");
     if (rawEl) rawEl.addEventListener("input", (e) => {
+      if (Store.state.runFlowBusy || Store.state.assistBusy) return;
       const p = Store.primaryPatch();
       if (!p) return;
       p.meta.body_en = e.target.value;
@@ -1726,22 +1777,61 @@ window.DPV2Inspector = (() => {
 
     const btnSaveSpec = $("btn-save-spec");
     if (btnSaveSpec) btnSaveSpec.addEventListener("click", async () => {
-      const p = Store.primaryPatch();
-      if (!p) return;
-      try {
-        const res = await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
-        if (res && res.unsupported) Store.toast(res.reason, "err");
-        else if (res && res.ok) Store.toast("지시문을 저장했습니다.", "ok");
-      } catch (err) {
-        Store.toast(`지시문 저장 실패: ${err.message}`, "err");
+      if (Store.state.runFlowBusy || Store.state.assistBusy) return;
+      const sel = Store.selectedPatches();
+      if (!sel.length) return;
+      // #C13-1 · #C13-2: 단일 선택은 그대로 저장(막힌 직접 입력 글 재확인 포함),
+      //                  다중 선택은 고른 영역 중 바뀐 것(또는 막힌 직접 입력 글)을 모두 저장하고 실패한 영역을 알린다
+      const needsSave = (p) => !!(
+        p.meta.dirtySpec
+        || p.meta.rawDirty
+        || (p.meta.promptSource === "manual" && p.meta.specState === "blocked" && !!(p.meta.body_en || "").trim())
+      );
+      const targetsToSave = sel.length > 1
+        ? (() => {
+            const changed = sel.filter(needsSave);
+            return changed.length ? changed : [Store.primaryPatch() || sel[0]].filter(Boolean);
+          })()
+        : [sel[0]];
+
+      let savedCount = 0;
+      const failed = [];
+      for (const p of targetsToSave) {
+        try {
+          const res = await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty, reconfirmBlockedManual: true });
+          if (res && res.unsupported) {
+            Store.toast(res.reason, "err");
+            return;
+          }
+          if (res && res.ok) savedCount += 1;
+        } catch (err) {
+          failed.push({ name: p.name, msg: (err && err.message) || "저장 실패" });
+        }
+      }
+      if (failed.length) {
+        const failText = failed.map((x) => `${x.name}(${x.msg})`).join(", ");
+        Store.toast(
+          savedCount > 0 ? `${savedCount}개 저장 · 실패 ${failed.length}개: ${failText}` : `지시문 저장 실패: ${failText}`,
+          "err"
+        );
+      } else if (savedCount > 1) {
+        Store.toast(`${savedCount}개 영역의 지시문을 저장했습니다.`, "ok");
+      } else if (savedCount === 1) {
+        Store.toast("지시문을 저장했습니다.", "ok");
       }
     });
 
     const btnAiDraft = $("btn-ai-draft");
-    if (btnAiDraft) btnAiDraft.addEventListener("click", () => runAssistForSelection());
+    if (btnAiDraft) btnAiDraft.addEventListener("click", () => {
+      if (Store.state.runFlowBusy || Store.state.assistBusy) return;
+      runAssistForSelection();
+    });
 
     const btnPresets = $("btn-prompt-presets");
-    if (btnPresets) btnPresets.addEventListener("click", () => window.DPV2Overlays && window.DPV2Overlays.openPresetsModal());
+    if (btnPresets) btnPresets.addEventListener("click", () => {
+      if (Store.state.runFlowBusy || Store.state.assistBusy) return;
+      if (window.DPV2Overlays) window.DPV2Overlays.openPresetsModal();
+    });
 
     const chkInherit = $("chk-inherit-model");
     if (chkInherit) chkInherit.addEventListener("change", (e) => {
@@ -1797,8 +1887,10 @@ window.DPV2Inspector = (() => {
       setActiveTab("retouch");
       const p = Store.primaryPatch();
       if (p) {
-        p.meta.filters.edgeEnabled = true;
-        p.meta.filters.feather = Math.max(18, p.meta.filters.feather);
+        const f = Store.getCandidateFilters(p);
+        f.edgeEnabled = true;
+        f.feather = Math.min(20, Math.max(18, f.feather));
+        f._touched = Object.assign({}, f._touched, { feather: true });
         Store.emit("filters");
       }
     });
@@ -1828,9 +1920,10 @@ window.DPV2Inspector = (() => {
       btn.addEventListener("click", () => {
         const p = Store.primaryPatch();
         if (!p) return;
+        const f = Store.getCandidateFilters(p);
         const map = { brush: "brushEnabled", edge: "edgeEnabled", transform: "transformEnabled", color: "colorEnabled" };
         const k = map[btn.dataset.toggleFilter];
-        p.meta.filters[k] = !p.meta.filters[k];
+        f[k] = !f[k];
         Store.emit("filters");
         renderInspector();
       });
@@ -1866,18 +1959,19 @@ window.DPV2Inspector = (() => {
       el.addEventListener("input", (e) => {
         const p = Store.primaryPatch();
         if (!p) return;
-        p.meta.filters[key] = Number(e.target.value);
-        if (!p.meta.filters._touched) p.meta.filters._touched = {};
+        const f = Store.getCandidateFilters(p);
+        f[key] = Number(e.target.value);
+        if (!f._touched) f._touched = {};
         if (["feather", "dx", "dy", "scale", "rot"].includes(key)) {
-          p.meta.filters._touched[key] = true;
+          f._touched[key] = true;
         }
         const valEl = $(`${id}-val`);
         if (valEl) {
-          const n = p.meta.filters[key];
+          const n = f[key];
           valEl.textContent = (key === "bright" || key === "sat") && n > 0 ? `+${n}${suffix}` : `${n}${suffix}`;
         }
-        if (key === "feather") { const m = $("fm-edge"); if (m) m.textContent = `${p.meta.filters[key]}px`; }
-        if (key === "opacity") { const m = $("fm-color"); if (m) m.textContent = `${p.meta.filters[key]}%`; }
+        if (key === "feather") { const m = $("fm-edge"); if (m) m.textContent = `${f[key]}px`; }
+        if (key === "opacity") { const m = $("fm-color"); if (m) m.textContent = `${f[key]}%`; }
         Store.emit("filters");
       });
     };
@@ -1898,8 +1992,9 @@ window.DPV2Inspector = (() => {
     if (btnResetTf) btnResetTf.addEventListener("click", () => {
       const p = Store.primaryPatch();
       if (!p) return;
-      p.meta.filters.dx = 0; p.meta.filters.dy = 0; p.meta.filters.scale = 100; p.meta.filters.rot = 0;
-      p.meta.filters._touched = Object.assign({}, p.meta.filters._touched, { dx: true, dy: true, scale: true, rot: true });
+      const f = Store.getCandidateFilters(p);
+      f.dx = 0; f.dy = 0; f.scale = 100; f.rot = 0;
+      f._touched = Object.assign({}, f._touched, { dx: true, dy: true, scale: true, rot: true });
       Store.emit("filters");
       renderInspector();
     });
@@ -1908,7 +2003,7 @@ window.DPV2Inspector = (() => {
       const p = Store.primaryPatch();
       const cand = Store.currentCandidate(p);
       if (!p || !cand) return;
-      const f = p.meta.filters;
+      const f = Store.getCandidateFilters(p, cand);
       try {
         let prev = null;
         if (Store.state.mask && Store.state.mask.key === cand.key && Store.state.mask.adjust) {
@@ -1919,17 +2014,19 @@ window.DPV2Inspector = (() => {
         }
         prev = prev || {};
         const seen = prev.at || "";
-        // #C07-3 · #C11-3: 축별 개별 dirty 추적 — 사용자가 건드리지 않은 축(dx/dy/rot/비등방 sx·sy/blur)과 invert·flip 은 서버 값을 그대로 보존한다
+        // #C07-3 · #C11-3 · #C13-6: 오직 _touched(및 눈 끄기 토글)만으로 바꾼 축을 판정해,
+        //   서버 소수값(예: blur 2.5 · sx 1.234)이나 만지지 않은 축·invert·flip 을 그대로 보존한다.
+        //   블러 상한은 서버 cand_adjust_values(0 <= blur <= 20) 규격과 일치시킨다.
         const touched = f._touched || {};
-        const blurChanged = !!(touched.feather || f._edgeTouched || f.feather || !f.edgeEnabled);
-        const dxChanged = !!(touched.dx || f.dx || !f.transformEnabled);
-        const dyChanged = !!(touched.dy || f.dy || !f.transformEnabled);
-        const rotChanged = !!(touched.rot || f.rot || !f.transformEnabled);
-        const scaleChanged = !!(touched.scale || (f.scale && f.scale !== 100) || !f.transformEnabled);
-        const scaleVal = f.transformEnabled ? Math.max(0.5, Math.min(2.0, (f.scale || 100) / 100)) : 1.0;
+        const blurChanged = !!(touched.feather || f._edgeTouched || !f.edgeEnabled);
+        const dxChanged = !!(touched.dx || !f.transformEnabled);
+        const dyChanged = !!(touched.dy || !f.transformEnabled);
+        const rotChanged = !!(touched.rot || !f.transformEnabled);
+        const scaleChanged = !!(touched.scale || !f.transformEnabled);
+        const scaleVal = f.transformEnabled ? Math.max(0.1, Math.min(4.0, (Number(f.scale) || 100) / 100)) : 1.0;
 
         const blurVal = blurChanged
-          ? (f.edgeEnabled ? Math.max(0, Math.min(24, Math.round(f.feather || 0))) : 0)
+          ? (f.edgeEnabled ? Math.max(0, Math.min(20, Math.round((Number(f.feather) || 0) * 10) / 10)) : 0)
           : (typeof prev.blur === "number" ? prev.blur : 0);
         const dxVal = dxChanged ? (f.transformEnabled ? Number(f.dx || 0) : 0) : (typeof prev.dx === "number" ? prev.dx : 0);
         const dyVal = dyChanged ? (f.transformEnabled ? Number(f.dy || 0) : 0) : (typeof prev.dy === "number" ? prev.dy : 0);

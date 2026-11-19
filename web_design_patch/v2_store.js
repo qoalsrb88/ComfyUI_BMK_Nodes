@@ -59,6 +59,7 @@ window.DPV2Store = (() => {
     history: [],
     histIndex: -1,
     assistBusy: false,
+    runFlowBusy: false,
     syncState: "idle", // idle | syncing | err
     syncMsg: "준비 중",
     pollTimer: null,
@@ -263,10 +264,24 @@ window.DPV2Store = (() => {
         hidden: false,
         rotDeg: 0,
         filters: defaultFilters(),
+        filtersByCand: Object.create(null),
       };
       state.patchMeta.set(cropId, m);
     }
     return m;
+  }
+
+  // #C13-6②: 후보정 슬라이더 초안과 _touched 를 영역 단위가 아니라 후보 key 단위로 분리한다
+  function getCandidateFilters(patch, cand = null) {
+    if (!patch || !patch.meta) return defaultFilters();
+    const c = cand || currentCandidate(patch);
+    const key = c && c.key ? c.key : "";
+    if (!key) return patch.meta.filters;
+    if (!patch.meta.filtersByCand) patch.meta.filtersByCand = Object.create(null);
+    if (!patch.meta.filtersByCand[key]) {
+      patch.meta.filtersByCand[key] = defaultFilters();
+    }
+    return patch.meta.filtersByCand[key];
   }
 
   function markFieldDirty(meta, field) {
@@ -434,7 +449,11 @@ window.DPV2Store = (() => {
         throw new Error("서버에서 기존 스펙을 읽지 못했습니다 — 잠시 후 다시 시도해 주세요.");
       }
     }
-    const includeRaw = !!(opts.includeRaw || m.rawDirty);
+    const includeRaw = !!(
+      opts.includeRaw
+      || m.rawDirty
+      || (opts.reconfirmBlockedManual && m.promptSource === "manual" && m.specState === "blocked" && !!(m.body_en || "").trim())
+    );
     const sent = {
       purpose: m.purpose,
       user_instruction_ko: m.user_instruction_ko || "",
@@ -613,22 +632,38 @@ window.DPV2Store = (() => {
   function syncMaskWithActiveCandidate() {
     if (!state.mask) return;
     const cand = currentCandidate();
-    if (!cand || cand.key !== state.mask.key) {
-      const oldMask = state.mask;
+    if (cand && cand.key === state.mask.key) return;
+    // #C13-7: 미저장 획이 없으면 즉시 닫고, 있으면 저장이 성공하거나 「버리기」를 고를 때까지 편집 판을 유지한다
+    if (!state.mask.dirty) {
       closeMaskSession();
-      // #C11-4: 저장하지 않은 붓 획이 있으면 말없이 버리지 않고 저장 여부를 묻는다
-      if (oldMask.dirty && !maskSwitchAsking) {
-        maskSwitchAsking = true;
-        Data.askDialogConfirm(
-          "이전 후보에 저장하지 않은 마스크 붓 편집이 있습니다. 지금 저장할까요?",
-          { ok: "저장하기", cancel: "버리기" }
-        ).then((ok) => {
-          if (ok) return saveMaskSession(oldMask);
-        }).finally(() => {
-          maskSwitchAsking = false;
-        });
-      }
+      return;
     }
+    if (maskSwitchAsking) return;
+    const pendingMask = state.mask;
+    maskSwitchAsking = true;
+    Data.askDialogConfirm(
+      "이전 후보에 저장하지 않은 마스크 붓 편집이 있습니다. 지금 저장할까요?",
+      { ok: "저장하기", cancel: "버리기" }
+    ).then(async (ok) => {
+      if (!ok) {
+        if (state.mask === pendingMask) closeMaskSession();
+        return;
+      }
+      const res = await saveMaskSession(pendingMask);
+      // 저장이 실제로 성공(dirty 해제)했을 때만 닫는다 — 409 거절·실패 시 편집 판과 획을 보존
+      if (res && res.ok && !res.conflict && !pendingMask.dirty) {
+        const latest = currentCandidate();
+        if (state.mask === pendingMask && (!latest || latest.key !== pendingMask.key)) {
+          closeMaskSession();
+        }
+      }
+    }).finally(() => {
+      maskSwitchAsking = false;
+      if (state.mask && !state.mask.dirty) {
+        const latest = currentCandidate();
+        if (!latest || latest.key !== state.mask.key) closeMaskSession();
+      }
+    });
   }
 
   function selectTargetForCrop(cropId, targetKey) {
@@ -1104,13 +1139,15 @@ window.DPV2Store = (() => {
         note: "",
       }, extraFields || {});
       const res = await Api.mutateCrop(state.root, state.L.rev, body);
-      // #C11-5②: 자기 쓰기 응답의 rev 만 기록(뒤따른 loadLayout 이 다른 창의 rev 를 받아도 자기 쓰기로 오인하지 않게)
-      if (res && res.rev !== undefined) lastOwnLayoutRev = res.rev;
+      // #C11-5② · #C13-8①: 자기 쓰기 응답 rev 와 다시 읽은 rev 가 다르면(그 사이 다른 창이 고침) 되돌리기를 등록하지 않는다
+      const writeRev = res && res.rev !== undefined ? res.rev : null;
+      if (writeRev !== null) lastOwnLayoutRev = writeRev;
       await loadLayout();
+      const layoutChangedExternally = writeRev !== null && state.L && state.L.rev !== undefined && state.L.rev !== writeRev;
       if (res.crop && res.crop.id) {
         const ref = { id: res.crop.id };
         selectPatch(ref.id);
-        if (!skipHistory) {
+        if (!skipHistory && !layoutChangedExternally) {
           pushHistory(`영역 추가 (${name})`,
             () => deleteCrop(ref.id, true),
             async () => {
@@ -1140,9 +1177,11 @@ window.DPV2Store = (() => {
       }
       const payload = Object.assign({ op: "update", id }, changes);
       const res = await Api.mutateCrop(state.root, state.L.rev, payload);
-      if (res && res.rev !== undefined) lastOwnLayoutRev = res.rev;
+      const writeRev = res && res.rev !== undefined ? res.rev : null;
+      if (writeRev !== null) lastOwnLayoutRev = writeRev;
       await loadLayout();
-      if (!skipHistory && historyLabel) {
+      const layoutChangedExternally = writeRev !== null && state.L && state.L.rev !== undefined && state.L.rev !== writeRev;
+      if (!skipHistory && historyLabel && !layoutChangedExternally) {
         pushHistory(historyLabel,
           () => updateCrop(id, before, null, true),
           () => updateCrop(id, changes, null, true));
@@ -1172,14 +1211,16 @@ window.DPV2Store = (() => {
       const prevRect = Array.isArray(prev.rect) ? prev.rect.slice() : [0, 0, 256, 256];
       const prevName = prev.name || id;
       const res = await Api.mutateCrop(state.root, state.L.rev, { op: "delete", id });
-      if (res && res.rev !== undefined) lastOwnLayoutRev = res.rev;
+      const writeRev = res && res.rev !== undefined ? res.rev : null;
+      if (writeRev !== null) lastOwnLayoutRev = writeRev;
       await loadLayout();
+      const layoutChangedExternally = writeRev !== null && state.L && state.L.rev !== undefined && state.L.rev !== writeRev;
       state.selectedIds.delete(id);
       if (state.primaryId === id) {
         state.primaryId = state.selectedIds.size ? [...state.selectedIds][0] : null;
       }
       syncMaskWithActiveCandidate();
-      if (!skipHistory) {
+      if (!skipHistory && !layoutChangedExternally) {
         const ref = { id };
         pushHistory(`영역 삭제 (${prevName})`,
           async () => {
@@ -1195,7 +1236,34 @@ window.DPV2Store = (() => {
 
   // ── 마스크 편집 세션 열기/저장 ──
   async function openMaskSession(candKey) {
-    if (!state.root || !candKey) { state.mask = null; emit("mask"); return null; }
+    if (!state.root || !candKey) {
+      if (!state.mask || !state.mask.dirty) closeMaskSession();
+      return null;
+    }
+    // #C13-7: 다른 후보로 마스크를 열 때 앞 미저장 획이 있으면 저장 성공 또는 「버리기」 전까지 덮어쓰지 않는다
+    if (state.mask && state.mask.dirty && state.mask.key !== candKey) {
+      if (maskSwitchAsking) {
+        toast("이전 마스크 저장 확인이 끝난 뒤 다시 시도해 주세요.");
+        return null;
+      }
+      const pendingMask = state.mask;
+      maskSwitchAsking = true;
+      try {
+        const ok = await Data.askDialogConfirm(
+          "이전 후보에 저장하지 않은 마스크 붓 편집이 있습니다. 지금 저장할까요?",
+          { ok: "저장하기", cancel: "버리기" }
+        );
+        if (ok) {
+          const saved = await saveMaskSession(pendingMask);
+          if (!saved || !saved.ok || saved.conflict || pendingMask.dirty) {
+            return null;
+          }
+        }
+        if (state.mask === pendingMask) closeMaskSession();
+      } finally {
+        maskSwitchAsking = false;
+      }
+    }
     try {
       const info = await Api.getMask(state.root, candKey);
       const baseImg = await Api.fetchImageRgba(info.base.url);
@@ -1235,10 +1303,12 @@ window.DPV2Store = (() => {
         brushHard: 0.65,
         brushFlow: 1,
       };
-      // #C11-3: 서버 adjust 값이 있으면 미수정 슬라이더를 서버 보정값으로 동기화한다
+      // #C11-3 · #C13-6②: 서버 adjust 값이 있으면 해당 후보 key 의 미수정 슬라이더만 서버 보정값으로 동기화한다
       if (info && info.adjust && info.crop_id) {
         const pm = ensurePatchMeta(info.crop_id);
-        const f = pm.filters;
+        if (!pm.filtersByCand) pm.filtersByCand = Object.create(null);
+        if (!pm.filtersByCand[candKey]) pm.filtersByCand[candKey] = defaultFilters();
+        const f = pm.filtersByCand[candKey];
         const t = f._touched || {};
         if (!t.feather && typeof info.adjust.blur === "number") f.feather = info.adjust.blur;
         if (!t.dx && typeof info.adjust.dx === "number") f.dx = info.adjust.dx;
@@ -1260,12 +1330,12 @@ window.DPV2Store = (() => {
   async function saveMaskSession(targetMask = null) {
     const ms = targetMask || state.mask;
     if (!ms || !state.root) return null;
-    // #C07-5: 현재 열린 세션 저장 시 활성 후보와 다르면 다른 후보에 잘못 저장하지 않는다
+    // #C07-5 · #C13-7: 현재 열린 세션 저장 시 활성 후보와 다르면 다른 후보에 잘못 저장하지 않되 미저장 획은 닫지 않고 보존한다
     if (!targetMask) {
       const activeCand = currentCandidate();
       if (activeCand && activeCand.key !== ms.key) {
-        toast("현재 선택한 후보와 마스크 편집 대상이 다릅니다 — 브러시 도구를 다시 열어 주세요.", "err");
-        closeMaskSession();
+        toast("현재 선택한 후보와 마스크 편집 대상이 다릅니다 — 원래 후보를 다시 선택해 저장해 주세요.", "err");
+        if (!ms.dirty) closeMaskSession();
         return null;
       }
     }
@@ -1302,7 +1372,7 @@ window.DPV2Store = (() => {
   return {
     state, subscribe, emit, toast,
     loadPrefs, savePrefs, applyPrefsToDom, activeTheme, activeAccentHex, initForgeThemeListener,
-    ensurePatchMeta, markFieldDirty, loadSpec, savePatchSpec, applySpecResponse, invalidateAllSpecs, projectPrepareRaw, projectPrepare, buildPreparePayload,
+    ensurePatchMeta, getCandidateFilters, markFieldDirty, loadSpec, savePatchSpec, applySpecResponse, invalidateAllSpecs, projectPrepareRaw, projectPrepare, buildPreparePayload,
     isPatchCheckedForRun, setPatchCheckedForRun, setAllCheckedForRun,
     getPatches, getPatch, primaryPatch, selectedPatches, clearSelection,
     currentCandidate, selectCandidate, selectTargetForCrop, moveCropZ,
