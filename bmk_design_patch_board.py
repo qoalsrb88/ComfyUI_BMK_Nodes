@@ -876,7 +876,7 @@ def _forge_candidate_flags(root, info):
             result = {"prompt_rewritten" if model is not None and model.prompt_used else "prompt_changed": True}
             used = _forge_backend().prompt_used(root, info.get("call_id"))
             if slot < len(used) and isinstance(used[slot], str) and used[slot]:
-                result["prompt_used"] = used[slot][:4000]
+                result["prompt_used"] = True
             return result
     return {}
 
@@ -2825,19 +2825,27 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                 edit = _edit_rec(m, c["key"])
                 adjust = store.cand_adjust(m, c["key"])
                 candidate_flags = _forge_candidate_flags(root, info)
-                if server_mode() and info.get("backend") == "forge" and ck and rep is not None:
+                if server_mode() and info.get("backend") == "forge":
                     try:
                         from . import bmk_design_patch_models as models
                     except ImportError:
                         import bmk_design_patch_models as models
-                    runner = _runner()
-                    if runner is not None:
-                        try:
-                            req = runner._read_json(runner._lpath(root, ck, rep, "req"))
-                        except (OSError, ValueError, TypeError):
-                            req = None
-                        if isinstance(req, dict) and models.ratio_off(req.get("size"), c.get("src_size")):
-                            candidate_flags["ratio_changed"] = True
+                    model = models.get(info.get("model"))
+                    requested = None
+                    if model is not None and model.ratios:
+                        x0, y0, x1, y1 = crop["rect"]
+                        requested = (x1 - x0, y1 - y0)
+                    elif ck and rep is not None:
+                        runner = _runner()
+                        if runner is not None:
+                            try:
+                                req = runner._read_json(runner._lpath(root, ck, rep, "req"))
+                            except (OSError, ValueError, TypeError):
+                                req = None
+                            if isinstance(req, dict):
+                                requested = req.get("size")
+                    if models.ratio_off(requested, c.get("src_size")):
+                        candidate_flags["ratio_changed"] = True
                 cands.append({
                     "key": c["key"], "n": n, "origin": c.get("origin"), "backend": info.get("backend"),
                     **candidate_flags,
@@ -2848,6 +2856,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                     "slice_index": pick_keys.index(c["key"]) + 1 if c["key"] in pick_keys else None,
                     "rejected": bool(rejects.get(c["key"])),
                     "cell_key": ck, "call_id": call_id, "rep": rep, "variant": info.get("variant"),
+                    **({"slot": info["slot"]} if server_mode() and type(info.get("slot")) is int and info["slot"] >= 0 else {}),
                     "model": info.get("model"), "quality": info.get("quality"),
                     **({"opts": info["opts"]} if info.get("opts") is not None else {}),
                     # 원장 calls 의 완료 시각·승인 종류(후보 캡션), 지금 jobs 에 없는 셀(설정·입력이 바뀌기 전 셀 — 옛 셀)
@@ -7785,6 +7794,19 @@ async def projects_thumb_handler(request: web.Request) -> web.StreamResponse:
 @_guard
 async def prompt_handler(request: web.Request) -> web.StreamResponse:
     root = _root_param(request.query.get("root"))
+    if "call" in request.query or "slot" in request.query:
+        call, slot = request.query.get("call"), request.query.get("slot")
+        if not isinstance(call, str) or not re.fullmatch(r"[0-9a-f]{24}_r[0-9]+", call):
+            raise _Reject(400, "call 형식이 잘못되었습니다")
+        if not isinstance(slot, str) or not re.fullmatch(r"[0-9]+", slot):
+            raise _Reject(400, "slot 형식이 잘못되었습니다")
+        try:
+            slot = int(slot)
+        except ValueError:
+            raise _Reject(400, "slot 형식이 잘못되었습니다") from None
+        used = await asyncio.to_thread(_forge_backend().prompt_used, root, call)
+        text = used[slot] if slot < len(used) else None
+        return _json({"prompt_used": text[:4000] if isinstance(text, str) and text else None})
     cid = request.query.get("crop")
     if not isinstance(cid, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", cid):
         raise _Reject(400, "crop 형식이 잘못되었습니다")

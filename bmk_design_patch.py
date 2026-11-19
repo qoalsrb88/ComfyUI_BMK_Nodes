@@ -2077,7 +2077,7 @@ class BMKDesignPatchPrepare:
                     job["complexity"] = complexity
                 else:
                     job.pop("complexity", None)
-                if opts is not None:
+                if opts:
                     job["opts"] = dict(opts)
                 else:
                     job.pop("opts", None)

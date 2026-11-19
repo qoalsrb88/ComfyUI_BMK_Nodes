@@ -61525,6 +61525,48 @@ def forge_models2_settings_unit():
                 if server:
                     check(optional["image_size"][1]["default"] == "2K"
                           and optional["thinking_level"][1]["default"] == "medium", "FM2S1 노드 옵션 기본값")
+                expected = ("model", "quality", "size_rule", "variants", "n", "ref_style", "calls_per_cell", "complexity")
+                if server:
+                    expected += option_keys
+                check(pl.section_keys("prepare") == expected and tuple(pl.defaults()["prepare"]) == expected
+                      and tuple(pl.settings_widgets()["prepare"]) == expected,
+                      f"FIX-P1 호출 시점의 모드별 절 키·기본값·설정 API {server}")
+                inputs = pre.INPUT_TYPES()
+                check(set(pl.widget_table()["BMKDesignPatchPrepare"]) == set(inputs["required"]) | set(inputs["optional"]),
+                      f"FIX-P1 모드별 그래프 위젯 대조 {server}")
+        lh, lr = project("local-settings")
+        local_values = {k: v for k, v in args("gpt-image-2.5-sunburst").items() if k not in option_keys}
+        server_doc = {"schema": pl.SCHEMA, "rev": 1, "confirm": [], **pl.defaults(lr),
+                      "prepare": local_values | {"image_size": "4K", "thinking_level": "high"}}
+        local_path = Path(lr, pl.PIPELINE_NAME)
+        server_raw = json.dumps(server_doc, ensure_ascii=False).encode("utf-8")
+        local_path.write_bytes(server_raw)
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}), patch.object(rn, "mock_enabled", return_value=True):
+            local_doc = pl.load(lr)
+            check(local_doc["prepare"] == local_values and local_doc["confirm"] == []
+                  and local_path.read_bytes() == server_raw, "FIX-P1 서버 파일의 두 키를 로컬에서 조용히 무시·읽기 원본 불변")
+            expect_raises(lambda: pl.validate_section("prepare", server_doc["prepare"]),
+                          "FIX-P1 로컬 저장 검증은 서버 전용 키 거부", contains="모르는 키")
+            check(pl.prepare_record({"prepare_settings": server_doc["prepare"]}) == ("prepare_settings", local_values),
+                  "FIX-P1 로컬 Prepare 기록에 서버 전용 키 없음")
+            try:
+                saved_local = pl.update(lr, 1, "prepare", local_values | {"n": 3})
+                payload = json.loads(local_path.read_text(encoding="utf-8"))
+                check(payload["prepare"] == local_values | {"n": 3} and saved_local["settings"]["prepare"] == payload["prepare"],
+                      "FIX-P1 로컬 설정 파일 쓰기에 서버 전용 키 없음")
+                graph = pl.build_prompt("apply", saved_local["settings"], lr)
+                check(tuple(graph[pl.NODE_KEYS["prepare"]]["inputs"]) == ("project",) + tuple(local_values),
+                      "FIX-P1 로컬 템플릿은 이전 입력 그대로")
+            except ValueError as error:
+                check(False, f"FIX-P1 로컬 저장·템플릿이 옛 절을 허용해야 함: {error}")
+            pre.run(lh, **local_values)
+            lm = st.load_manifest(lr)
+            settled(lr, lm)
+            settings = dict(pl.defaults(lr), prepare=local_values)
+            preview = pl.switch_preview(lr, lm, settings, prepare=local_values)
+            check(preview.get("prepare") == local_values and preview.get("need") == 0, "FIX-P1 로컬 전환 미리 보기 꼴 불변")
+            check(not set(option_keys) & pl.prepare_record(dict(lm, prepare_settings={}))[1].keys(),
+                  "FIX-P1 로컬 jobs 유도 기록에 서버 전용 키 없음")
         prompt = pl.build_prompt("apply", loaded, root)
         check(all(prompt[pl.NODE_KEYS["prepare"]]["inputs"][k] == values[k] for k in option_keys),
               "FM2S1 실행 설정에서 Prepare 입력까지 두 값 전달")
@@ -61560,9 +61602,125 @@ def forge_models2_settings_unit():
                 pre.run(gh, **settings["prepare"])
                 check(keys(st.load_manifest(gr)) == keys(gm), f"FM2S2 쓰지 않는 옵션의 키 불변 {name}")
 
-        # 이 갈래는 Prepare 를 검증한다. 제출 전 차단은 B 갈래 계약이므로 대역으로 격리한다.
+        for empty in (None, {}):
+            eh, er = project("empty-options")
+            values = args("gpt-image-2.5-sunburst")
+            with patch.object(models, "job_opts", return_value=empty):
+                pre.run(eh, **values)
+                em = st.load_manifest(er)
+                check(all("opts" not in j for j in em["jobs"]), f"FIX-P5 Prepare 는 빈 옵션 키 생략 {empty!r}")
+                settings = pl.derive(er, em)["settings"]
+                with patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+                    preview = pl.switch_preview(er, em, settings, prepare=values)
+                proposed = plans.call_args.args[0]["jobs"] if plans.called else []
+                check(preview.get("exact") is True and len(proposed) == len(em["jobs"])
+                      and all("opts" not in j for j in proposed), f"FIX-P5 전환 미리 보기도 빈 옵션 키 생략 {empty!r}")
+
+        with patch.object(rn, "mock_enabled", return_value=False):
+            for name in ("nano-banana-2.1", "nano-banana-2", "nano-banana-pro",
+                         "gpt-image-2.5-sunburst", "seedream-5.5", "ideogram-4.5"):
+                rh, rr = project("rule-" + name)
+                values = args(name)
+                pre.run(rh, **values)
+                rm = st.load_manifest(rr)
+                settled(rr, rm)
+                settings = pl.derive(rr, rm)["settings"]
+                changed = values | {"size_rule": "int_k_2560"}
+                rows = pl.drift(dict(settings, prepare=changed), rm)
+                preview = pl.switch_preview(rr, rm, settings, prepare=changed)
+                if models.get(name).ratios:
+                    check(rows == [], f"FIX-P2 비율 목록 모델의 크기 규칙은 갈라짐 아님 {name}")
+                    check(preview.get("exact") is True and preview.get("need") == 0 and preview.get("cells") == 0,
+                          f"FIX-P2 크기 규칙만 변경한 비율 모델의 미리 보기 0건 {name}")
+                    pre.run(rh, **changed)
+                    check(keys(st.load_manifest(rr)) == keys(rm), f"FIX-P2 비율 모델의 크기 규칙 변경은 키 불변 {name}")
+                    target = args("nano-banana-2" if name != "nano-banana-2" else "nano-banana-pro")
+                    base_preview = pl.switch_preview(rr, rm, settings, prepare=target)
+                    rule_preview = pl.switch_preview(rr, rm, settings, prepare=target | {"size_rule": "int_k_2560"})
+                    check(base_preview.get("exact") is True and rule_preview.get("exact") is True
+                          and base_preview.get("need") == rule_preview.get("need") == 4,
+                          "FIX-P2 비율 모델 사이 전환도 크기 규칙 차이를 무시")
+                else:
+                    check([r["field"] for r in rows] == ["size_rule"] and preview.get("exact") is False,
+                          f"FIX-P2 기존 모델의 크기 규칙 갈라짐·미리 보기 유지 {name}")
+
+        fh, fr = _fx_project(dp, out, "ratio-flags", [("001_panel", [0, 0, 813, 1000])],
+                             np.full((1000, 813, 3), (60, 100, 140), dtype=np.uint8))
+        pre.run(fh, **args("nano-banana-2.1"))
+        fm = st.load_manifest(fr)
+        fj = fm["jobs"][0]
+        req = dict(fj, backend="forge", rep=0, call_id=rn.call_id_for(fj["cell_key"], 0))
+        received = ([1856, 2304], [2048, 2048], [1636, 2000], [1600, 2000])
+        done = {"slots": [{"slot": i, "file": fj["inputs"][0]["file"], "size": size} for i, size in enumerate(received)]}
+        rn._add_candidates(fm, req, done, [])
+        req_path = Path(rn._lpath(fr, fj["cell_key"], 0, "req"))
+        rn._write_json(str(req_path), req)
+        for name, expected in (("nano-banana-2.1", [False, True, False, True]),
+                               ("seedream-5.5", [False, True, True, False])):
+            for cand in fm["candidates"]:
+                cand["origin_info"]["model"] = name
+            st.save_manifest(fr, fm)
+            candidates = [c for t in bd.build_state(fr)["targets"] for c in t["candidates"]]
+            check([c.get("ratio_changed", False) for c in candidates] == expected,
+                  f"FIX-P3 후보 모델별 크롭 대 출력·원장 대 출력 판정 {name}")
+        for cand in fm["candidates"]:
+            cand["origin_info"]["model"] = "nano-banana-2.1"
+        st.save_manifest(fr, fm)
+        req_path.unlink()
+        candidates = [c for t in bd.build_state(fr)["targets"] for c in t["candidates"]]
+        check([c.get("ratio_changed", False) for c in candidates] == [False, True, False, True],
+              "FIX-P3 비율 모델의 크롭 비교는 원장 요청 크기와 무관")
+
+        integration_cases = (
+            ("gpt-to-nano", args("gpt-image-2.5-sunburst"), args("nano-banana-2.1"), 2),
+            ("nano-to-gpt", args("nano-banana-2.1"), args("gpt-image-2.5-sunburst"), 4),
+            ("resolution", args("nano-banana-2.1"), args("nano-banana-2.1", image_size="4K"), 2),
+            ("thinking", args("nano-banana-2.1"), args("nano-banana-2.1", thinking_level="high"), 2),
+        )
+        with patch.object(rn, "mock_enabled", return_value=False):
+            for case, before_values, target, expected_need in integration_cases:
+                ih, ir = project("real-backend-" + case,
+                                 [("001_match", [0, 0, 80, 100]), ("002_mismatch", [90, 0, 172, 100])])
+                pre.run(ih, **before_values)
+                im = st.load_manifest(ir)
+                settled(ir, {"jobs": [j for j in im["jobs"] if models.opts_problem(j["model"], j.get("opts")) is None]})
+                legacy = copy.deepcopy(im)
+                for key in option_keys:
+                    legacy["prepare_settings"].pop(key, None)
+                current = pl.current(ir, legacy)
+                derived = pl.derive(ir, legacy)
+                check(not {"prepare.variants", "prepare.ref_style"} & set(current["confirm"])
+                      and all(derived["from"]["prepare." + k] == "manifest" for k in ("variants", "ref_style")),
+                      "FIX-P6 옛 Prepare 기록으로 처음 열어도 변형·참조 표기 확인 필요 없음")
+                settings = pl.derive(ir, im)["settings"]
+                # spy 는 호출만 기록한다. 실제 제출 전 판정을 교체하거나 우회하지 않는다.
+                with patch.object(fb, "blocked_reason", wraps=fb.blocked_reason) as guard, \
+                        patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+                    preview = pl.switch_preview(ir, im, settings, prepare=target)
+                proposed = copy.deepcopy(plans.call_args.args[0]["jobs"]) if plans.called else []
+                ratio_target = bool(models.get(target["model"]).ratios)
+                check(len(proposed) == 2 and all((bool(j.get("opts")) if ratio_target else "opts" not in j) for j in proposed),
+                      f"FIX-P6 미리 보기 사본은 대상 모델 옵션을 전달 {case}")
+                reasons = [fb.blocked_reason(j) for j in proposed]
+                check(guard.called and reasons == [None, models.ratio_problem(target["model"]) if ratio_target else None],
+                      f"FIX-P6 실제 백엔드 판정은 비율 불일치만 차단 {case}")
+                pre.run(ih, **target)
+                actual = st.load_manifest(ir)
+                ap = rn.split_approval(rn.plan_calls(actual, ir), "", backend=rn.BACKEND_FORGE)
+                check(proposed == actual["jobs"] and preview.get("exact") is True
+                      and preview.get("need") == len(ap["needs_approval"]) == expected_need
+                      and preview.get("cells") == expected_need // 2
+                      and sum(bool(e.get("blocked")) for e in ap["blocked"]) == (2 if ratio_target else 0),
+                      f"FIX-P6 실제 판정 포함 미리 보기 승인 수 = 반영 후 승인 수 {case}")
+                by_key = {j["cell_key"]: j for j in actual["jobs"]}
+                check(all(e["job"].get("opts") == by_key[e["cell_key"]].get("opts")
+                          and ("opts" in e["job"]) == bool(by_key[e["cell_key"]].get("opts"))
+                          for e in ap["needs_approval"] + ap["blocked"]),
+                      f"FIX-P6 승인 계획의 작업도 opts 규칙 유지 {case}")
+
+        # 나머지 Prepare 단위 사례는 제출 판정과 분리한다. 실제 백엔드 통합 판정은 위에서 검사한다.
         with patch.object(rn, "blocked_reason", return_value=None):
-            ratio_crops = [("001_match", [0, 0, 80, 100]), ("002_mismatch", [90, 0, 171, 100])]
+            ratio_crops = [("001_match", [0, 0, 80, 100]), ("002_mismatch", [90, 0, 172, 100])]
             for name in ("nano-banana-2.1", "nano-banana-2", "nano-banana-pro"):
                 nh, nr = project(name, ratio_crops)
                 values = args(name)
@@ -61665,8 +61823,10 @@ def forge_models2_settings_unit():
                     other = "prompt_changed" if flag == "prompt_rewritten" else "prompt_rewritten"
                     check([c.get(flag, False) for c in candidates] == [True, True, False]
                           and all(other not in c and "opts" not in c for c in candidates), "FM2S5 후보 자신의 모델로 표지 구분")
-                    check(candidates[0]["prompt_used"] == text[:4000]
-                          and all("prompt_used" not in c for c in candidates[1:]), "FM2S5 슬롯별 글·4000자 제한·없는 글 생략")
+                    check(candidates[0].get("prompt_used") is True and all("prompt_used" not in c for c in candidates[1:])
+                          and text[:100] not in json.dumps(candidates, ensure_ascii=False), "FIX-P4 상태에는 글 대신 존재 표지만")
+                    check([c.get("slot") for c in candidates] == [0, 1, 2]
+                          and all(c["call_id"] == req["call_id"] for c in candidates), "FIX-P4 후보의 call_id·정수 slot 전달")
                     used.return_value = []
                     candidates = [c for t in bd.build_state(cr)["targets"] for c in t["candidates"]]
                     check(candidates[0][flag] and all("prompt_used" not in c for c in candidates), "FM2S5 옛 기록은 표지만")
@@ -61679,6 +61839,49 @@ def forge_models2_settings_unit():
             used.reset_mock()
             check(bd._forge_candidate_flags(cr, {"backend": "mock", "slot": 0}) == {} and not used.called,
                   "FM2S5 Forge 이외 후보는 기록 조회 없음")
+
+            async def prompt_query(query, scope):
+                token = bd.set_scope(scope)
+                try:
+                    response = await bd.prompt_handler(types.SimpleNamespace(query=query, path=bd.API + "/prompt"))
+                    return response.status, json.loads(response.text)
+                finally:
+                    bd.reset_scope(token)
+
+            scope = {"input": str(out), "output": str(out / "output"), "home": str(out), "org": "example", "account": "example"}
+            query = {"root": st.root_key(cr), "call": req["call_id"], "slot": "0"}
+            crop_query = {"root": query["root"], "crop": job["crop_id"]}
+            crop_status, crop_before = asyncio.run(prompt_query(crop_query, scope))
+            check(crop_status == 200 and set(crop_before) == {"crop", "name", "rev", "jobs", "targets", "spec_error"}
+                  and crop_before["jobs"][0]["prompt"] == job["prompt"]
+                  and crop_before["jobs"][0]["variant"] == job["variant"], "FIX-P4 기존 crop 질의 응답 계약")
+            used.return_value = [text, None, "다른 슬롯의 글"]
+            for slot, expected in (("0", text[:4000]), ("1", None), ("2", "다른 슬롯의 글"), ("99", None)):
+                status, body = asyncio.run(prompt_query(query | {"slot": slot}, scope))
+                check(status == 200 and body == {"prompt_used": expected}, f"FIX-P4 prompt 라우트의 슬롯별 본문 {slot}")
+            used.return_value = []
+            status, body = asyncio.run(prompt_query(query, scope))
+            check(status == 200 and body == {"prompt_used": None}, "FIX-P4 옛 기록은 null")
+            used.return_value = [None]
+            status, body = asyncio.run(prompt_query(query, scope))
+            check(status == 200 and body == {"prompt_used": None}, "FIX-P4 글을 보관하지 않은 슬롯은 null")
+            invalid = [{"call": ""}, {"call": "invalid"}, {"call": "../outside_r0"},
+                       {"call": "a" * 24 + "_r-1"}, {"slot": ""}, {"slot": "-1"}, {"slot": "1.0"},
+                       {"slot": "true"}, {"slot": " 0"}]
+            for change in invalid:
+                used.reset_mock()
+                status, _ = asyncio.run(prompt_query(query | change, scope))
+                check(status == 400 and not used.called, "FIX-P4 잘못된 call·slot 은 읽기 전에 400")
+            for missing in ("call", "slot"):
+                status, _ = asyncio.run(prompt_query({k: v for k, v in query.items() if k != missing}, scope))
+                check(status == 400, "FIX-P4 call·slot 은 함께 필요")
+            for scoped, expected in ((None, 401), (dict(scope, input=str(out / "another-account")), 404)):
+                used.reset_mock()
+                status, _ = asyncio.run(prompt_query(query, scoped))
+                check(status == expected and not used.called, "FIX-P4 프롬프트 조회도 기존 계정 격리 유지")
+            used.reset_mock()
+            check(asyncio.run(prompt_query(crop_query, scope)) == (crop_status, crop_before) and not used.called,
+                  "FIX-P4 crop 질의는 원래 응답 그대로·서버 글 조회 없음")
 
         class Runner:
             def __init__(self, **kw):
