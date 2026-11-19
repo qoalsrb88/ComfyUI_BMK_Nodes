@@ -1940,16 +1940,22 @@ window.DPPipeline = (() => {
         if (SM() && window.DPEnv.backend === "forge" && kind === "run" && p.run.backend === "forge") {
           const shown = /^(?:생성 승인 (\d+)건|남은 (\d+)건 이어서 승인)$/.exec(label);
           if (p.run.pre) again.push(`다시 생성(사전 승인) ${p.run.pre}건도 함께 실행(선택과 무관) — 사내 사용량이 잡힙니다.`);
-          if (shown) {
-            const count = Number(shown[1] || shown[2]), pr = p.run.prepare || p.prepare;
-            const m = pr && modelInfo(pr.model);
-            const lines = modelCatalog() && pr ? [
+          const count = shown ? Number(shown[1] || shown[2]) : null, pr = p.run.prepare || p.prepare;
+          let readable = !!shown, lines = null;
+          if (readable && Array.isArray(p.run.groups)) {
+            // 패치마다 모델·장 수가 다를 수 있다 — 계획의 모델별 묶음으로 글을 만든다(새 화면과 같은 글·같은 함수). 단추에 보인 건수와
+            // 묶음의 합이 다르거나 묶음을 읽지 못하면 상자를 띄우지 않는다(틀린 건수·장 수를 보이고 승인받지 않는다).
+            lines = window.DPSubmit?.approvalLines ? window.DPSubmit.approvalLines({ ...p.run, need: count }, pr) : null;
+            readable = !!lines;
+          } else if (readable && modelCatalog() && pr) {
+            // 계획에 묶음이 없는 옛 서버 — 프로젝트 값 한 벌의 기존 문구.
+            lines = [
               `Forge 로 생성 ${count}건을 요청합니다. 사내 사용량이 잡힙니다.`,
               `모델 ${modelText(pr)}`, `잡 ${count}건 · 그림 ${count * pr.n}장`,
-              ...(m && m.fan_out ? ["이 모델은 장마다 따로 생성합니다"] : []),
-            ] : null;
-            ok = await forgeAsk(count, again, lines);
+              ...(modelInfo(pr.model)?.fan_out ? ["이 모델은 장마다 따로 생성합니다"] : []),
+            ];
           }
+          if (readable) ok = await forgeAsk(count, again, lines);
           else opts.toast("승인할 건수를 확인하지 못했습니다 — 계획을 다시 받아 주세요", "warn");
         }
         else if (SM() && !mock) opts.toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn");
@@ -2438,6 +2444,7 @@ window.DPPipeline = (() => {
           SM() ? `다음 [반영] 뒤 생성 승인 필요 ${preview.need}건 (${preview.cells}셀) — 승인 전에는 과금 없음.` :
             `다음 [반영] 뒤 생성 승인 필요 ${preview.need}건 (${preview.cells}셀) ≈ $${preview.est_usd[0].toFixed(2)}–${preview.est_usd[1].toFixed(2)} (≈ ${preview.credits[0]}–${preview.credits[1]} 크레딧) — 승인 전에는 과금 없음.`,
         "지금 ★·후보는 남고 '옛 조건' 배지가 붙습니다. 초안 재과금은 없습니다.",
+        ...(SM() && preview.kept_overrides > 0 ? [`패치 ${preview.kept_overrides}개는 따로 정한 모델을 유지합니다`] : []),
         ...(preview.pruned != null ? [`다시 생성 대기 ${preview.pruned}건은 반영 때 정리(과금 없음).`] : []),
         ...(preview.pending_preapproved ? [SM() ? `남는 다시 생성 사전 승인 ${preview.pending_preapproved}건도 다음 실행에 포함됩니다.` : `남는 다시 생성 사전 승인 ${preview.pending_preapproved}건 ≈ $${preview.est_usd_pre[0].toFixed(2)}–${preview.est_usd_pre[1].toFixed(2)} 도 다음 실행에 포함됩니다.`] : []),
         ...(preview.blocked?.length ? [`발사 못 함 ${preview.blocked.length}건 — ${[...new Set(preview.blocked)].join("; ")}`] : []),
@@ -3505,6 +3512,9 @@ window.DPPipeline = (() => {
         for (const [k, spec] of Object.entries(ws)) {
           if (sec === "prepare" && ["image_size", "thinking_level"].includes(k) && (!(k in base) || !model?.opts?.[k]?.length)) continue;
           if (!hiddenPath(sec, k)) box.append(field(sec, k, spec, base[k], need.includes(`${sec}.${k}`)));
+          if (SM() && sec === "prepare" && k === "model" && P0.crop_overrides?.model > 0) {
+            line(box, `패치 ${P0.crop_overrides.model}개는 따로 정한 모델을 씁니다 — 새 화면에서 바꿉니다`, "dim");
+          }
         }
         const sb = button(need.length ? "확인·저장" : "저장", need.length ? `확인 필요: ${need.join(", ")} — 이 값으로 저장하면 확인됨` : "이 절을 저장",
           () => saveSection(sec), need.length ? "primary" : "");
@@ -3726,7 +3736,7 @@ window.DPPipeline = (() => {
 
     function loadKey(st) {
       // GET /pipeline 을 다시 받을 판: 매니페스트 rev + board_pref.json 지문(Studio 처음 값이 마지막 Export·분석 설정을 따름 — store.last_export)
-      return `${st.rev}|${st.pref_v}`;
+      return `${st.rev}|${st.pref_v}|${st.crop_gen_rev}`;
     }
 
     function stateChanged(st) {

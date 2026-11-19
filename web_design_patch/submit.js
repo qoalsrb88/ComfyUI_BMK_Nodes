@@ -96,8 +96,9 @@ window.DPSubmit = (() => {
     }
     const size = option("image_size"), level = option("thinking_level");
     const thinking = { minimal: "간단히", medium: "보통", high: "깊게" };
+    const hasComplexity = Array.isArray(m?.complexities) ? m.complexities.length : /^gpt-image-2\.6-/.test(p.model);
     return (m?.label || p.model) + (m && !m.qualities.length ? "" : ` · 품질 ${p.quality}`)
-      + (/^gpt-image-2\.6-/.test(p.model) ? ` · 복잡도 ${p.complexity || "high"}` : "")
+      + (hasComplexity ? ` · 복잡도 ${p.complexity || "high"}` : "")
       + (size ? ` · 해상도 ${size}` : "") + (level ? ` · 추론 ${thinking[level]}` : "");
   }
 
@@ -167,6 +168,74 @@ window.DPSubmit = (() => {
     return bad.length ? `이름 미정 크롭 ${bad.length}개(${bad.slice(0, 3).join(", ")}${bad.length > 3 ? " …" : ""}) — ② 크롭에서 이름을 정한 뒤 승인하세요` : "";
   }
 
+  const sigOf = (p) => (Number.isInteger(p?.rev) && Number.isInteger(p?.manifest_rev) ? `${p.rev}:${p.manifest_rev}` : undefined);
+  const unread = () => failed("plan_error", "실행 설정을 읽지 못했습니다 — ① 준비에서 실행 설정을 확인한 뒤 다시 눌러 주세요");
+  const notes = (p) => (Array.isArray(p.notes) ? p.notes : []);
+  const trouble = (p) => (!p ? failed("plan_error", "계획을 읽지 못했습니다")
+    : p.busy ? failed("busy", "서버가 계획을 계산하는 중입니다 — 잠시 뒤 다시 눌러 주세요")
+    : !p.run || p.run.error ? failed("plan_error", p.run?.error || "계획을 읽지 못했습니다")
+    : p.run.running ? failed("running", "생성이 실행 중입니다 — 끝난 뒤 다시 눌러 주세요") : null);
+
+  async function applyPlan(root, pipe, current) {
+    if (notes(current).length && !await ask(["무료 반영을 먼저 실행합니다(과금 없음). 실행 설정이 마지막 반영과 다릅니다.",
+      ...notes(current), "계속할까요?"], [], "반영 확인")) {
+      return failed("cancelled", "반영을 취소했습니다");
+    }
+    const job = await post({ root, stage: "apply", expect: sigOf(pipe) });
+    if (!job.ok) return failed("apply_failed", `${job.reason} · ${job.error}`);
+    const result = await wait(root, job.prompt_id);
+    if (result.done && result.ok) return { ...job, summary: result.record.apply_summary };
+    // 끝을 못 본 반영이 나중에 실행되지 않도록 대기에서 뺀다. 이미 도는 중이면 서버가 그대로 둔다.
+    if (!result.done) {
+      await request("jobs/queue", {}, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ root, delete: [job.prompt_id] }) }).catch(() => null);
+    }
+    const detail = result.record?.status?.messages?.find(([kind]) => kind === "execution_error")?.[1]?.exception_message;
+    return { ...failed("apply_failed", detail || `무료 반영을 완료하지 못했습니다 (${result.reason || "작업 실패"})`), prompt_id: job.prompt_id };
+  }
+
+  async function applyChecked({ root } = {}) {
+    if (!server()) return serverOnly();
+    if (paying) return failed("busy", "앞선 제출을 처리하는 중입니다");
+    paying = true;
+    try {
+      const pipe = (await read("pipeline", { root })).data;
+      if (!sigOf(pipe)) return unread();
+      const current = await plan(root);
+      return trouble(current) || await applyPlan(root, pipe, current);
+    } catch (e) { return failed("plan_error", e?.message || String(e)); }
+    finally { paying = false; }
+  }
+
+  function approvalLines(run, prepare) {
+    if (!Number.isSafeInteger(run?.need) || run.need < 0) return null;
+    let groups = run.groups;
+    if (Array.isArray(groups)) {
+      if (groups.some(g => !Number.isSafeInteger(g?.need) || g.need < 1 || !Number.isSafeInteger(g.images) || g.images < g.need
+          || typeof g.model !== "string" || !g.model.trim() || typeof g.quality !== "string" || !g.quality.trim()
+          || typeof g.fan_out !== "boolean") || groups.reduce((n, g) => n + g.need, 0) !== run.need) return null;
+    } else {
+      if (typeof prepare?.model !== "string" || !prepare.model.trim() || !Number.isSafeInteger(prepare.n) || prepare.n < 1) return null;
+      groups = [{ ...prepare, images: run.need * prepare.n, fan_out: modelInfo(prepare.model)?.fan_out }];
+    }
+    const lines = [`Forge 로 생성 ${run.need}건을 요청합니다. 사내 사용량이 잡힙니다.`];
+    if (groups.length === 1) {
+      const g = groups[0];
+      lines.push(`모델 ${modelText(g)}`, `잡 ${run.need}건 · 그림 ${g.images}장`);
+      if (g.fan_out) lines.push("이 모델은 장마다 따로 생성합니다");
+    } else {
+      const shown = groups.length > 6 ? 5 : groups.length;
+      for (const g of groups.slice(0, shown)) {
+        lines.push(`${modelText(g)} — 잡 ${g.need}건 · 그림 ${g.images}장` + (g.fan_out ? " · 장마다 따로 생성" : ""));
+      }
+      const rest = groups.slice(shown);
+      const sum = (rows, key) => rows.reduce((total, g) => total + g[key], 0);
+      if (rest.length) lines.push(`그 밖 ${rest.length}종 — 잡 ${sum(rest, "need")}건 · 그림 ${sum(rest, "images")}장`);
+      lines.push(`합계 잡 ${run.need}건 · 그림 ${sum(groups, "images")}장`);
+    }
+    return lines;
+  }
+
   async function submitPaid(stage, options = {}) {
     if (!server()) return serverOnly();
     if (stage !== "run") return failed("unsupported", "지원하지 않는 유료 작업입니다");
@@ -190,40 +259,18 @@ window.DPSubmit = (() => {
       const fresh = [...ids].some((id) => !known.has(id));
       let pipe = (await read("pipeline", { root })).data;
       // 요청에 실어 보내는 표지: 서버는 실행 설정·매니페스트가 이 판과 다르면 받지 않는다(다른 창이 그 사이 설정을 바꾼 경우).
-      const sigOf = (p) => (Number.isInteger(p?.rev) && Number.isInteger(p?.manifest_rev) ? `${p.rev}:${p.manifest_rev}` : undefined);
-      const stamped = (body, p) => ({ ...body, expect: sigOf(p) });
-      const unread = () => failed("plan_error", "실행 설정을 읽지 못했습니다 — ① 준비에서 실행 설정을 확인한 뒤 다시 눌러 주세요");
       if (!sigOf(pipe)) return unread();  // 판 없이(깨진 설정 파일 등) 반영·생성을 내면 서버가 그 사이의 설정 변경을 가려낼 수 없다
       // 실행 설정이 마지막 반영과 다름(모델·장 수 같은 Prepare 설정, 가져오기 설정) — 계획의 apply_pending 에는 없지만 서버는 생성을 막는다.
       const drifted = (pipe?.drift || []).some((d) => d.section === "prepare" || d.kind === "import");
-      const notes = (p) => (Array.isArray(p.notes) ? p.notes : []);
-      const trouble = (p) => (!p ? failed("plan_error", "계획을 읽지 못했습니다")
-        : p.busy ? failed("busy", "서버가 계획을 계산하는 중입니다 — 잠시 뒤 다시 눌러 주세요")
-        : !p.run || p.run.error ? failed("plan_error", p.run?.error || "계획을 읽지 못했습니다")
-        : p.run.running ? failed("running", "생성이 실행 중입니다 — 끝난 뒤 다시 눌러 주세요") : null);
       let current = await plan(root, fresh ? [...ids].filter((id) => known.has(id)).join(",") : only);
       let bad = trouble(current);
       if (bad) return bad;
       if (current.apply_pending?.length || fresh || drifted) {
         // 그림·지시 편집뿐이면 묻지 않고 반영한다. 실행 설정 쪽 사유(계획의 notes)가 있으면 v1 의 반영 확인처럼 먼저 묻는다 —
         // 설정이 바뀐 반영은 크롭·작업을 바꿔 다시 과금 대상을 만들 수 있다.
-        if (notes(current).length && !await ask(["무료 반영을 먼저 실행합니다(과금 없음). 실행 설정이 마지막 반영과 다릅니다.",
-          ...notes(current), "계속할까요?"], [], "반영 확인")) {
-          return failed("cancelled", "반영을 취소했습니다");
-        }
-        const job = await post(stamped({ root, stage: "apply" }, pipe));
-        if (!job.ok) return failed("apply_failed", `${job.reason} · ${job.error}`);
-        const result = await wait(root, job.prompt_id);
-        if (!result.done || !result.ok) {
-          // 끝을 보지 못한 반영(앞선 실행 뒤에 줄 서 있음 등)은 대기에서 뺀다 — 사용자가 모르는 사이 나중에 돌지 않게. 이미 도는 중이면 서버가 그대로 둔다.
-          if (!result.done) {
-            await request("jobs/queue", {}, { method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ root, delete: [job.prompt_id] }) }).catch(() => null);
-          }
-          const detail = result.record?.status?.messages?.find(([kind]) => kind === "execution_error")?.[1]?.exception_message;
-          return { ...failed("apply_failed", detail || `무료 반영을 완료하지 못했습니다 (${result.reason || "작업 실패"})`), prompt_id: job.prompt_id };
-        }
-        summary = result.record.apply_summary;
+        const applied = await applyPlan(root, pipe, current);
+        if (!applied.ok) return applied;
+        summary = applied.summary;
         pipe = (await read("pipeline", { root })).data;  // 반영으로 매니페스트가 바뀌었다 — 승인 상자의 모델·장 수와 제출 표지는 이 판으로
         if (!sigOf(pipe)) return { ...unread(), summary };
         current = await plan(root, only);
@@ -234,19 +281,19 @@ window.DPSubmit = (() => {
       // 반영으로 풀리지 않는 설정 쪽 사유(확인하지 않은 실행 설정 등)가 남아 있으면 승인받지 않는다(v1 의 승인 보류와 같은 조건).
       if (notes(current).length) return { ...failed("settings_pending", notes(current).join(" · ")), summary };
       const run = current.run;
+      const grouped = Array.isArray(run.groups);
+      let lines = grouped ? approvalLines(run) : null;
+      if (grouped && !lines) {
+        return { ...failed("plan_error", "계획의 모델별 건수를 읽지 못했습니다"), summary };
+      }
       const hash = run.hash;
       if (typeof hash !== "string" || !hash) return { ...failed("nothing_to_approve", "승인할 것이 없습니다"), summary };
       if (run.backend && run.backend !== backend) return failed("no_backend", "생성 백엔드 설정이 바뀌었습니다 — 계획을 다시 확인해 주세요");
-      let lines;
       if (backend === "mock") {
         lines = [`[MOCK] 과금 없음 — 생성 ${run.need}건`, "mock 백엔드 — 승인 코드가 mock 에 묶여 있어 유료 실행을 승인하지 못합니다."];
-      } else {
-        // 계획에 준비 설정이 없으면 처음에 읽은 실행 설정(GET pipeline)의 것을 쓴다(v1 이 진행 패널에 보관하는 값과 같다).
-        const pr = run.prepare || current.prepare || pipe?.settings?.prepare;
-        if (!pr) return { ...failed("plan_error", "모델 설정을 읽지 못했습니다"), summary };
-        lines = [`Forge 로 생성 ${run.need}건을 요청합니다. 사내 사용량이 잡힙니다.`,
-          `모델 ${modelText(pr)}`, `잡 ${run.need}건 · 그림 ${run.need * pr.n}장`];
-        if (modelInfo(pr.model)?.fan_out) lines.push("이 모델은 장마다 따로 생성합니다");
+      } else if (!grouped) {
+        lines = approvalLines(run, run.prepare || current.prepare || pipe?.settings?.prepare);
+        if (!lines) return { ...failed("plan_error", "모델 설정을 읽지 못했습니다"), summary };
       }
       if (summary) lines.push(`자동 반영: 새 조건 ${summary.new_jobs}개 · 옛 조건이 되는 후보 ${summary.old_cands}장 · 작업 없음 ${summary.no_job.length}개`);
       const warnings = backend === "forge" && run.pre ? [`다시 생성(사전 승인) ${run.pre}건도 함께 실행(선택과 무관) — 사내 사용량이 잡힙니다.`] : [];
@@ -259,10 +306,10 @@ window.DPSubmit = (() => {
         return { ...failed("stale", "계획이 바뀌었습니다 — 다시 눌러 주세요"), summary };
       }
       // 승인 상자가 보인 설정(pipe)과 같은 판일 때만 서버가 받는다 — 그 사이 모델·장 수가 바뀌었으면 409(stale_settings).
-      return { ...await post(stamped({ root, stage, approve: hash, only }, pipe)), summary };
+      return { ...await post({ root, stage, approve: hash, only, expect: sigOf(pipe) }), summary };
     } catch (e) { return { ...failed("plan_error", e?.message || String(e)), summary }; }
     finally { paying = false; }
   }
 
-  return { post, ask, asking: () => !!active, modelText, submitFree, wait, plan, submitPaid };
+  return { post, ask, asking: () => !!active, modelText, approvalLines, submitFree, wait, plan, submitPaid, applyChecked };
 })();
