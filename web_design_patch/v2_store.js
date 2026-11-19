@@ -36,6 +36,7 @@ window.DPV2Store = (() => {
     selectedIds: new Set(),
     primaryId: null,
     lastClickedId: null,
+    selectedTargetByCrop: new Map(), // crop_id -> target.key (다중 타깃 A/B/C 지원)
     selectedCandByTarget: new Map(), // target.key -> cand.key
     leftTab: "patches",              // patches | refs
     rightTab: "instruct",            // instruct | review | retouch
@@ -287,20 +288,34 @@ window.DPV2Store = (() => {
 
     const stateMap = new Map(stateCrops.map((c) => [c.id, c]));
     const refMap = new Map(refCrops.map((c) => [c.id, c]));
-    const sourceList = layoutCrops.length ? layoutCrops : stateCrops;
+    let sourceList = layoutCrops.length ? layoutCrops.slice() : stateCrops.slice();
+
+    // S.z.crops 기준 위→아래(Z-order 높은 레이어가 목록 위쪽, rows.js:order 와 동일)
+    const zIds = state.S && state.S.z && Array.isArray(state.S.z.crops) ? state.S.z.crops : null;
+    if (zIds && zIds.length) {
+      const ranks = new Map(zIds.map((id, i) => [id, i]));
+      sourceList.sort((a, b) => {
+        const az = ranks.get(a.id), bz = ranks.get(b.id);
+        if (az !== undefined || bz !== undefined) return (bz ?? -1) - (az ?? -1);
+        return (a.name || a.id).localeCompare(b.name || b.id, undefined, { numeric: true });
+      });
+    }
+
     const prep = projectPrepare();
 
     return sourceList.map((raw, idx) => {
       const sc = stateMap.get(raw.id) || raw;
       const rc = refMap.get(raw.id) || null;
       const cropTargets = targets.filter((t) => t.crop_id === raw.id);
-      const firstTarget = cropTargets[0] || null;
+      const chosenKey = state.selectedTargetByCrop.get(raw.id);
+      const activeTarget = (chosenKey && cropTargets.find((t) => t.key === chosenKey)) || cropTargets[0] || null;
       const meta = ensurePatchMeta(raw.id, raw);
       const effectiveModel = meta.modelOverride || prep.model;
       const modelInfo = Data.findModel(effectiveModel);
       const rect = Array.isArray(raw.rect) ? raw.rect : (Array.isArray(sc.rect) ? sc.rect : [0, 0, 512, 512]);
-      const pickedCand = firstTarget && firstTarget.pick_keys && firstTarget.pick_keys.length
-        ? (firstTarget.candidates || []).find((c) => c.key === firstTarget.pick_keys[0]) || null : null;
+      const pickedCand = activeTarget && activeTarget.pick_keys && activeTarget.pick_keys.length
+        ? (activeTarget.candidates || []).find((c) => c.key === activeTarget.pick_keys[0]) || null : null;
+      const anyPicked = cropTargets.some((t) => Array.isArray(t.pick_keys) && t.pick_keys.length > 0);
       return {
         index: idx + 1,
         id: raw.id,
@@ -312,9 +327,10 @@ window.DPV2Store = (() => {
         stateCrop: sc,
         refCrop: rc,
         targets: cropTargets,
-        target: firstTarget,
-        candidates: firstTarget ? (firstTarget.candidates || []) : [],
+        target: activeTarget,
+        candidates: activeTarget ? (activeTarget.candidates || []) : [],
         pickedCand,
+        anyPicked,
         seam: state.seamsByCrop.get(raw.id) || null,
         meta,
         effectiveModel,
@@ -323,6 +339,43 @@ window.DPV2Store = (() => {
         effectiveCount: meta.count || prep.n,
       };
     });
+  }
+
+  function selectTargetForCrop(cropId, targetKey) {
+    if (!cropId || !targetKey) return;
+    state.selectedTargetByCrop.set(cropId, targetKey);
+    emit("selection");
+  }
+
+  async function moveCropZ(cropId, side, anchor, skipHistory = false) {
+    if (!state.root || !state.S || !cropId || !anchor) return null;
+    if (side !== "step" && cropId === anchor) return null;
+    try {
+      const res = await Api.reorderZ(state.root, {
+        scope: "crops", op: "move", item: cropId, [side]: anchor, seen: state.S.rev,
+      });
+      if (!res || !res.ok) return null;
+      if (Array.isArray(res.effective)) {
+        state.S.z = { crops: res.effective, manual: !!(res.order && res.order.length) };
+      }
+      if (!skipHistory && side === "step" && (anchor === "up" || anchor === "down") && res.changed !== false) {
+        const inv = anchor === "up" ? "down" : "up";
+        pushHistory(`레이어 순서 ${anchor === "up" ? "위로" : "아래로"}`,
+          () => moveCropZ(cropId, "step", inv, true),
+          () => moveCropZ(cropId, "step", anchor, true));
+      }
+      if (res.moved !== false) {
+        toast(res.changed === false
+          ? "겹치지 않는 패치끼리는 합성 결과가 같아 순서를 바꾸지 않았습니다."
+          : "패치 겹침 순서를 적용했습니다.", res.changed === false ? "" : "ok");
+      }
+      await refreshAll(true);
+      return res;
+    } catch (err) {
+      toast(`레이어 순서 변경 실패: ${err.message}`, "err");
+      await refreshAll(true);
+      return null;
+    }
   }
 
   function getPatch(id) {
@@ -504,9 +557,20 @@ window.DPV2Store = (() => {
   }
 
   async function loadSeams() {
-    if (!state.root || !state.S || !state.S.canvas || !state.S.canvas.composite_sig) return;
+    if (!state.root || !state.S || !state.S.canvas) return;
+    const rel = state.S.canvas.seams_url;
+    const sig = state.S.canvas.composite_sig;
+    if (!rel && !sig) return;
     try {
-      const res = await Api.getSeams(state.root, state.S.canvas.composite_sig);
+      let res;
+      if (rel) {
+        const u = Api.apiUrl(rel);
+        const r = u ? await fetch(u, { cache: "no-store" }) : null;
+        if (!r || !r.ok) return;
+        res = await r.json();
+      } else {
+        res = await Api.getSeams(state.root, sig);
+      }
       state.seams = res;
       const map = new Map();
       for (const seg of (res && res.segments) || []) {
@@ -774,7 +838,7 @@ window.DPV2Store = (() => {
     state, subscribe, emit, toast,
     loadPrefs, savePrefs, applyPrefsToDom, initForgeThemeListener,
     ensurePatchMeta, loadSpec, savePatchSpec, projectPrepare, getPatches, getPatch, primaryPatch, selectedPatches,
-    currentCandidate, selectCandidate, selectPatch, selectAllPatches, getCommonOrMixed,
+    currentCandidate, selectCandidate, selectTargetForCrop, moveCropZ, selectPatch, selectAllPatches, getCommonOrMixed,
     pushHistory, undoHistory, redoHistory, jumpHistory,
     refreshAll, loadLayout, loadRefs, loadPipelineAndPlan, loadSeams, startPolling, stopPolling,
     addCrop, updateCrop, deleteCrop, openMaskSession, saveMaskSession,

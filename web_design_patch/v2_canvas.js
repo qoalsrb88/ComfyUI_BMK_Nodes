@@ -12,7 +12,7 @@ window.DPV2Canvas = (() => {
   };
   const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 
-  let vp, world, imgBase, imgComp, splitClip, imgSplitBefore, splitBar, maskCanvas, svg;
+  let vp, world, imgBase, imgComp, candOv, imgCandLive, splitClip, imgSplitBefore, splitBar, maskCanvas, svg;
   let cam = { z: 1, tx: 0, ty: 0 };
   let canvasSize = [1024, 1024];
   let userAdjustedView = false;
@@ -22,6 +22,7 @@ window.DPV2Canvas = (() => {
   let cursorPt = null;
   let lastBaseUrl = "";
   let lastCompUrl = "";
+  let lastCandLiveUrl = "";
 
   function $(id) { return document.getElementById(id); }
 
@@ -30,6 +31,8 @@ window.DPV2Canvas = (() => {
     world = $("canvas-world");
     imgBase = $("img-base");
     imgComp = $("img-composite");
+    candOv = $("cand-live-overlay");
+    imgCandLive = $("img-cand-live");
     splitClip = $("canvas-split-clip");
     imgSplitBefore = $("img-split-before");
     splitBar = $("canvas-split-bar");
@@ -161,17 +164,73 @@ window.DPV2Canvas = (() => {
       imgComp.src = compUrl;
     }
 
-    // Before (Q) 누르는 동안은 합성 숨기고 원본만 표시
+    // Before (Q) 누르는 동안은 합성·후보 겹침 모두 숨기고 원본만 표시
     imgComp.classList.toggle("hidden", Store.state.viewFlags.beforeHeld);
 
     if (sizeChanged && !userAdjustedView) fitAll(false);
     else applyTransform();
 
+    renderCandidateOverlay();
     renderMaskLive();
     renderSvg();
     renderFloatingBar();
     updateCursorClasses();
     updateBrushHud();
+  }
+
+  // 선택 후보 실시간 캔버스 겹침 계산 (viewer.js drawOverlay 와 같은 규칙: pick_url + region 우선, 없으면 rect + big_url 폴백)
+  function resolveCandidateOverlay(patch, cand) {
+    if (!patch || !cand || patch.meta.hidden) return null;
+    if (Store.state.viewFlags.beforeHeld) return null;
+    const mk = Store.state.mask;
+    if (mk && mk.layers && (Store.state.rightTab === "retouch" || Store.state.tool === "brush" || Store.state.tool === "eraser")) {
+      return null;
+    }
+    const sc = patch.stateCrop || {};
+    const hasRegion = Array.isArray(sc.region) && sc.region.length === 4;
+    // 미채택 후보: pick_url(인접 패치까지 포함한 합성 미리보기) 우선 → 없으면 후보 원화/큰 썸네일을 rect 자리에 겹침
+    if (!cand.picked) {
+      if (cand.pick_url && hasRegion) return { rect: sc.region, rel: cand.pick_url, previewing: true };
+      const fallbackRel = cand.full_url || cand.big_url || cand.thumb_url;
+      if (fallbackRel) return { rect: patch.rect, rel: fallbackRel, previewing: true };
+      return null;
+    }
+    // ★ 채택 후보: region_url 이 있으면 원해상도 겹침으로 선명하게 표시
+    if (hasRegion && sc.region_url) {
+      return { rect: sc.region, rel: sc.region_url, previewing: false };
+    }
+    return null;
+  }
+
+  function renderCandidateOverlay() {
+    if (!candOv || !imgCandLive) return;
+    const p = Store.primaryPatch();
+    const c = Store.currentCandidate(p);
+    const ov = resolveCandidateOverlay(p, c);
+    if (!ov) {
+      candOv.classList.add("hidden");
+      return;
+    }
+    const url = Api.apiUrl(ov.rel);
+    if (!url) {
+      candOv.classList.add("hidden");
+      return;
+    }
+    const [x0, y0, x1, y1] = ov.rect;
+    candOv.classList.remove("hidden");
+    candOv.style.left = `${x0}px`;
+    candOv.style.top = `${y0}px`;
+    candOv.style.width = `${Math.max(1, x1 - x0)}px`;
+    candOv.style.height = `${Math.max(1, y1 - y0)}px`;
+    if (lastCandLiveUrl !== url) {
+      lastCandLiveUrl = url;
+      candOv.classList.add("loading");
+      imgCandLive.onload = imgCandLive.onerror = () => {
+        if (lastCandLiveUrl === url) candOv.classList.remove("loading");
+      };
+      imgCandLive.src = url;
+      if (imgCandLive.complete) candOv.classList.remove("loading");
+    }
   }
 
   function updateCursorClasses() {
@@ -301,13 +360,15 @@ window.DPV2Canvas = (() => {
 
     const invZ = 1 / Math.max(0.05, cam.z);
 
-    // 2. 이음매 세그먼트 표시 (N 토글)
+    // 2. 이음매 세그먼트 표시 (N 토글 — 서버 실제 좌표 x0/y0/x1/y1 과 line 둘 다 수용)
     if (Store.state.viewFlags.seamsOn && Store.state.seams && Array.isArray(Store.state.seams.segments)) {
       for (const seg of Store.state.seams.segments) {
-        if (!Array.isArray(seg.line) || seg.line.length !== 4) continue;
-        const [lx0, ly0, lx1, ly1] = seg.line;
+        const coords = (seg.x0 !== undefined && seg.y0 !== undefined && seg.x1 !== undefined && seg.y1 !== undefined)
+          ? [seg.x0, seg.y0, seg.x1, seg.y1]
+          : (Array.isArray(seg.line) && seg.line.length === 4 ? seg.line : null);
+        if (!coords) continue;
         svg.append(Data.svgEl("line", {
-          x1: lx0, y1: ly0, x2: lx1, y2: ly1,
+          x1: coords[0], y1: coords[1], x2: coords[2], y2: coords[3],
           stroke: seg.severity === "bad" ? "#ef4444" : "#f59e0b",
           "stroke-width": 4 * invZ,
           "stroke-linecap": "round",
@@ -373,6 +434,33 @@ window.DPV2Canvas = (() => {
       });
       txt.textContent = labelText;
       g.append(txt);
+
+      // 다중 타깃(A·B·C) focus_box 서브 프레임 표시 (선택 패치에서 클릭으로 타깃 전환)
+      if (isPrimary && p.targets && p.targets.length > 1) {
+        const boxPalette = ["#ff5d5d", "#46d17e", "#4da3ff", "#ffa24d"];
+        p.targets.forEach((tg, ti) => {
+          const fb = Array.isArray(tg.focus_box) && tg.focus_box.length === 4 ? tg.focus_box : null;
+          if (!fb) return;
+          const activeTg = p.target && p.target.key === tg.key;
+          const col = boxPalette[ti % boxPalette.length];
+          g.append(Data.svgEl("rect", {
+            x: x0 + fb[0], y: y0 + fb[1],
+            width: Math.max(1, fb[2] - fb[0]), height: Math.max(1, fb[3] - fb[1]),
+            fill: "transparent",
+            stroke: col,
+            "stroke-width": (activeTg ? 2.2 : 1.3) * invZ,
+            "stroke-dasharray": activeTg ? "" : `${4 * invZ} ${3 * invZ}`,
+            style: "cursor:pointer",
+            "data-crop-id": p.id, "data-target-key": tg.key, "data-hit": "target",
+          }));
+          const tlbl = Data.svgEl("text", {
+            x: x0 + fb[0] + 4 * invZ, y: y0 + fb[1] + 13 * invZ,
+            fill: col, "font-size": 11 * invZ, "font-weight": "700", "pointer-events": "none",
+          });
+          tlbl.textContent = tg.tid;
+          g.append(tlbl);
+        });
+      }
 
       // 주 선택 패치 & 잠금 해제 & select 도구: 8개 리사이즈 핸들 + 4개 바깥 회전 구역 + 상단 회전 노브
       if (isPrimary && !p.locked && Store.state.tool === "select") {
@@ -455,7 +543,10 @@ window.DPV2Canvas = (() => {
     }
     bar.classList.remove("hidden");
     const [x0, y0, x1, y1] = p.rect;
-    $("fb-name").textContent = p.name;
+    const cand = Store.currentCandidate(p);
+    const tgLabel = p.targets && p.targets.length > 1 && p.target ? ` · ${p.target.tid}` : "";
+    const prevLabel = cand && !cand.picked ? ` [미리보기 c${String(cand.n).padStart(2, "0")}]` : "";
+    $("fb-name").textContent = `${p.name}${tgLabel}${prevLabel}`;
     $("fb-dims").textContent = `${x1 - x0}×${y1 - y0}`;
 
     const grp = $("fb-purpose-group");
@@ -531,6 +622,11 @@ window.DPV2Canvas = (() => {
 
       const hit = e.target && e.target.getAttribute ? e.target.getAttribute("data-hit") : null;
       const cropId = e.target && e.target.getAttribute ? e.target.getAttribute("data-crop-id") : null;
+      if (hit === "target" && cropId) {
+        const tgKey = e.target.getAttribute("data-target-key");
+        if (tgKey) Store.selectTargetForCrop(cropId, tgKey);
+        return;
+      }
       if (hit && cropId) {
         const p = Store.getPatch(cropId);
         if (!p) return;
@@ -759,5 +855,5 @@ window.DPV2Canvas = (() => {
 
   function getCanvasSize() { return canvasSize.slice(); }
 
-  return { init, render, fitAll, fitCrop, zoomTo, setTool, setSpaceHeld, getCanvasSize };
+  return { init, render, fitAll, fitCrop, zoomTo, setTool, setSpaceHeld, getCanvasSize, resolveCandidateOverlay };
 })();

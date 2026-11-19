@@ -72,9 +72,11 @@ window.DPV2Inspector = (() => {
     }
 
     const primary = Store.primaryPatch();
+    const canReorder = list.length > 1 && !(Store.state.S && Store.state.S.running);
     let stars = 0;
-    for (const p of list) {
-      if (p.pickedCand) stars += 1;
+    for (let idx = 0; idx < list.length; idx++) {
+      const p = list[idx];
+      if (p.anyPicked || p.pickedCand) stars += 1;
       const isPrimary = primary && primary.id === p.id;
       const isSelected = Store.state.selectedIds.has(p.id);
       const cls = ["patch-card"];
@@ -85,6 +87,17 @@ window.DPV2Inspector = (() => {
       const purp = Data.purposeInfo(p.meta.purpose);
       const tl = Data.trafficLight(p.pickedCand || p.candidates[0], p.seam);
       const [x0, y0, x1, y1] = p.rect;
+
+      const zUpBtn = canReorder ? Data.el("button", {
+        type: "button", className: "pc-icon-btn", text: "▲",
+        disabled: idx === 0, title: "겹침 순서 위로 (더 위 레이어)",
+        onClick: (e) => { e.stopPropagation(); Store.moveCropZ(p.id, "step", "up"); },
+      }) : null;
+      const zDownBtn = canReorder ? Data.el("button", {
+        type: "button", className: "pc-icon-btn", text: "▼",
+        disabled: idx === list.length - 1, title: "겹침 순서 아래로",
+        onClick: (e) => { e.stopPropagation(); Store.moveCropZ(p.id, "step", "down"); },
+      }) : null;
 
       const visBtn = Data.el("button", {
         type: "button",
@@ -111,6 +124,7 @@ window.DPV2Inspector = (() => {
       const card = Data.el("div", {
         className: cls.join(" "),
         role: "option",
+        draggable: canReorder,
         "aria-selected": String(isSelected || isPrimary),
         onClick: (e) => {
           Store.selectPatch(p.id, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey });
@@ -122,31 +136,57 @@ window.DPV2Inspector = (() => {
       Data.el("div", { className: "pc-row-top" },
         Data.el("span", { className: "pc-idx", text: String(p.index) }),
         Data.el("span", { className: "pc-name", text: p.name, title: p.name }),
-        Data.el("div", { className: "pc-actions" }, visBtn, lockBtn),
+        Data.el("div", { className: "pc-actions" },
+          canReorder ? Data.el("span", { className: "pc-z-btns" }, zUpBtn, zDownBtn) : null,
+          visBtn, lockBtn,
+        ),
       ),
       Data.el("div", { className: "pc-row-bot" },
         Data.el("span", { className: "tag-chip accent", text: purp.short }),
         Data.el("span", { className: "tag-chip", text: `${x1 - x0}×${y1 - y0}` }),
-        p.pickedCand ? Data.el("span", { className: "tag-chip ok", text: `★ ${tl.icon}` })
+        p.targets && p.targets.length > 1 ? Data.el("span", { className: "tag-chip", text: `타깃 ${p.targets.length}` }) : null,
+        (p.anyPicked || p.pickedCand) ? Data.el("span", { className: "tag-chip ok", text: `★ ${tl.icon}` })
           : p.candidates.length ? Data.el("span", { className: "tag-chip", text: `후보 ${p.candidates.length}` })
           : Data.el("span", { className: "tag-chip", text: "생성 전" }),
         p.meta.modelOverride ? Data.el("span", { className: "tag-chip warn", text: p.modelInfo.label }) : null,
       ));
 
-      // 레퍼런스 카드 드래그 앤 드롭 연결
+      // 패치 카드 드래그로 Z-Order 변경 + 레퍼런스 카드 드롭 연결
+      card.addEventListener("dragstart", (e) => {
+        if (!canReorder) return;
+        e.dataTransfer.setData("text/bmk-crop-z", p.id);
+        e.dataTransfer.effectAllowed = "move";
+      });
       card.addEventListener("dragover", (e) => {
         if (e.dataTransfer.types.includes("text/bmk-ref-file")) {
           e.preventDefault();
           card.classList.add("drag-over-ref");
+        } else if (e.dataTransfer.types.includes("text/bmk-crop-z")) {
+          e.preventDefault();
+          const r = card.getBoundingClientRect();
+          const topHalf = e.clientY < r.top + r.height / 2;
+          card.classList.toggle("drag-over-top", topHalf);
+          card.classList.toggle("drag-over-bottom", !topHalf);
         }
       });
-      card.addEventListener("dragleave", () => card.classList.remove("drag-over-ref"));
+      card.addEventListener("dragleave", () => {
+        card.classList.remove("drag-over-ref", "drag-over-top", "drag-over-bottom");
+      });
       card.addEventListener("drop", async (e) => {
-        card.classList.remove("drag-over-ref");
-        const file = e.dataTransfer.getData("text/bmk-ref-file");
-        if (!file) return;
-        e.preventDefault();
-        await linkRefFileToPatches([p], file);
+        const topHalf = card.classList.contains("drag-over-top");
+        card.classList.remove("drag-over-ref", "drag-over-top", "drag-over-bottom");
+        const refFile = e.dataTransfer.getData("text/bmk-ref-file");
+        if (refFile) {
+          e.preventDefault();
+          await linkRefFileToPatches([p], refFile);
+          return;
+        }
+        const dragCropId = e.dataTransfer.getData("text/bmk-crop-z");
+        if (dragCropId && dragCropId !== p.id) {
+          e.preventDefault();
+          // 위쪽 반에 놓으면 p 보다 위 레이어(after), 아래쪽 반에 놓으면 p 보다 아래 레이어(before)
+          await Store.moveCropZ(dragCropId, topHalf ? "after" : "before", p.id);
+        }
       });
 
       host.append(card);
@@ -691,13 +731,30 @@ window.DPV2Inspector = (() => {
     const host = $("right-tab-review");
     host.replaceChildren();
     const p = Store.primaryPatch();
-    const totalCands = Store.getPatches().reduce((acc, x) => acc + x.candidates.length, 0);
+    const totalCands = Store.getPatches().reduce((acc, x) => acc + (x.targets || []).reduce((s, tg) => s + (tg.candidates || []).length, 0), 0);
     $("badge-cand-count").textContent = String(totalCands);
 
     if (!p) {
       host.append(Data.el("div", { className: "insp-empty", text: "후보를 비교할 패치를 선택해 주세요." }));
       return;
     }
+
+    // 다중 타깃(A·B·C) 선택 바 (기존 v1 복수 타깃 크롭 100% 호환)
+    if (p.targets && p.targets.length > 1) {
+      const tgBar = Data.el("div", { className: "insp-card" },
+        Data.el("h3", { className: "insp-title", text: `크롭 안 타깃 (${p.targets.length}개)` }),
+        Data.el("div", { className: "target-pill-bar" },
+          ...p.targets.map((tg) => Data.el("button", {
+            type: "button",
+            className: "target-pill" + (p.target && p.target.key === tg.key ? " active" : ""),
+            text: `${tg.tid}${tg.label ? " · " + tg.label : ""}${tg.pick_keys && tg.pick_keys.length ? " ★" : ""}`,
+            onClick: () => Store.selectTargetForCrop(p.id, tg.key),
+          })),
+        ),
+      );
+      host.append(tgBar);
+    }
+
     if (!p.candidates.length) {
       host.append(Data.el("div", { className: "insp-empty", text: "아직 생성된 후보가 없습니다. 하단 [생성하기]로 후보를 만들어 보세요." }));
       return;
@@ -705,6 +762,12 @@ window.DPV2Inspector = (() => {
 
     const cand = Store.currentCandidate(p);
     const tl = Data.trafficLight(cand, p.seam);
+
+    const previewBanner = cand && !cand.picked
+      ? Data.el("div", {
+        className: "cand-preview-banner",
+        text: `캔버스에 후보 c${String(cand.n).padStart(2, "0")} 실시간 겹침 미리보기 중 — [★ 이 후보 채택]으로 확정`,
+      }) : null;
 
     const trafficCard = Data.el("div", { className: `traffic-card ${tl.level}` },
       Data.el("span", { className: "traffic-icon", text: tl.icon }),
@@ -776,7 +839,7 @@ window.DPV2Inspector = (() => {
     ) : null;
 
     host.append(
-      Data.el("div", { className: "insp-card" }, trafficCard, actionRow),
+      Data.el("div", { className: "insp-card" }, trafficCard, previewBanner, actionRow),
       grid,
       techDetails,
     );

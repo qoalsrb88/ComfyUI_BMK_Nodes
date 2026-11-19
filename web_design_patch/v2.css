@@ -285,6 +285,25 @@ kbd {
 .patch-card.multi-sub { border-color: var(--accent-border); background: var(--accent-soft); }
 .patch-card.hidden-layer { opacity: 0.48; }
 .patch-card.drag-over-ref { outline: 2px solid var(--accent); }
+.patch-card.drag-over-top { box-shadow: inset 0 2px 0 var(--accent); }
+.patch-card.drag-over-bottom { box-shadow: inset 0 -2px 0 var(--accent); }
+.pc-z-btns { display: inline-flex; gap: 1px; margin-right: 2px; }
+.pc-z-btns .pc-icon-btn { width: 18px; height: 20px; font-size: 10px; }
+.target-pill-bar { display: flex; flex-wrap: wrap; gap: 4px; }
+.target-pill {
+  padding: 4px 8px; font-size: 11.5px; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 4px; color: var(--dim);
+}
+.target-pill.active { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent); font-weight: 700; }
+.cand-live-overlay {
+  position: absolute; overflow: hidden; pointer-events: none;
+  transition: opacity 0.14s ease;
+}
+.cand-live-overlay.loading { opacity: 0.45; }
+.cand-preview-banner {
+  padding: 6px 9px; border-radius: 4px; font-size: 11.5px;
+  background: var(--accent-soft); border: 1px solid var(--accent-border); color: var(--accent);
+}
 .pc-row-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .pc-idx {
   font-size: 10px; font-weight: 700; min-width: 22px; height: 18px;
