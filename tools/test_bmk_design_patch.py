@@ -61451,6 +61451,271 @@ def forge_models2_settings_unit():
     """Forge 2단계 둘째 묶음 설정 갈래 — 실행 설정의 해상도·추론, Prepare 의 작업 opts·예상 크기, 전환 미리 보기, env 의 모델 한 줄,
     후보 응답의 모델 옵션·프롬프트 표지. 명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
     section("Forge 모델 설정(둘째 묶음) — forge_models2_settings_unit")
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, patch
+
+    dp = _dp_package()
+    st, rn, bd = dp.store, dp.runner, dp.board
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    models = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_models")
+    srv = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_server")
+    fg = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge")
+    fb = bd._forge_backend()
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="models2_settings_", dir=OUT_ROOT.resolve()))
+    pre = dp.BMKDesignPatchPrepare()
+    base = np.full((128, 192, 3), (60, 100, 140), dtype=np.uint8)
+    rects = [("001_panel", [0, 0, 96, 64]), ("002_square", [96, 32, 192, 128])]
+    option_keys = ("image_size", "thinking_level")
+
+    def project(name, crops=rects):
+        return _fx_project(dp, out, name, crops, base)
+
+    def args(name, **kw):
+        return dict(pl.defaults()["prepare"], model=name, quality="high", variants="V1", n=2,
+                    calls_per_cell=2, complexity="medium") | kw
+
+    def keys(m):
+        return [j["cell_key"] for j in m["jobs"]]
+
+    def settled(root, m):
+        # 완료 원장만 합성한다. 생성·다운로드·네트워크를 실행하지 않는다.
+        for job in m["jobs"]:
+            for rep in range(job["reps"]):
+                rn._write_json(rn._lpath(root, job["cell_key"], rep, "done"), {"slots": []})
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(dp.folder_paths, "get_output_directory", return_value=str(out / "output")))
+        stack.enter_context(patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1", rn.MOCK_ENV: ""}))
+        # B 갈래의 새 읽기 함수는 이 worktree 에 아직 없을 수 있다.
+        used = stack.enter_context(patch.object(fb, "prompt_used", return_value=[], create=True))
+        h, root = project("settings")
+        values = args("nano-banana-2")
+        old = {"schema": pl.SCHEMA, "rev": 1, "confirm": [], **pl.defaults(root), "prepare": dict(values)}
+        for key in option_keys:
+            old["prepare"].pop(key)
+        path = Path(root, pl.PIPELINE_NAME)
+        raw = json.dumps(old, ensure_ascii=False).encode("utf-8")
+        path.write_bytes(raw)
+        loaded = pl.load(root)
+        check(loaded["prepare"] == values and loaded["confirm"] == [] and path.read_bytes() == raw,
+              "FM2S1 옛 설정의 두 기본값·확인 필요 없음·원본 불변")
+        saved = pl.update(root, 1, "prepare", loaded["prepare"])
+        check(saved["rev"] == 1 and path.read_bytes() == raw, "FM2S1 같은 설정 저장은 옛 파일 바이트 보존")
+        for name in models.MODELS:
+            settings = args(name, image_size="4K", thinking_level="medium")
+            check(pl.validate_section("prepare", settings) == settings, f"FM2S1 저장값은 모델과 무관한 선택지 {name}")
+        for key, bad in (("image_size", "8K"), ("thinking_level", "low"), ("image_size", None)):
+            expect_raises(lambda k=key, v=bad: pl.validate_section("prepare", values | {k: v}),
+                          "FM2S1 잘못된 옵션 저장 거부 " + key)
+        for server in (False, True):
+            with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1" if server else ""}):
+                optional = pre.INPUT_TYPES()["optional"]
+                check(list(optional) == ["complexity"] + (list(option_keys) if server else []),
+                      f"FM2S1 서버 입력 추가·로컬 입력 보존 {server}")
+                if server:
+                    check(optional["image_size"][1]["default"] == "2K"
+                          and optional["thinking_level"][1]["default"] == "medium", "FM2S1 노드 옵션 기본값")
+        prompt = pl.build_prompt("apply", loaded, root)
+        check(all(prompt[pl.NODE_KEYS["prepare"]]["inputs"][k] == values[k] for k in option_keys),
+              "FM2S1 실행 설정에서 Prepare 입력까지 두 값 전달")
+
+        # 이 변경 전 동일 합성 프로젝트·고정 시각에서 수집한 jobs·prepare_settings·보고 바이트.
+        pinned = {
+            "gpt-image-2.6-sunburst": "1aa8273c8333bb2bb10e8cb200c4d3840d92579c0ed72680aa9044071e38f514",
+            "gpt-image-2.6-flare": "3f53b9e52ec0ee2820a4be3709ec2c1c5db655c74fcbb908b55c9294a85b03d5",
+            "gpt-image-2.5-sunburst": "d5ad02a5b4d52015a614dd887f7b991a59f6ae510e2e061a2bc2b903f022f124",
+            "gpt-image-2.5-flare": "63349cc76e8e8d4ae806a7ac473c51afd3ac5a0dd0fe2d330d2593689c19597c",
+            "seedream-5.5": "9542e9e985b662f70b469869833f5e3ce86f9cc52c3bab4ebf21479ffa455592",
+            "ideogram-4.5": "223f6514cd3e9fcc47c28f313c84451229e57b219be30efc60768a8c1fd85bc3",
+        }
+        with patch.object(rn, "mock_enabled", return_value=True), patch.object(dp.time, "time", return_value=1000.0):
+            for name, digest in pinned.items():
+                gh, gr = project(name)
+                gh, _, report = pre.run(gh, **args(name, image_size="4K", thinking_level="high"))
+                gm = st.load_manifest(gr)
+                packed = json.dumps({"jobs": gm["jobs"], "prepare_settings": gm["prepare_settings"], "report": report},
+                                    ensure_ascii=False).encode("utf-8")
+                check(hashlib.sha256(packed).hexdigest() == digest, f"FM2S2 기존 모델 Prepare 바이트 불변 {name}")
+                check(all("opts" not in j for j in gm["jobs"])
+                      and not set(option_keys) & gm["prepare_settings"].keys(), "FM2S2 옵션 없는 모델은 새 기록 키 없음")
+                derived = pl.derive(gr, gm)
+                check(not any(x.startswith("prepare.") for x in derived["confirm"]), "FM2S2 옛 Prepare 기록의 확인 필요 없음")
+                settings = derived["settings"]
+                settings["prepare"].update(image_size="1K", thinking_level="minimal")
+                check(pl.drift(settings, gm) == [], f"FM2S2 쓰지 않는 옵션의 갈라짐 없음 {name}")
+                settled(gr, gm)
+                preview = pl.switch_preview(gr, gm, settings, prepare=settings["prepare"])
+                check(preview.get("exact") is True and preview.get("need") == 0,
+                      f"FM2S2 쓰지 않는 옵션의 추가 승인 없음 {name}")
+                pre.run(gh, **settings["prepare"])
+                check(keys(st.load_manifest(gr)) == keys(gm), f"FM2S2 쓰지 않는 옵션의 키 불변 {name}")
+
+        # 이 갈래는 Prepare 를 검증한다. 제출 전 차단은 B 갈래 계약이므로 대역으로 격리한다.
+        with patch.object(rn, "blocked_reason", return_value=None):
+            ratio_crops = [("001_match", [0, 0, 80, 100]), ("002_mismatch", [90, 0, 171, 100])]
+            for name in ("nano-banana-2.1", "nano-banana-2", "nano-banana-pro"):
+                nh, nr = project(name, ratio_crops)
+                values = args(name)
+                nh, _, report = pre.run(nh, **values)
+                nm = st.load_manifest(nr)
+                effective = {"image_size": "2K"}
+                if name != "nano-banana-pro":
+                    effective["thinking_level"] = "medium" if name == "nano-banana-2.1" else "minimal"
+                check(nm["prepare_settings"] == {k: v for k, v in values.items() if k not in option_keys} | effective,
+                      f"FM2S3 Prepare 기록은 모델별 실제 옵션만 {name}")
+                matched, mismatched = nm["jobs"]
+                check(matched["opts"] == effective | {"aspect_ratio": "4:5"} and matched["size"] == [1856, 2304]
+                      and matched["size_info"]["method"] == "ratio" and matched["size_info"]["src"] == [80, 100]
+                      and matched["size_info"]["image_size"] == "2K" and matched["size_info"]["ratio"] == "4:5",
+                      f"FM2S3 맞는 크롭의 옵션·예상 크기 {name}")
+                problem = models.ratio_problem(name)
+                check(mismatched["opts"] == effective and mismatched["size_info"]["problem"] == problem
+                      and models.opts_problem(name, mismatched["opts"]) == problem and problem in report,
+                      f"FM2S3 안 맞는 크롭도 작업 생성·비율 없음·반영 경고 {name}")
+                check(all(j["quality"] == "standard" and "complexity" not in j and j["cell_key"] == st.cell_key(
+                      name, "standard", j["size"], dp._BACKGROUND, j["prompt"], [i["sha"] for i in j["inputs"]],
+                      dp.dprompt.TEMPLATE_VERSION, j["variant"], opts=j["opts"]) for j in nm["jobs"]),
+                      f"FM2S3 고정 품질·생성 조건에 작업 옵션 반영 {name}")
+                derived = pl.derive(nr, nm)["settings"]
+                check(pl.drift(dict(derived, prepare=values), nm) == [], "FM2S3 저장값과 모델별 기본값은 같은 생성 조건")
+                old_jobs = pl.derive(nr, dict(nm, prepare_settings={}))
+                check(all(old_jobs["settings"]["prepare"][k] == v for k, v in effective.items())
+                      and not any("prepare." + k in old_jobs["confirm"] for k in option_keys), "FM2S3 jobs 에서 옵션 복구")
+                changed = values | {"image_size": "4K"}
+                drift = pl.drift(dict(derived, prepare=changed), nm)
+                check([(d["field"], d["kind"]) for d in drift] == [("image_size", "cell")], "FM2S3 해상도 변경은 셀 갈라짐")
+                pre.run(nh, **changed)
+                enlarged = st.load_manifest(nr)
+                check(keys(enlarged) != keys(nm) and enlarged["jobs"][0]["size"] == [3712, 4608], "FM2S3 4K 는 새 키·예상 크기")
+                one = values | {"image_size": "1K"}
+                pre.run(nh, **one)
+                small = st.load_manifest(nr)
+                check(small["jobs"][0]["size"] == [928, 1152] and keys(small) != keys(nm), "FM2S3 1K 는 새 키·예상 크기")
+                high = one | {"thinking_level": "high"}
+                drift = pl.drift(dict(derived, prepare=high), small)
+                pre.run(nh, **high)
+                check((keys(st.load_manifest(nr)) != keys(small)) == (name != "nano-banana-pro")
+                      and [d["field"] for d in drift] == ([] if name == "nano-banana-pro" else ["thinking_level"]),
+                      f"FM2S3 추론 변경은 지원하는 모델만 새 키·갈라짐 {name}")
+                pre.run(nh, **values)
+                if name == "nano-banana-2":
+                    pre.run(nh, **(values | {"thinking_level": "minimal"}))
+                    check(keys(st.load_manifest(nr)) == keys(nm), "FM2S3 2의 medium 은 minimal 과 같은 키")
+
+            sh, sr = project("switch")
+            values = args("nano-banana-2.1")
+            sh = pre.run(sh, **values)[0]
+            transitions = [(values, 0), (values | {"image_size": "4K"}, 4),
+                           (values | {"image_size": "4K", "thinking_level": "high"}, 4),
+                           (args("nano-banana-2"), 4), (args("nano-banana-2", thinking_level="minimal"), 0),
+                           (args("nano-banana-pro"), 4), (args("gpt-image-2.5-sunburst"), 4), (args("nano-banana-2.1"), 0)]
+            for values, expected_need in transitions:
+                previous = st.load_manifest(sr)
+                snapshot = copy.deepcopy(previous)
+                settled(sr, previous)
+                settings = pl.derive(sr, previous)["settings"]
+                with patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+                    preview = pl.switch_preview(sr, previous, settings, prepare=values)
+                proposed = copy.deepcopy(plans.call_args.args[0]["jobs"]) if plans.called else []
+                sh = pre.run(sh, **values)[0]
+                actual = st.load_manifest(sr)
+                check(proposed == actual["jobs"] and previous == snapshot, "FM2S4 미리 보기 작업·키 = 실제 Prepare, 원본 불변")
+                plan = rn.plan_calls(actual, sr)
+                ap = rn.split_approval(plan, "", backend=rn.BACKEND_FORGE)
+                check(preview.get("exact") is True and preview.get("need") == len(ap["needs_approval"]) == expected_need
+                      and preview.get("cells") == len({e["cell_key"] for e in ap["needs_approval"]}) == expected_need // 2,
+                      "FM2S4 옵션만 변경·모델 전환·같은 유효 옵션·이전 키 복귀의 승인 건수")
+
+            # B 갈래가 쓸 후보 origin_info 를 직접 구성해 보드 응답 경로만 검증한다.
+            ch, cr = project("candidates")
+            pre.run(ch, **args("nano-banana-2.1"))
+            cm = st.load_manifest(cr)
+            job = cm["jobs"][0]
+            req = dict(job, backend="forge", rep=0, call_id=rn.call_id_for(job["cell_key"], 0))
+            done = {"slots": [{"slot": i, "file": job["inputs"][0]["file"], "size": job["size"]} for i in range(3)]}
+            rn._add_candidates(cm, req, done, [])
+            for cand in cm["candidates"]:
+                cand["origin_info"]["opts"] = dict(job["opts"])
+            st.save_manifest(cr, cm)
+            rows = bd.build_state(cr)
+            check(all(c["opts"] == job["opts"] for t in rows["targets"] for c in t["candidates"])
+                  and all(c["opts"] == j["opts"] for t, j in zip(rows["targets"], cm["jobs"]) for c in t["cells"]),
+                  "FM2S5 origin_info·작업 요약의 옵션이 후보·셀 응답까지 전달")
+            check(srv._public_json(rows, bd) == rows, "FM2S5 서버 응답 정리에서도 옵션 보존")
+            for name in ("ideogram-4.5", "gpt-image-2.6-sunburst"):
+                for cand in cm["candidates"]:
+                    cand["origin_info"]["model"] = name
+                    cand["origin_info"].pop("opts", None)
+                st.save_manifest(cr, cm)
+                text = "서버가 쓴 프롬프트\n" * 600
+                used.return_value = [text, None, "unchanged"]
+                with patch.object(fb, "prompt_changed", return_value=[True, True, False]):
+                    candidates = [c for t in bd.build_state(cr)["targets"] for c in t["candidates"]]
+                    flag = "prompt_rewritten" if name == "ideogram-4.5" else "prompt_changed"
+                    other = "prompt_changed" if flag == "prompt_rewritten" else "prompt_rewritten"
+                    check([c.get(flag, False) for c in candidates] == [True, True, False]
+                          and all(other not in c and "opts" not in c for c in candidates), "FM2S5 후보 자신의 모델로 표지 구분")
+                    check(candidates[0]["prompt_used"] == text[:4000]
+                          and all("prompt_used" not in c for c in candidates[1:]), "FM2S5 슬롯별 글·4000자 제한·없는 글 생략")
+                    used.return_value = []
+                    candidates = [c for t in bd.build_state(cr)["targets"] for c in t["candidates"]]
+                    check(candidates[0][flag] and all("prompt_used" not in c for c in candidates), "FM2S5 옛 기록은 표지만")
+                    with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}):
+                        check(bd._forge_candidate_flags(cr, cm["candidates"][0]["origin_info"]) == {}, "FM2S5 로컬 후보 표지 불변")
+                for slot in (-1, True, None, 99):
+                    with patch.object(fb, "prompt_changed", return_value=[True]):
+                        check(bd._forge_candidate_flags(cr, dict(cm["candidates"][0]["origin_info"], slot=slot)) == {},
+                              "FM2S5 잘못된 슬롯은 표지 없음")
+            used.reset_mock()
+            check(bd._forge_candidate_flags(cr, {"backend": "mock", "slot": 0}) == {} and not used.called,
+                  "FM2S5 Forge 이외 후보는 기록 조회 없음")
+
+        class Runner:
+            def __init__(self, **kw):
+                self.closed = False
+
+            def close(self, timeout=0):
+                self.closed = True
+
+        async def env_cases():
+            jobs = types.SimpleNamespace(JobRunner=Runner, routes=lambda runner: ())
+            transport = AsyncMock(side_effect=AssertionError("외부 호출 금지"))
+            catalog = {m.checkpoint: m.max_inputs for m in models.MODELS.values()}
+            for connected in (False, True):
+                cfg = srv.ServerConfig(data_dir=str(out / "env"), public_origin="https://studio.example",
+                                       forge=fg.ForgeConfig("https://forge.example", media_origins=("https://forge.example",)) if connected else None)
+                with patch.dict(os.environ, {rn.MOCK_ENV: ""}), patch.object(srv, "_server_secret", return_value=b"synthetic"), \
+                        patch.object(fb, "ensure_catalog", new=AsyncMock(return_value=catalog)) as ensure, \
+                        patch.object(fb, "catalog_failed", return_value=False):
+                    app = srv.make_app(cfg, jobs_module=jobs, forge_transport=transport)
+                    app.freeze()
+                    try:
+                        request = {"bmk_dp_session": {"name": "example", "tag": "synthetic",
+                                                     "scope": {"org": "example", "account": "example"}}}
+                        body = json.loads((await bd.env_handler(request)).text)
+                        if not connected:
+                            check("models" not in body["caps"] and not ensure.called, "FM2S6 Forge 미연결 env 는 models 없음")
+                            continue
+                        check(body["caps"]["models"] == [models.describe(n, catalog, checked=True) for n in models.MODELS],
+                              "FM2S6 실제 env 응답의 전체 모델 줄")
+                        by_name = {row["name"]: row for row in body["caps"]["models"]}
+                        row = by_name["nano-banana-2.1"]
+                        check(row["opt_defaults"] == {"image_size": "2K", "thinking_level": "medium"}
+                              and row["family"] == "nano-banana" and row["ratios"] == list(models.RATIOS)
+                              and row["ratio_tolerance"] == 0.01 and row["fallback"] is None, "FM2S6 새 env 필드 보존")
+                        retired = dict(catalog)
+                        retired.pop(models.get("nano-banana-2.1").checkpoint)
+                        ensure.return_value = retired
+                        body = json.loads((await bd.env_handler(request)).text)
+                        row = next(r for r in body["caps"]["models"] if r["name"] == "nano-banana-2.1")
+                        check(row["available"] is False and row["fallback"] == "nano-banana-2", "FM2S6 퇴역 모델의 계열 대체")
+                    finally:
+                        await app.cleanup()
+                    check(app[srv._RUNNER_KEY].closed, "FM2S6 앱 대역 종료")
+            check(not transport.called, "FM2S6 모든 env 검증은 외부 호출 없음")
+
+        asyncio.run(env_cases())
 
 
 def forge_models2_dev_unit():
@@ -62526,6 +62791,8 @@ def forge_models_settings_unit():
         with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1"}), \
                 patch.object(rn, "mock_enabled", return_value=False):
             for name in models.FORGE_ONLY:
+                if models.get(name).area is None:
+                    continue  # 비율 목록 모델은 forge_models2_settings_unit 에서 별도로 단정한다.
                 lim = fixture["limits"][name]
                 for rule in st.GPT_SIZE_RULES:
                     nh, nr = project(f"{name}-{rule}")
@@ -62534,7 +62801,8 @@ def forge_models_settings_unit():
                         nh, _, _ = pre.run(nh, **values)
                     nm = st.load_manifest(nr)
                     check(approvals.call_args.kwargs["backend"] == rn.BACKEND_FORGE, "FMS5 Prepare 승인 해시는 실행 백엔드 사용")
-                    check(nm["prepare_settings"] == values and len(nm["jobs"]) == len(rects),
+                    check(nm["prepare_settings"] == {k: v for k, v in values.items() if k not in ("image_size", "thinking_level")}
+                          and len(nm["jobs"]) == len(rects),
                           f"FMS5 위젯 값 보존·크롭별 작업 생성 {name} {rule}")
                     for job, (_, rect) in zip(nm["jobs"], rects):
                         w, h0 = rect[2] - rect[0], rect[3] - rect[1]
@@ -62609,7 +62877,8 @@ def forge_models_settings_unit():
             return [c for t in bd.build_state(rr)["targets"] for c in t["candidates"]]
 
         with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}), \
-                patch.object(bd._forge_backend(), "prompt_changed", return_value=[True, False, False, False]):
+                patch.object(bd._forge_backend(), "prompt_changed", return_value=[True, False, False, False]), \
+                patch.object(bd._forge_backend(), "prompt_used", return_value=[], create=True):
             rows = candidates()
             check([c.get("ratio_changed", False) for c in rows] == [True, False, False, False]
                   and [c.get("prompt_changed", False) for c in rows] == [True, False, False, False]

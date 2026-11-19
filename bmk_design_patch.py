@@ -1931,6 +1931,9 @@ class BMKDesignPatchPrepare:
             "optional": {
                 "complexity": (["low", "medium", "high"], {"default": "high",
                                 "tooltip": "2.6 전용 복잡도(생성 조건 키에 포함). 2.5 에서는 쓰지 않음."}),
+                **({"image_size": (["1K", "2K", "4K"], {"default": "2K", "tooltip": "모델의 출력 해상도."}),
+                    "thinking_level": (["minimal", "medium", "high"], {"default": "medium", "tooltip": "모델의 추론 단계."})}
+                   if compat.server_mode() else {}),
             },
         }
 
@@ -1946,7 +1949,8 @@ class BMKDesignPatchPrepare:
     )
     SEARCH_ALIASES = _ALIASES + ["prepare", "prompt", "gpt prompt", "프롬프트", "작업 준비", "평탄화"]
 
-    def run(self, project, model, quality, size_rule, variants, n, ref_style, calls_per_cell=1, complexity="high"):
+    def run(self, project, model, quality, size_rule, variants, n, ref_style, calls_per_cell=1, complexity="high",
+            image_size="2K", thinking_level="medium"):
         t0 = time.time()
         forge_only = models.is_forge_only(model)
         if forge_only:
@@ -1954,6 +1958,7 @@ class BMKDesignPatchPrepare:
             if problem:
                 raise ValueError(f"{_TAG} {problem}")
         job_quality = models.job_quality(model, quality)
+        model_opts = models.job_opts(model, {"image_size": image_size, "thinking_level": thinking_level})
         root, m = _open(project)
         before = _snapshot(m)
         if not m["base"]:
@@ -2035,11 +2040,12 @@ class BMKDesignPatchPrepare:
             probs = dprompt.validate_spec(spec)
             x0, y0, x1, y1 = crop["rect"]
             if forge_only:
-                W, H, sinfo = models.output_size(model, x1 - x0, y1 - y0, size_rule)
+                W, H, sinfo = models.output_size(model, x1 - x0, y1 - y0, size_rule, opts=model_opts)
                 if sinfo.get("problem"):
                     spec["warnings"].append(f"출력 크기 {W}x{H}: {sinfo['problem']}")
             else:
                 W, H, sinfo = store.gpt_output_size(x1 - x0, y1 - y0, size_rule)
+            opts = models.job_opts(model, model_opts, src=(x1 - x0, y1 - y0))
             chosen = dprompt.select_variants(dprompt.variants(spec), variants)
             crop_jobs, seen_prompts = [], {}
             for vname, v in chosen.items():
@@ -2051,7 +2057,7 @@ class BMKDesignPatchPrepare:
                 seen_prompts[(v["prompt"], tuple(v["images"]))] = vname
                 shas = [sha_of[p] for p in v["images"]]
                 ck = store.cell_key(model, job_quality, [W, H], _BACKGROUND, v["prompt"], shas, dprompt.TEMPLATE_VERSION, vname,
-                                    complexity=complexity, opts=models.job_opts(model))
+                                    complexity=complexity, opts=opts)
                 roles = []
                 for p in v["images"]:
                     role = ("canvas" if p == spec["canvas"] else "guide" if p == spec.get("guide")
@@ -2071,6 +2077,10 @@ class BMKDesignPatchPrepare:
                     job["complexity"] = complexity
                 else:
                     job.pop("complexity", None)
+                if opts is not None:
+                    job["opts"] = dict(opts)
+                else:
+                    job.pop("opts", None)
                 crop_jobs.append(job)
             jobs += crop_jobs
             for wmsg in spec["warnings"] + [f"스펙 점검: {p}" for p in probs]:
@@ -2084,6 +2094,8 @@ class BMKDesignPatchPrepare:
         # jobs 와 같은 커밋에(STUDIO_S3_SPEC §2.2): 실제로 쓴 위젯 값 — Studio 처음 값·그래프와의 갈라짐 판정, 같은 설정이면 바이트 그대로
         m["prepare_settings"] = {"model": model, "quality": quality, "size_rule": size_rule, "variants": variants,
                                  "n": int(n), "ref_style": ref_style, "calls_per_cell": int(calls_per_cell), "complexity": complexity}
+        if model_opts is not None:
+            m["prepare_settings"].update(model_opts)
         if not adopt_pending:  # 채택 미반영 크롭이 있으면 열 때 값 그대로(없으면 키 없음) — Studio '반영 필요'가 다음 반영까지 남게
             m["prepare_inputs"] = inputs_fp
         # 배치 10 D161 공용 자리(몸통 = 갈래 B): 잠금 안 병합 결과에서 jobs 밖(·reset) 생성 조건의 다시 생성 대기를 원장 쓴 몫까지 내림

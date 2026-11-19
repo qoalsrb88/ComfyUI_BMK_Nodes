@@ -868,7 +868,16 @@ def _forge_candidate_flags(root, info):
         flags = _forge_backend().prompt_changed(root, info.get("call_id"))
         slot = info.get("slot")
         if type(slot) is int and 0 <= slot < len(flags) and flags[slot]:
-            return {"prompt_changed": True}
+            try:
+                from . import bmk_design_patch_models as models
+            except ImportError:
+                import bmk_design_patch_models as models
+            model = models.get(info.get("model"))
+            result = {"prompt_rewritten" if model is not None and model.prompt_used else "prompt_changed": True}
+            used = _forge_backend().prompt_used(root, info.get("call_id"))
+            if slot < len(used) and isinstance(used[slot], str) and used[slot]:
+                result["prompt_used"] = used[slot][:4000]
+            return result
     return {}
 
 
@@ -2840,6 +2849,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                     "rejected": bool(rejects.get(c["key"])),
                     "cell_key": ck, "call_id": call_id, "rep": rep, "variant": info.get("variant"),
                     "model": info.get("model"), "quality": info.get("quality"),
+                    **({"opts": info["opts"]} if info.get("opts") is not None else {}),
                     # 원장 calls 의 완료 시각·승인 종류(후보 캡션), 지금 jobs 에 없는 셀(설정·입력이 바뀌기 전 셀 — 옛 셀)
                     "done": call.get("finished") if call else None, "via": _call_via(call), "took": _call_took(call),
                     "old_cell": bool(ck and cur_cells and ck not in cur_cells),
@@ -2875,6 +2885,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                 cells.append({"cell_key": ck, "variant": j.get("variant"), "tids": _job_tids(j),
                               "reps": int(j.get("reps") or 1), "rerolls": int(rerolls.get(ck) or 0),
                               "pending": pending.get(ck, 0), "pre": pre_cells.get(ck, 0), "model": j.get("model"), "quality": j.get("quality"),
+                              **({"opts": j["opts"]} if j.get("opts") is not None else {}),
                               "rerolls_pending": reroll_waiting.get(ck, 0), "rerolls_base": reroll_base.get(ck, 0),
                               "size": j.get("size"), "n": j.get("n"), "est_usd": _est_usd(j)})
             refs = [{"index": i, "file": r, "thumb_url": _turl(rk, "ref", f"{tkey}/{i}", BIG_SIZE, _sig("ref", BIG_SIZE, r)),

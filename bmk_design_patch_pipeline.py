@@ -188,7 +188,8 @@ WIDGETS = {
     "BMKDesignPatchPrepare": {
         "project": _LINK, "model": _c(_MODELS, _MODELS[0]), "quality": _c(_QUALITIES, "max"),
         "size_rule": _c(tuple(store.GPT_SIZE_RULES), "user_k"), "variants": _s("V1,V4"), "n": _i(4, 1, 10),
-        "ref_style": _c(_REF_STYLES, "at"), "calls_per_cell": _i(1, 1, 8), "complexity": _c(("low", "medium", "high"), "high")},
+        "ref_style": _c(_REF_STYLES, "at"), "calls_per_cell": _i(1, 1, 8), "complexity": _c(("low", "medium", "high"), "high"),
+        "image_size": _c(("1K", "2K", "4K"), "2K"), "thinking_level": _c(("minimal", "medium", "high"), "medium")},
     "BMKDesignPatchSpecDraft": {
         "project": _LINK, "approve": _s(""), "vlm": _c("vlm:VLM_CHOICES", "openai/gpt-6-sol"),
         "effort": _c("vlm:EFFORTS", "xhigh"), "image_detail": _c("vlm:IMAGE_DETAILS", "high"),
@@ -220,7 +221,8 @@ _IMPORT_PATHS = ("psd_path", "refs_dir", "glossary_path")
 _IMPORT_SOURCE = (("psd_path", "psd"), ("crop_group", "crop_group"), ("clean_plate_layer", "clean_plate_layer"),
                   ("base_layer", "base_layer"), ("crop_pixels_group", "crop_pixels_group"), ("refs_dir", "refs_dir"),
                   ("glossary_path", "glossary"))
-_PREPARE_CELL = ("model", "quality", "size_rule", "variants", "ref_style", "complexity")  # complexity 는 2.6 만
+_PREPARE_OPTS = ("image_size", "thinking_level")
+_PREPARE_CELL = ("model", "quality", "size_rule", "variants", "ref_style", "complexity") + _PREPARE_OPTS
 # n·calls_per_cell 은 셀이 그대로 — n 은 장 수·비용·승인 해시만. calls_per_cell 을 늘리면 jobs[].reps 가 늘어 완료된 셀에도 빠진 rep 이
 # 새 유료 호출(runner.plan_calls '생성 조건마다 호출 수 증가')이 되므로 갈라짐 kind "calls"(줄이면 "cost")
 _REV_MAX = 2 ** 53 - 1  # 브라우저 JSON 수(Number.MAX_SAFE_INTEGER) — 넘는 rev 는 반올림돼 rev·sig 대조가 늘 어긋나므로 깨진 파일로 본다
@@ -489,8 +491,10 @@ def _parse(raw: bytes) -> dict:
         if sec not in doc:
             raise ValueError(f"{_server_text(PIPELINE_NAME, '실행 설정')} 에 {sec} 절이 없습니다")
         vals = doc[sec]
-        if sec == "prepare" and isinstance(vals, dict) and "complexity" not in vals:
-            vals = dict(vals, complexity="high")  # 옛 파일의 optional 기본값, 확인 필요를 새로 만들지 않는다
+        if sec == "prepare" and isinstance(vals, dict):
+            vals = dict(vals)
+            for key in ("complexity",) + _PREPARE_OPTS:
+                vals.setdefault(key, _spec(sec, key)["default"])  # 옛 파일의 optional 기본값, 확인 필요를 새로 만들지 않는다
         if sec == "export" and isinstance(vals, dict) and "subfolder" not in vals:
             vals = dict(vals, subfolder="")  # 배치 3b 전 파일(키 없음) = 기본 폴더(노드 기본값) — 깨진 파일 아님
         try:
@@ -654,11 +658,15 @@ def _jobs_of(m: dict) -> list[dict]:
 def _jobs_prepare(jobs: list[dict]) -> dict:
     """jobs 에 남은 Prepare 설정 {키: 작업마다 값} — model·quality·n·calls_per_cell(= reps, 없으면 1)·size_rule(= size_info.rule).
     variants·ref_style 은 기록이 없다(옛 프로젝트 유도·갈라짐이 같이 쓴다)."""
-    return {"model": [j.get("model") for j in jobs], "quality": [j.get("quality") for j in jobs],
+    values = {"model": [j.get("model") for j in jobs], "quality": [j.get("quality") for j in jobs],
             "complexity": [j.get("complexity", "high") if j.get("model") in store.COMPLEXITY_MODELS else "high" for j in jobs],
             "n": [j.get("n") for j in jobs], "calls_per_cell": [j.get("reps") if j.get("reps") is not None else 1 for j in jobs],
             "size_rule": [(j.get("size_info") or {}).get("rule") if isinstance(j.get("size_info"), dict) else None
                           for j in jobs]}
+    opts = [_models().job_opts(j.get("model"), j.get("opts")) or {} for j in jobs]
+    for key in _PREPARE_OPTS:
+        values[key] = [o.get(key, _spec("prepare", key)["default"]) for o in opts]
+    return values
 
 
 def _derive_prepare(m: dict, out: dict, frm: dict, conf: set, notes: list) -> None:
@@ -666,7 +674,8 @@ def _derive_prepare(m: dict, out: dict, frm: dict, conf: set, notes: list) -> No
     if isinstance(ps, dict) and ps:
         vals = {k: ps[k] for k in section_keys("prepare") if k in ps}
         vals.setdefault("calls_per_cell", 1)  # 생략 = 1(prepare_settings 계약)
-        vals.setdefault("complexity", "high")
+        for key in ("complexity",) + _PREPARE_OPTS:
+            vals.setdefault(key, _spec("prepare", key)["default"])
         try:
             vals = _check_section("prepare", vals, deep=False)
         except ValueError as e:
@@ -834,12 +843,13 @@ def _variant_tokens(v: Any) -> set[str]:
 
 
 def prepare_record(m: dict) -> tuple[str | None, dict]:
-    """갈라짐이 비교할 마지막 Prepare 기록 → (출처, {키: 값}). "prepare_settings" = 키 8개(calls_per_cell=1·complexity=high 생략 가능) / "jobs" = 옛 프로젝트
+    """갈라짐이 비교할 마지막 Prepare 기록 → (출처, {키: 값}). "prepare_settings" = 위젯 기록(optional 은 기본값으로 보충) / "jobs" = 옛 프로젝트
     (prepare_settings 없음 — derive 와 같은 jobs 최다값의 model·quality·size_rule·n·calls_per_cell, 최다값이 없음(None)인 키는 뺌.
     variants·ref_style 은 기록이 없어 없음 — confirm 이 맡는다) / None = 기록 없음({})."""
     ps = m.get("prepare_settings")
     if isinstance(ps, dict) and ps:
-        return "prepare_settings", {k: ps.get(k, {"calls_per_cell": 1, "complexity": "high"}.get(k)) for k in section_keys("prepare")}
+        optional = {k: _spec("prepare", k)["default"] for k in ("calls_per_cell", "complexity") + _PREPARE_OPTS}
+        return "prepare_settings", {k: ps.get(k, optional.get(k)) for k in section_keys("prepare")}
     rec = {}
     for key, vs in _jobs_prepare(_jobs_of(m)).items():
         v = _majority(vs)[0] if vs else None
@@ -867,6 +877,8 @@ def drift(settings: dict, m: dict) -> list[dict]:
     _src, rec = prepare_record(m)
     pre = (settings or {}).get("prepare") or {}
     recorded_model = _models().get(rec.get("model"))
+    recorded_opts = _models().job_opts(rec.get("model"), rec) or {}
+    target_opts = _models().job_opts(pre.get("model"), pre) or {}
     for key in section_keys("prepare"):
         if key not in rec:
             continue
@@ -875,6 +887,10 @@ def drift(settings: dict, m: dict) -> list[dict]:
         if key == "quality" and recorded_model is not None and not recorded_model.qualities:
             continue
         mv, sv = rec[key], pre.get(key)
+        if key in _PREPARE_OPTS:
+            if key not in recorded_opts or key not in target_opts:
+                continue
+            mv, sv = recorded_opts[key], target_opts[key]
         if (_variant_tokens(mv) == _variant_tokens(sv)) if key == "variants" else mv == sv:
             continue
         more = key == "calls_per_cell" and not (type(mv) is int and type(sv) is int and mv >= sv)  # 모르면(정수 아님) 늘린 쪽으로
@@ -928,6 +944,8 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
             import bmk_design_patch_runner as runner
         before = settings["prepare"]
         target = dict(prepare if prepare is not None else before)
+        for key in _PREPARE_OPTS:
+            target.setdefault(key, _spec("prepare", key)["default"])
         if prepare is None and target["model"] in ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare"):
             target["model"] = target["model"].replace("2.5", "2.6")
         target = validate_section("prepare", target)
@@ -952,7 +970,7 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
                 if not isinstance(src, (list, tuple)) or len(src) != 2 or any(type(v) is not int or v < 1 for v in src):
                     return {"prepare": target, "error": "작업에 생성 조건 기록이 부족합니다 — 먼저 Prepare 를 반영하세요", "uncertain": True}
                 if models.is_forge_only(target["model"]):
-                    W, H, info = models.output_size(target["model"], *src, target["size_rule"])
+                    W, H, info = models.output_size(target["model"], *src, target["size_rule"], opts=target)
                 else:
                     W, H, info = store.gpt_output_size(*src, target["size_rule"])
                 job.update(size=[W, H], size_info=info)
@@ -962,9 +980,14 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
                 job["complexity"] = target["complexity"]
             else:
                 job.pop("complexity", None)
+            opts = models.job_opts(job["model"], target, src=(job.get("size_info") or {}).get("src"))
+            if opts is not None:
+                job["opts"] = opts
+            else:
+                job.pop("opts", None)
             ck = store.cell_key(job["model"], job["quality"], job["size"], job.get("background"), job["prompt"],
                                 [i["sha"] for i in job.get("inputs") or []], job["template_version"], job["variant"],
-                                complexity=target["complexity"], opts=models.job_opts(job["model"]))
+                                complexity=target["complexity"], opts=opts)
             job["cell_key"] = ck
             if ck in old_jobs and str(old_jobs[ck].get("n")) != str(target["n"]):
                 reset.add(ck)
