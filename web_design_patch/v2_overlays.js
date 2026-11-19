@@ -1178,7 +1178,6 @@ window.DPV2Overlays = (() => {
 
   function openNewProjectModal(initialFile = null) {
     let targetFile = initialFile;
-    let targetForgeFile = null;
     const refFiles = [];
 
     const nameInput = Data.el("input", {
@@ -1197,11 +1196,6 @@ window.DPV2Overlays = (() => {
           Data.el("img", { src: url, alt: "" }),
           Data.el("span", { text: `타깃: ${targetFile.name}` }),
           Data.el("button", { type: "button", className: "row-icon-btn", text: "×", onClick: () => { targetFile = null; refreshPicked(); } }),
-        ));
-      } else if (targetForgeFile) {
-        pickedBox.append(Data.el("span", { className: "np-picked-chip" },
-          Data.el("span", { text: `Forge 타깃: ${targetForgeFile}` }),
-          Data.el("button", { type: "button", className: "row-icon-btn", text: "×", onClick: () => { targetForgeFile = null; refreshPicked(); } }),
         ));
       }
       refFiles.forEach((rf, i) => {
@@ -1222,7 +1216,6 @@ window.DPV2Overlays = (() => {
             inp.addEventListener("change", () => {
               if (inp.files && inp.files[0]) {
                 targetFile = inp.files[0];
-                targetForgeFile = null;
                 if (!nameInput.value.trim()) nameInput.value = targetFile.name.replace(/\.[^.]+$/, "").replace(/[^\p{L}\p{N}_.-]+/gu, "_");
                 refreshPicked();
               }
@@ -1309,11 +1302,9 @@ window.DPV2Overlays = (() => {
             const name = nameInput.value.trim();
             const vErr = Data.validateProjectName(name);
             if (vErr) { errEl.textContent = vErr; return; }
-            if (!targetFile && !targetForgeFile) { errEl.textContent = "타깃 원화 이미지를 먼저 선택해 주세요."; return; }
+            if (!targetFile) { errEl.textContent = "타깃 원화 이미지를 먼저 선택해 주세요."; return; }
             try {
-              const res = targetFile
-                ? await Api.createProjectFile(name, targetFile)
-                : await Api.createProjectAdopt(name, targetForgeFile);
+              const res = await Api.createProjectFile(name, targetFile);
               for (const rf of refFiles) {
                 try { await Api.uploadSheet(res.key, rf, null); } catch (_) {}
               }

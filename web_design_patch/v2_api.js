@@ -73,9 +73,6 @@ window.DPV2Api = (() => {
     return data;
   }
 
-  const createProjectPath = (name, path) => postJson("projects/new", { name, path });
-  const createProjectAdopt = (name, file) => postJson("projects/new", { name, adopt: true, file });
-
   // ── 2. 상태 · 레이아웃 · Z-Order ──
   const getState = (root, sinceRev) => getJson("state?" + qs({ root, since_rev: sinceRev }));
   const getLayout = (root) => getJson("layout?" + qs({ root }));
@@ -112,20 +109,14 @@ window.DPV2Api = (() => {
   const cutRef = (root, body) => postJson("refs/cut", Object.assign({ root }, body));
   const saveRef = (root, rev, body) => postJson("refs/save", Object.assign({ root, rev }, body));
   const linkRef = (root, rev, body) => postJson("refs/link", Object.assign({ root, rev }, body));
-  const poolRef = (root, rev, body) => postJson("refs/pool", Object.assign({ root, rev }, body));
 
-  // ── 4. 파이프라인 · 계획 · 진행 · 초안 · 후보 채택 ──
+  // ── 4. 파이프라인 · 계획 · 진행 · 후보 채택 · 중단 · 내보내기 ──
   const getPipeline = (root) => getJson("pipeline?" + qs({ root }));
   const savePipelineSettings = (root, rev, section, values) => postJson("pipeline/settings", { root, rev, section, values });
-  const confirmPipelineSections = (root, rev, sections) => postJson("pipeline/settings", { root, rev, confirm_only: sections });
   const getPlan = (root, only, style) => getJson("pipeline/plan?" + qs(only ? { root, only, style: style ? "1" : "0" } : { root }));
   const getProgress = (root) => getJson("pipeline/progress?" + qs({ root }));
-  const getDraft = (root, crop) => getJson("draft?" + qs({ root, crop }));
-  const adoptDraft = (root, body) => postJson("draft/adopt", Object.assign({ root }, body));
-  const getPrompt = (root, key) => getJson("prompt?" + qs({ root, key }));
   const pickCandidate = (root, body) => postJson("pick", Object.assign({ root }, body));
   const rejectCandidate = (root, key, value) => postJson("reject", { root, key, value });
-  const rerollCell = (root, body) => postJson("reroll", Object.assign({ root }, body));
   const drainRun = (root) => postJson("drain", { root });
   const getSeams = (root, sig) => getJson("seams?" + qs({ root, sig }));
   const saveToForge = (root) => postJson("forge/save", { root });
@@ -133,7 +124,6 @@ window.DPV2Api = (() => {
 
   // ── 5. 마스크 · 후보정 변형 (L 8-bit PNG 인코더 내장) ──
   const getMask = (root, key) => getJson("mask?" + qs({ root, key }));
-  const editMask = (root, body) => postJson("mask/edit", Object.assign({ root }, body));
   const adjustMask = (root, body) => postJson("mask/adjust", Object.assign({ root }, body));
 
   async function fetchImageRgba(rel) {
@@ -322,13 +312,13 @@ window.DPV2Api = (() => {
 
   return {
     apiUrl, can,
-    listProjects, openProject, createProjectFile, createProjectPath, createProjectAdopt,
+    listProjects, openProject, createProjectFile,
     getState, getLayout, startLayout, mutateCrop, reorderZ,
-    getRefs, listSheets, sheetUrl, uploadSheet, cutRef, saveRef, linkRef, poolRef,
-    getPipeline, savePipelineSettings, confirmPipelineSections, getPlan, getProgress,
-    getDraft, adoptDraft, getPrompt, pickCandidate, rejectCandidate, rerollCell, drainRun,
+    getRefs, listSheets, sheetUrl, uploadSheet, cutRef, saveRef, linkRef,
+    getPipeline, savePipelineSettings, getPlan, getProgress,
+    pickCandidate, rejectCandidate, drainRun,
     getSeams, saveToForge, exportDownloadUrl,
-    getMask, editMask, adjustMask, fetchImageRgba, encodePngL, saveMaskPng,
+    getMask, adjustMask, fetchImageRgba, encodePngL, saveMaskPng,
     getSpec, saveSpec, assistPrompt, batchUpdateCrops, submitAdapter, submitStage, waitJob,
   };
 })();

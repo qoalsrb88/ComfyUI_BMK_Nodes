@@ -556,7 +556,14 @@ window.DPV2Inspector = (() => {
 
       // 모델 & 생성 옵션
       const chkInherit = $("chk-inherit-model");
-      if (chkInherit) chkInherit.checked = selList.every((p) => !p.meta.modelOverride);
+      const canPerCropModel = Api.can("v2_crop_model");
+      if (chkInherit) {
+        chkInherit.disabled = !canPerCropModel;
+        chkInherit.checked = canPerCropModel ? selList.every((p) => !p.meta.modelOverride) : true;
+        chkInherit.title = canPerCropModel
+          ? ""
+          : "영역별 개별 모델 지정은 다음 단계(V2-B)에서 지원됩니다 — 현재는 프로젝트 기본 모델로 저장됩니다.";
+      }
 
       const mName = $("mdt-name"), mSub = $("mdt-sub");
       if (mName && mSub) {
@@ -1525,6 +1532,11 @@ window.DPV2Inspector = (() => {
 
     const chkInherit = $("chk-inherit-model");
     if (chkInherit) chkInherit.addEventListener("change", (e) => {
+      if (!Api.can("v2_crop_model")) {
+        e.target.checked = true;
+        Store.toast("영역별 개별 모델 지정은 다음 단계(V2-B)에서 지원됩니다 — 현재는 프로젝트 기본 모델로 적용됩니다.");
+        return;
+      }
       for (const p of Store.selectedPatches()) {
         p.meta.modelOverride = e.target.checked ? "" : p.effectiveModel;
       }
@@ -1585,6 +1597,12 @@ window.DPV2Inspector = (() => {
         const res = await Api.submitStage("reroll", { root: Store.state.root, crop_id: p.id, tid: p.target.tid });
         if (res && res.pendingIntegration) Store.toast(res.message, "accent");
         else if (res && res.ok) { Store.toast("추가 후보 생성을 시작했습니다.", "ok"); await Store.refreshAll(true); }
+        else if (res) {
+          const msg = res.reason === "unsupported"
+            ? "후보 다시 뽑기는 다음 단계(V2-B)에서 지원됩니다 — 지금은 기존 화면(v1)을 이용해 주세요."
+            : (res.error || res.message || res.reason || "추가 후보 생성을 시작하지 못했습니다.");
+          Store.toast(msg, res.reason === "unsupported" ? "accent" : "err");
+        }
       } catch (err) {
         Store.toast(`재생성 실패: ${err.message}`, "err");
       }
@@ -1735,9 +1753,18 @@ window.DPV2Inspector = (() => {
     });
     const btnCancel = $("btn-cancel-run");
     if (btnCancel) btnCancel.addEventListener("click", async () => {
+      const ok = await Data.askDialogConfirm(
+        "새 호출을 멈춥니다. 이미 요청한 것은 끝까지 받습니다. 계속할까요?",
+        { ok: "멈추기", cancel: "취소", danger: true }
+      );
+      if (!ok) return;
       try {
-        await Api.drainRun(Store.state.root);
-        Store.toast("진행 중인 생성 중단을 요청했습니다.");
+        const res = await Api.drainRun(Store.state.root);
+        if (res && res.drain) {
+          Store.toast("새 호출을 멈춥니다. 이미 요청한 것은 끝까지 받습니다.", "ok");
+        } else {
+          Store.toast("진행 중인 생성이 없습니다.");
+        }
         await Store.refreshAll(true);
       } catch (err) {
         Store.toast(`중단 요청 실패: ${err.message}`, "err");

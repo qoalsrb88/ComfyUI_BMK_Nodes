@@ -381,10 +381,24 @@
         try {
           const applied = await Api.submitStage("apply", { root });
           if (applied && applied.ok && applied.prompt_id) {
-            await Api.waitJob(root, applied.prompt_id);
+            const waited = await Api.waitJob(root, applied.prompt_id);
             await Store.refreshAll(true);
+            if (waited && !waited.done) {
+              Store.toast(
+                waited.reason === "timeout"
+                  ? "초기 반영 대기 시간이 초과되었습니다 — 다른 작업이 끝난 뒤 [합성 적용]으로 다시 확인해 주세요."
+                  : "초기 반영 상태를 확인하지 못했습니다 — [합성 적용]으로 다시 확인해 주세요.",
+                "err"
+              );
+            } else if (waited && !waited.ok) {
+              Store.toast("초기 반영 작업이 실패했습니다 — 프로젝트 설정을 확인한 뒤 [합성 적용]을 실행해 주세요.", "err");
+            }
+          } else if (applied && !applied.ok) {
+            Store.toast(applied.error || applied.message || applied.reason || "초기 반영을 시작하지 못했습니다.", "err");
           }
-        } catch (_) { /* 수동 [합성 적용] 으로 재시도 가능 */ }
+        } catch (err) {
+          Store.toast(`초기 반영 실패: ${(err && err.message) || "알 수 없는 오류"}`, "err");
+        }
       }
       Store.startPolling();
       updateTopbarState();
