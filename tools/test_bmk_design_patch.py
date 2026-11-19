@@ -60376,6 +60376,15 @@ def ux_v2a_entry_unit():
     check(Path(bd.WEB_DIR) == web, "V2E 시험 뒤 화면 폴더 원복")
     check(os.environ.get(bd.SERVER_ENV) == old_mode, "V2E 시험 뒤 서버 모드 플래그 원복")
 
+    # ── v1 → v2 전환 단추(D492): 기본은 숨김, caps.ui_v2 일 때만 보이고 같은 프레임에서 쿼리를 유지해 ?ui=v2 로
+    html = (web / "board.html").read_text(encoding="utf-8")
+    js = (web / "board.js").read_text(encoding="utf-8")
+    check('<button type="button" id="btn-v2" tabindex="-1" hidden ' in html and ">새 화면 시험하기</button>" in html
+          and html.index('id="btn-drain"') < html.index('id="btn-v2"') < html.index('id="btn-help"'), "V2E 전환 단추는 머리줄에 숨김으로")
+    check('toV2.hidden = !(window.DPEnv && window.DPEnv.can("ui_v2"));' in js
+          and 'u.searchParams.set("ui", "v2"); location.assign(u.href);' in js and js.count('"btn-v2"') == 1,
+          "V2E 전환 단추는 caps.ui_v2 일 때만 보이고 쿼리를 유지해 이동")
+
     # ── 서버 실행 인자 --web-dir(개발용)
     src = (PKG / "bmk_design_patch_server.py").read_text(encoding="utf-8")
     check('parser.add_argument("--web-dir")' in src and "not args.dev_handoff or not os.path.isfile" in src,
