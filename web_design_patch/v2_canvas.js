@@ -392,7 +392,9 @@ window.DPV2Canvas = (() => {
               sp.meta.dirtySpec = true;
             }
             Store.emit("selection");
-            if (!isMulti && Api.can("v2_spec_edit")) Store.savePatchSpec(patch);
+            if (!isMulti && Api.can("v2_spec_edit")) {
+              Store.savePatchSpec(patch).catch((err) => Store.toast(`지시문 저장 실패: ${err.message}`, "err"));
+            }
           },
         }, Data.icon(pr.icon, 12), pr.short);
         purpHost.append(b);
@@ -412,14 +414,18 @@ window.DPV2Canvas = (() => {
           Data.el("button", {
             type: "button", text: "×", title: "이 영역에서 연결 해제",
             onClick: async () => {
-              try {
-                await Api.linkRef(Store.state.root, Store.state.R?.rev ?? null, {
-                  op: "unlink", crop_id: patch.id, file: rf.name,
-                });
-                Store.toast(`"${rf.name}" 연결을 해제했습니다.`);
-                await Store.refreshAll(true);
-              } catch (err) {
-                Store.toast(`연결 해제 실패: ${err.message}`, "err");
+              if (window.DPV2Inspector && typeof window.DPV2Inspector.unlinkRefFromPatch === "function") {
+                await window.DPV2Inspector.unlinkRefFromPatch(patch, rf.name);
+              } else {
+                try {
+                  await Api.linkRef(Store.state.root, Store.state.R?.rev ?? null, {
+                    op: "remove", crop_id: patch.id, name: rf.name,
+                  });
+                  Store.toast(`"${rf.name}" 연결을 해제했습니다.`);
+                  await Store.refreshAll(true);
+                } catch (err) {
+                  Store.toast(`연결 해제 실패: ${err.message}`, "err");
+                }
               }
             },
           }),
@@ -926,10 +932,13 @@ window.DPV2Canvas = (() => {
     if (fbRatio) fbRatio.addEventListener("click", async () => {
       const p = Store.primaryPatch();
       if (!p || !window.DPLayoutGeom || !p.modelInfo || !p.modelInfo.ratios.length) return;
-      const best = window.DPLayoutGeom.ratioFitRect(p.rect, view.imgW, view.imgH, p.modelInfo.ratios, Data.RATIO_SIZES);
-      if (best) {
-        await Store.updateCrop(p.id, { rect: best }, `비율 맞춤 (${p.name})`);
-        Store.toast("선택 모델 비율에 맞춰 영역 틀을 조정했습니다.", "ok");
+      const bounds = [Math.round(view.imgW), Math.round(view.imgH)];
+      const best = window.DPLayoutGeom.ratioFitRect(p.rect.map(Math.round), bounds, p.modelInfo.ratios, 0.01, Data.RATIO_SIZES);
+      if (best && Array.isArray(best.rect)) {
+        await Store.updateCrop(p.id, { rect: best.rect }, `비율 맞춤 (${p.name} · ${best.ratio})`);
+        Store.toast(`선택 모델 비율(${best.ratio})에 맞춰 영역 틀을 조정했습니다.`, "ok");
+      } else {
+        Store.toast("이 영역을 모델 지정 비율에 맞출 수 없습니다.", "err");
       }
     });
     const fbLock = $("fb-lock-btn");
@@ -942,7 +951,7 @@ window.DPV2Canvas = (() => {
     if (fbDel) fbDel.addEventListener("click", async () => {
       const p = Store.primaryPatch();
       if (!p) return;
-      const ok = await Data.askDialogConfirm(`"${p.name}" 수정 영역을 삭제할까요?`, { okText: "삭제", cancelText: "취소" });
+      const ok = await Data.askDialogConfirm(`"${p.name}" 수정 영역을 삭제할까요?`, { ok: "삭제", cancel: "취소", danger: true });
       if (ok) await Store.deleteCrop(p.id);
     });
     const fbDesel = $("fb-deselect-btn");

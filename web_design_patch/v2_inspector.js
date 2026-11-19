@@ -29,29 +29,61 @@ window.DPV2Inspector = (() => {
     renderInspector();
   }
 
-  // ── 레퍼런스 연결 공용 헬퍼 ──
+  // ── 레퍼런스 연결/해제 공용 헬퍼 (POST /refs/link: op "add"|"remove", name, explicit 409 확인 재전송) ──
+  async function sendLinkOp(rev, body) {
+    try {
+      return await Api.linkRef(Store.state.root, rev, body);
+    } catch (err) {
+      const ex = err && err.status === 409 && err.data && Array.isArray(err.data.explicit) ? err.data.explicit : null;
+      if (!ex || !ex.length) throw err;
+      const ok = await Data.askDialogConfirm(
+        `${err.message || "다른 곳에서 참조 중인 파일입니다."}\n계속 진행할까요?`,
+        { ok: "계속", cancel: "취소" }
+      );
+      if (!ok) return { cancelled: true };
+      return Api.linkRef(Store.state.root, rev, Object.assign({}, body, { confirm: ex.map((x) => x.file) }));
+    }
+  }
+
   async function linkRefToPatches(fileName, patches) {
     const list = (patches || []).filter(Boolean);
     if (!list.length) {
       Store.toast("먼저 왼쪽 목록이나 캔버스에서 수정 영역을 선택해 주세요.");
       return;
     }
+    let rev = Store.state.R?.rev ?? null;
+    let linked = 0;
     try {
       for (const p of list) {
-        await Api.linkRef(Store.state.root, Store.state.R?.rev ?? null, {
-          op: "link", crop_id: p.id, file: fileName, role: "main",
-        });
+        const r = await sendLinkOp(rev, { op: "add", crop_id: p.id, name: fileName });
+        if (r && r.cancelled) continue;
+        if (r && typeof r.rev === "number") rev = r.rev;
+        linked += 1;
       }
-      Store.toast(
-        list.length > 1
-          ? `"${fileName}"를 선택된 ${list.length}개 영역에 연결했습니다.`
-          : `"${fileName}"를 "${list[0].name}"에 연결했습니다.`,
-        "ok"
-      );
-      pulseCard("#ref-drop-slot");
-      await Store.refreshAll(true);
+      if (linked > 0) {
+        Store.toast(
+          linked > 1
+            ? `"${fileName}"를 선택된 ${linked}개 영역에 연결했습니다.`
+            : `"${fileName}"를 "${list[0].name}"에 연결했습니다.`,
+          "ok"
+        );
+        pulseCard("#ref-drop-slot");
+        await Store.refreshAll(true);
+      }
     } catch (err) {
       Store.toast(`레퍼런스 연결 실패: ${err.message}`, "err");
+    }
+  }
+
+  async function unlinkRefFromPatch(patch, fileName) {
+    if (!patch || !fileName) return;
+    try {
+      const r = await sendLinkOp(Store.state.R?.rev ?? null, { op: "remove", crop_id: patch.id, name: fileName });
+      if (r && r.cancelled) return;
+      Store.toast(`"${fileName}" 연결을 해제했습니다.`);
+      await Store.refreshAll(true);
+    } catch (err) {
+      Store.toast(`연결 해제 실패: ${err.message}`, "err");
     }
   }
 
@@ -168,7 +200,7 @@ window.DPV2Inspector = (() => {
       const btnDel = Data.el("button", {
         type: "button", className: "row-icon-btn", title: "영역 삭제",
         onClick: async () => {
-          const ok = await Data.askDialogConfirm(`"${p.name}" 수정 영역을 삭제할까요?`, { okText: "삭제", cancelText: "취소" });
+          const ok = await Data.askDialogConfirm(`"${p.name}" 수정 영역을 삭제할까요?`, { ok: "삭제", cancel: "취소", danger: true });
           if (ok) await Store.deleteCrop(p.id);
         },
       }, Data.icon("x", 12));
@@ -340,7 +372,9 @@ window.DPV2Inspector = (() => {
                 sp.meta.dirtySpec = true;
               }
               Store.emit("selection");
-              if (!isMulti && Api.can("v2_spec_edit")) Store.savePatchSpec(patch);
+              if (!isMulti && Api.can("v2_spec_edit")) {
+                Store.savePatchSpec(patch).catch((err) => Store.toast(`지시문 저장 실패: ${err.message}`, "err"));
+              }
             },
           }, Data.icon(pr.icon, 14), Data.el("span", { text: pr.label }));
           pg.append(btn);
@@ -396,17 +430,7 @@ window.DPV2Inspector = (() => {
               Data.el("span", { className: "ref-role-badge", text: i === 0 ? "대표 ★" : `보조 ${i}` }),
               Data.el("button", {
                 type: "button", className: "row-icon-btn", title: "연결 해제",
-                onClick: async () => {
-                  try {
-                    await Api.linkRef(Store.state.root, Store.state.R?.rev ?? null, {
-                      op: "unlink", crop_id: patch.id, file: rf.name,
-                    });
-                    Store.toast(`"${rf.name}" 연결을 해제했습니다.`);
-                    await Store.refreshAll(true);
-                  } catch (err) {
-                    Store.toast(`연결 해제 실패: ${err.message}`, "err");
-                  }
-                },
+                onClick: () => unlinkRefFromPatch(patch, rf.name),
               }, Data.icon("x", 12)),
             );
             refListEl.append(row);
@@ -454,13 +478,15 @@ window.DPV2Inspector = (() => {
         aiDraftBtn.disabled = !!Store.state.assistBusy;
       }
 
-      // D503 차단 상태 배너
+      // D503 차단 상태 또는 미반영 새 크롭 배너
       const blockedEl = $("spec-blocked-note");
       if (blockedEl) {
-        const showBlocked = patch.meta.specState === "blocked" && !patch.meta.body_en;
+        const showBlocked = patch.meta.specState === "blocked" || patch.meta.needsApplyForSpec;
         blockedEl.classList.toggle("hidden", !showBlocked);
         if (showBlocked) {
-          blockedEl.textContent = patch.meta.specWhy || "지시문에 맞는 프롬프트가 아직 작성되지 않았습니다. [AI 스마트 프롬프트 미리 작성] 또는 생성 시 자동 작성됩니다.";
+          blockedEl.textContent = patch.meta.needsApplyForSpec
+            ? "새로 추가한 영역입니다 — 무료 [합성 적용] 후 지시문 저장 및 AI 작성을 사용할 수 있습니다."
+            : (patch.meta.specWhy || "지시문에 맞는 최신 프롬프트가 필요합니다. [AI 스마트 프롬프트 미리 작성] 또는 생성 시 자동 작성됩니다.");
         }
       }
 
@@ -904,17 +930,21 @@ window.DPV2Inspector = (() => {
   async function applyModelSelection(modelName) {
     const selList = Store.selectedPatches();
     const m = Data.findModel(modelName);
-    const prep = Store.projectPrepare();
-    const useProjectDefault = selList.length <= 1 && (!selList[0] || !selList[0].meta.modelOverride);
+    const canPerCrop = Api.can("v2_crop_model");
+    const useProjectDefault = !canPerCrop || (selList.length <= 1 && (!selList[0] || !selList[0].meta.modelOverride));
 
     if (useProjectDefault) {
       try {
-        const nextVals = Object.assign({}, prep, {
+        const nextVals = Store.buildPreparePayload({
           model: modelName,
-          quality: (m && m.default_quality) || prep.quality,
-          opts: Object.assign({}, m ? m.opt_defaults : {}),
+          quality: (m && m.default_quality) || Store.projectPrepare().quality,
         });
-        await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? null, "prepare", nextVals);
+        await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? 0, "prepare", nextVals);
+        for (const p of selList) {
+          p.meta.modelOverride = "";
+          p.meta.quality = "";
+          p.meta.opts = {};
+        }
         Store.toast(`프로젝트 기본 모델을 ${m ? m.shortName : modelName}(으)로 변경했습니다.`, "ok");
         await Store.refreshAll(true);
       } catch (err) {
@@ -922,13 +952,11 @@ window.DPV2Inspector = (() => {
       }
     } else {
       for (const p of selList) p.meta.modelOverride = modelName;
-      if (Api.can("v2_crop_model")) {
-        try {
-          await Api.batchUpdateCrops(Store.state.root, Store.state.L?.rev ?? null, {
-            ids: selList.map((p) => p.id), model: modelName,
-          });
-        } catch (_) {}
-      }
+      try {
+        await Api.batchUpdateCrops(Store.state.root, Store.state.L?.rev ?? null, {
+          ids: selList.map((p) => p.id), model: modelName,
+        });
+      } catch (_) {}
       Store.emit("selection");
       Store.toast(`${selList.length}개 영역의 모델을 ${m ? m.shortName : modelName}(으)로 설정했습니다.`, "ok");
     }
@@ -937,25 +965,26 @@ window.DPV2Inspector = (() => {
 
   async function applyQualitySelection(q) {
     const selList = Store.selectedPatches();
-    const prep = Store.projectPrepare();
     for (const p of selList) p.meta.quality = q;
     try {
-      await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? null, "prepare", Object.assign({}, prep, { quality: q }));
+      const nextVals = Store.buildPreparePayload({ quality: q });
+      await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? 0, "prepare", nextVals);
       await Store.refreshAll(true);
-    } catch (_) {
+    } catch (err) {
+      Store.toast(`품질 설정 저장 실패: ${err.message}`, "err");
       Store.emit("selection");
     }
   }
 
   async function applyExtraOpt(key, val) {
     const selList = Store.selectedPatches();
-    const prep = Store.projectPrepare();
     for (const p of selList) p.meta.opts[key] = val;
-    const nextOpts = Object.assign({}, prep.opts, { [key]: val });
     try {
-      await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? null, "prepare", Object.assign({}, prep, { opts: nextOpts }));
+      const nextVals = Store.buildPreparePayload({ [key]: val });
+      await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? 0, "prepare", nextVals);
       await Store.refreshAll(true);
-    } catch (_) {
+    } catch (err) {
+      Store.toast(`옵션 저장 실패: ${err.message}`, "err");
       Store.emit("selection");
     }
   }
@@ -970,60 +999,96 @@ window.DPV2Inspector = (() => {
     if (el) el.focus();
   }
 
-  // ── 6. AI 스마트 프롬프트 작성 (계약 §3.4 · 최대 8패치 직렬 · 확인 창 없이 즉시 호출 D521) ──
+  // ── 6. AI 스마트 프롬프트 작성 (계약 §3.4 · 최대 8패치 직렬 · 확인 창 없이 즉시 호출 D521 · 429/5xx/timeout 즉시 중단 D520) ──
   async function runAssistForPatches(patches, force = true) {
     const list = (patches || []).slice(0, 8);
     if (!list.length) {
       Store.toast("프롬프트를 작성할 영역을 먼저 선택해 주세요.");
-      return { ok: false, count: 0 };
+      return { ok: false, count: 0, aborted: false };
     }
     if ((patches || []).length > 8) {
       Store.toast("한 번에 최대 8개 영역까지만 AI 프롬프트를 작성합니다. 앞 8개부터 진행합니다.");
     }
     if (!Api.can("v2_forge_prompt")) {
       Store.toast("Phase V2-A 백엔드 브릿지(prompt/assist) 연결 대기 중입니다.", "err");
-      return { ok: false, count: 0 };
+      return { ok: false, count: 0, aborted: true };
     }
     Store.state.assistBusy = true;
     Store.emit("selection");
     let written = 0;
+    let aborted = false;
     try {
       for (const p of list) {
         // §3.4: 먼저 POST /spec 으로 최신 한국어 지시·목적 저장
-        const saved = await Store.savePatchSpec(p);
+        let saved;
+        try {
+          saved = await Store.savePatchSpec(p);
+        } catch (err) {
+          Store.toast(`${p.name}: ${err.message}`, "err");
+          if (err && (err.status === 429 || err.status >= 500 || err.data?.reason === "apply_needed")) {
+            aborted = true;
+            break;
+          }
+          continue;
+        }
         if (saved && saved.unsupported) {
           Store.toast(saved.reason || "지시문 저장이 아직 연결되지 않았습니다.", "err");
-          return { ok: false, count: written };
+          return { ok: false, count: written, aborted: true };
         }
-        const res = await Api.assistPrompt(Store.state.root, {
-          crop_id: p.id,
-          seen: p.meta.seen,
-          crop_sig: p.meta.crop_sig,
-          force: !!force,
-        });
-        if (res && res.ok) {
+        let res;
+        try {
+          res = await Api.assistPrompt(Store.state.root, {
+            crop_id: p.id,
+            seen: p.meta.seen,
+            crop_sig: p.meta.crop_sig,
+            force: !!force,
+          });
+        } catch (err) {
+          const reason = err && err.data && err.data.reason;
+          if (err && err.status === 409 && reason === "stale") {
+            await Store.loadSpec(p.id, true);
+            Store.toast(`${p.name}: 다른 곳에서 변경되어 최신 상태로 다시 읽었습니다 — 다시 눌러 주세요.`, "err");
+          } else {
+            Store.toast(`${p.name}: ${err.message}`, "err");
+          }
+          // D520 / §7.3 C1: 429·5xx·timeout·busy·no_backend 이면 남은 패치 즉시 중단
+          if (err && (err.isTimeout || err.status === 429 || err.status >= 500
+              || ["busy", "rate_limited", "no_backend", "forge_auth", "no_access", "forge_unreachable"].includes(reason))) {
+            aborted = true;
+            break;
+          }
+          continue;
+        }
+        if (res && res.ok && res.status === "written") {
           p.meta.seen = res.seen || p.meta.seen;
-          p.meta.body_en = res.body_en || p.meta.body_en;
-          p.meta.prompt_en = res.prompt_en || p.meta.prompt_en;
-          p.meta.summary_ko = res.summary_ko || p.meta.summary_ko;
+          p.meta.body_en = res.body_en || "";
+          p.meta.prompt_en = res.prompt_en || "";
+          p.meta.summary_ko = res.summary_ko || "";
           p.meta.skill_ids = Array.isArray(res.skill_ids) ? res.skill_ids : [];
-          p.meta.specState = "body";
+          p.meta.specState = res.state || "body";
           p.meta.specWhy = null;
           p.meta.promptSource = "assist";
           p.meta.promptInputHash = res.input_hash || p.meta.specInputHash;
+          p.meta.specInputHash = res.input_hash || p.meta.specInputHash;
+          p.meta.cached = !!res.cached;
+          p.meta.forgeCalls = Number(res.forge_calls || 0);
           written += 1;
+        } else if (res && res.status === "unsupported") {
+          Store.toast(`${p.name}: 이 모델은 AI 프롬프트 작성을 지원하지 않습니다 — 원문 프롬프트에 직접 입력해 주세요.`, "err");
         } else {
-          Store.toast(`${p.name}: ${(res && res.reason) || "프롬프트 작성 실패"}`, "err");
+          const detail = (res && (res.error || res.reason)) || "프롬프트 작성 실패";
+          Store.toast(`${p.name}: ${detail}`, "err");
+          if (res && res.reason === "timeout") {
+            aborted = true;
+            break;
+          }
         }
       }
       if (written > 0) {
         pulseCard("#prompt-card");
         Store.toast(`${written}개 영역의 AI 스마트 프롬프트를 작성했습니다.`, "ok");
       }
-      return { ok: written > 0, count: written };
-    } catch (err) {
-      Store.toast(`AI 프롬프트 작성 실패: ${err.message}`, "err");
-      return { ok: false, count: written };
+      return { ok: written > 0 && !aborted, count: written, aborted };
     } finally {
       Store.state.assistBusy = false;
       Store.emit("selection");
@@ -1045,17 +1110,42 @@ window.DPV2Inspector = (() => {
       return;
     }
 
-    // D519: 한국어 지시가 있으나 최신 프롬프트가 미작성(dirty/blocked)인 패치만 선행 자동 assist
-    const needAssist = targets.filter((p) =>
-      p.meta.aiAuto && (p.meta.user_instruction_ko || "").trim()
-      && (p.meta.dirtySpec || p.meta.specState === "blocked" || !p.meta.body_en)
-    );
-    if (needAssist.length && Api.can("v2_forge_prompt")) {
-      const ar = await runAssistForPatches(needAssist, false);
-      if (!ar.ok) return;
+    // 미저장 변경이 있는 패치는 먼저 POST /spec 저장 (직접 입력 포함) 및 스펙 미로드 패치 동기화
+    if (Api.can("v2_spec_edit")) {
+      for (const p of targets) {
+        if (!p.meta.specLoaded && !p.meta.needsApplyForSpec) {
+          await Store.loadSpec(p.id);
+        }
+        if ((p.meta.dirtySpec || p.meta.rawDirty) && !p.meta.needsApplyForSpec) {
+          try {
+            await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
+          } catch (err) {
+            Store.toast(`${p.name} 지시문 저장 실패: ${err.message}`, "err");
+            return;
+          }
+        }
+      }
     }
 
-    const only = targets.length < patches.length ? targets.map((p) => p.id).join(",") : undefined;
+    // D519: 지시가 바뀐(입력 해시 불일치 또는 blocked·미작성) ai_auto 패치만 최대 8건 자동 assist 선행
+    const needAssist = targets.filter((p) => {
+      if (!p.meta.aiAuto || p.meta.needsApplyForSpec) return false;
+      const hasInst = !!(p.meta.user_instruction_ko || "").trim();
+      const bodyOnlyPurpose = ["remove", "vary", "detail"].includes(p.meta.purpose);
+      if (!hasInst && !bodyOnlyPurpose) return false;
+      const hashMismatch = !!(p.meta.specInputHash && p.meta.promptInputHash !== p.meta.specInputHash);
+      return p.meta.dirtySpec || p.meta.specState === "blocked" || !p.meta.body_en || hashMismatch;
+    });
+    if (needAssist.length && Api.can("v2_forge_prompt")) {
+      const ar = await runAssistForPatches(needAssist, false);
+      if (ar.aborted) return;
+      if (needAssist.length > 8) {
+        Store.toast(`상한(8개)을 넘은 ${needAssist.length - 8}개 영역은 작성 대기 상태로 남습니다.`);
+      }
+    }
+
+    // §3.6: DPSubmit.submitPaid("run", { root, only }) 는 선택된 crop id 목록을 항상 쉼표로 전달
+    const only = targets.map((p) => p.id).join(",");
     try {
       const res = await Api.submitStage("run", { root: Store.state.root, only });
       if (res && res.pendingIntegration) {
@@ -1065,8 +1155,10 @@ window.DPV2Inspector = (() => {
       if (res && res.ok) {
         Store.toast("생성을 시작했습니다.", "ok");
         await Store.refreshAll(true);
-      } else if (res && !res.cancelled) {
-        Store.toast(res.message || res.reason || "생성을 시작하지 못했습니다.", "err");
+      } else if (res && res.reason === "cancelled") {
+        Store.toast("생성을 취소했습니다.");
+      } else if (res) {
+        Store.toast(res.error || res.message || res.reason || "생성을 시작하지 못했습니다.", "err");
       }
     } catch (err) {
       Store.toast(`생성 요청 실패: ${err.message}`, "err");
@@ -1201,7 +1293,7 @@ window.DPV2Inspector = (() => {
     if (btnMultiDel) btnMultiDel.addEventListener("click", async () => {
       const list = Store.selectedPatches();
       if (!list.length) return;
-      const ok = await Data.askDialogConfirm(`선택된 ${list.length}개 수정 영역을 모두 삭제할까요?`, { okText: "삭제", cancelText: "취소" });
+      const ok = await Data.askDialogConfirm(`선택된 ${list.length}개 수정 영역을 모두 삭제할까요?`, { ok: "삭제", cancel: "취소", danger: true });
       if (!ok) return;
       for (const p of list) await Store.deleteCrop(p.id);
     });
@@ -1242,7 +1334,9 @@ window.DPV2Inspector = (() => {
     if (chkAuto) chkAuto.addEventListener("change", (e) => {
       for (const p of Store.selectedPatches()) { p.meta.aiAuto = e.target.checked; p.meta.dirtySpec = true; }
       const p = Store.primaryPatch();
-      if (p && Api.can("v2_spec_edit")) Store.savePatchSpec(p);
+      if (p && Api.can("v2_spec_edit")) {
+        Store.savePatchSpec(p).catch((err) => Store.toast(`지시문 저장 실패: ${err.message}`, "err"));
+      }
     });
 
     const instEl = $("inp-instruction");
@@ -1267,9 +1361,13 @@ window.DPV2Inspector = (() => {
     if (btnSaveSpec) btnSaveSpec.addEventListener("click", async () => {
       const p = Store.primaryPatch();
       if (!p) return;
-      const res = await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
-      if (res && res.unsupported) Store.toast(res.reason, "err");
-      else if (res && res.ok) Store.toast("지시문을 저장했습니다.", "ok");
+      try {
+        const res = await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
+        if (res && res.unsupported) Store.toast(res.reason, "err");
+        else if (res && res.ok) Store.toast("지시문을 저장했습니다.", "ok");
+      } catch (err) {
+        Store.toast(`지시문 저장 실패: ${err.message}`, "err");
+      }
     });
 
     const btnAiDraft = $("btn-ai-draft");
@@ -1295,11 +1393,12 @@ window.DPV2Inspector = (() => {
       b.addEventListener("click", async () => {
         const val = Number(b.dataset.val);
         for (const p of Store.selectedPatches()) p.meta.count = val;
-        const prep = Store.projectPrepare();
         try {
-          await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? null, "prepare", Object.assign({}, prep, { n: val }));
+          const nextVals = Store.buildPreparePayload({ n: val });
+          await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? 0, "prepare", nextVals);
           await Store.refreshAll(true);
-        } catch (_) {
+        } catch (err) {
+          Store.toast(`후보 장수 저장 실패: ${err.message}`, "err");
           Store.emit("selection");
         }
       });
@@ -1309,11 +1408,13 @@ window.DPV2Inspector = (() => {
     if (chkAutoCrop) chkAutoCrop.addEventListener("change", (e) => Store.savePrefs({ showAutoCrop: e.target.checked }));
     const advComp = $("adv-complexity");
     if (advComp) advComp.addEventListener("change", async (e) => {
-      const prep = Store.projectPrepare();
       try {
-        await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? null, "prepare", Object.assign({}, prep, { complexity: e.target.value }));
+        const nextVals = Store.buildPreparePayload({ complexity: e.target.value });
+        await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? 0, "prepare", nextVals);
         await Store.refreshAll(true);
-      } catch (_) {}
+      } catch (err) {
+        Store.toast(`복잡도 저장 실패: ${err.message}`, "err");
+      }
     });
 
     // TAB 2 비교 버튼
@@ -1426,10 +1527,31 @@ window.DPV2Inspector = (() => {
       if (!p || !cand) return;
       const f = p.meta.filters;
       try {
-        await Api.adjustMask(Store.state.root, {
-          key: cand.key, crop_id: p.id, dx: f.dx, dy: f.dy, scale: f.scale / 100, rot: f.rot,
-          feather: f.feather, fade_top: f.fadeTop, fade_bottom: f.fadeBottom, fade_left: f.fadeLeft, fade_right: f.fadeRight,
+        let seen = "";
+        if (Store.state.mask && Store.state.mask.key === cand.key && Store.state.mask.adjust) {
+          seen = Store.state.mask.adjust.at || "";
+        } else {
+          const info = await Api.getMask(Store.state.root, cand.key);
+          seen = (info && info.adjust && info.adjust.at) || "";
+        }
+        const scaleVal = f.transformEnabled ? Math.max(0.5, Math.min(2.0, (f.scale || 100) / 100)) : 1.0;
+        const res = await Api.adjustMask(Store.state.root, {
+          key: cand.key,
+          op: "set",
+          seen,
+          blur: f.edgeEnabled ? Math.max(0, Math.min(24, Math.round(f.feather || 0))) : 0,
+          invert: false,
+          dx: f.transformEnabled ? Number(f.dx || 0) : 0,
+          dy: f.transformEnabled ? Number(f.dy || 0) : 0,
+          rot: f.transformEnabled ? Number(f.rot || 0) : 0,
+          sx: scaleVal,
+          sy: scaleVal,
+          flip_h: false,
+          flip_v: false,
         });
+        if (Store.state.mask && Store.state.mask.key === cand.key && res && res.adjust) {
+          Store.state.mask.adjust = res.adjust;
+        }
         Store.toast("후보정 변형을 서버에 적용했습니다.", "ok");
         await Store.refreshAll(true);
       } catch (err) {
@@ -1444,8 +1566,22 @@ window.DPV2Inspector = (() => {
     if (btnApplyFree) btnApplyFree.addEventListener("click", async () => {
       try {
         const res = await Api.submitStage("apply", { root: Store.state.root });
-        if (res && res.pendingIntegration) Store.toast(res.message, "accent");
-        else if (res && res.ok) { Store.toast("합성 반영을 실행했습니다.", "ok"); await Store.refreshAll(true); }
+        if (res && res.pendingIntegration) {
+          Store.toast(res.message, "accent");
+          return;
+        }
+        if (res && res.ok) {
+          Store.toast("무료 반영 작업을 실행 중입니다…");
+          const waited = await Api.waitJob(Store.state.root, res.prompt_id);
+          if (waited && waited.done && !waited.ok) {
+            Store.toast("무료 반영 작업이 실패했습니다.", "err");
+          } else {
+            Store.toast("합성 반영을 완료했습니다.", "ok");
+          }
+          await Store.refreshAll(true);
+        } else if (res) {
+          Store.toast(res.error || res.message || res.reason || "합성 적용을 시작하지 못했습니다.", "err");
+        }
       } catch (err) {
         Store.toast(`합성 적용 실패: ${err.message}`, "err");
       }
@@ -1490,6 +1626,7 @@ window.DPV2Inspector = (() => {
     renderRunDock,
     openModelPopover,
     linkRefToPatches,
+    unlinkRefFromPatch,
     runAssistForSelection,
     runSelectedGeneration,
     bindEvents,

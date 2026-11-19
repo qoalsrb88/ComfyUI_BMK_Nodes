@@ -408,7 +408,13 @@ window.DPV2Data = (() => {
   function askDialogConfirm(message, options = {}) {
     const dlg = window.DPDialog;
     const fn = dlg && dlg["con" + "firm"];
-    return typeof fn === "function" ? fn.call(dlg, message, options) : Promise.resolve(false);
+    if (typeof fn !== "function") return Promise.resolve(false);
+    const normalized = {
+      ok: options.ok || options.okText || "확인",
+      cancel: options.cancel || options.cancelText || "취소",
+      danger: !!options.danger,
+    };
+    return fn.call(dlg, message, normalized);
   }
 
   function showDialogNotice(message) {
@@ -496,11 +502,17 @@ window.DPV2Data = (() => {
     return { level: "ok", icon: "🟢", label: "경계 자연스러움", detail: "원본 영역 보존 및 톤 매칭이 안정적입니다." };
   }
 
-  // v1 ↔ v2 전환 주소 생성 (D2: root 등 기존 쿼리 유지, 같은 프레임 이동)
+  // v1 ↔ v2 전환 주소 생성 (D2/D489: root·parent_origin 등 기존 쿼리 유지, 같은 프레임 이동)
   function buildSwitchUrl(toV2) {
     const url = new URL(location.href);
-    const dir = url.pathname.replace(/[^/]*$/, "");
-    url.pathname = dir + (toV2 ? "v2.html" : "board.html");
+    const slash = url.pathname.lastIndexOf("/");
+    const dir = url.pathname.slice(0, slash + 1);
+    const file = url.pathname.slice(slash + 1);
+    if (file === "v2.html" || file === "board.html") {
+      url.pathname = dir + (toV2 ? "v2.html" : "board.html");
+    } else {
+      url.pathname = dir;
+    }
     if (toV2) url.searchParams.set("ui", "v2");
     else url.searchParams.delete("ui");
     return url.pathname + url.search;

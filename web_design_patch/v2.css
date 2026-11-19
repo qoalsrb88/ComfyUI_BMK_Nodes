@@ -23,6 +23,7 @@
   --err: #ef4444;
   --err-soft: rgba(239, 68, 68, 0.15);
   --radius: 2px;
+  --radius-sm: 2px;
   --topbar-h: 44px;
   --left-w: 278px;
   --right-w: 368px;
@@ -2455,18 +2456,339 @@ button { cursor: pointer; }
   border: none; border-radius: 2px; font-weight: 700; font-size: 11.5px;
 }
 
-/* ==================== 공용 DPDialog / DPEnv / DPForgeImport 호환 스타일 ==================== */
+.proj-card.disabled { opacity: 0.62; cursor: not-allowed; }
+.proj-card-err { font-size: 11px; color: var(--err); }
+
+/* ==================== 공용 DPDialog / DPEnv / DPSubmit / DPForgeImport 호환 스타일 ==================== */
 .overlay {
-  position: fixed; inset: 0; z-index: 150;
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
   background: rgba(0, 0, 0, 0.72);
-  display: flex; align-items: center; justify-content: center; padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
 }
-.overlay .sheet {
-  background: var(--panel); border: 1px solid var(--line2); border-radius: var(--radius);
-  color: var(--text); max-width: 560px; width: 100%; padding: 18px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.7);
+.overlay > .sheet {
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: var(--radius);
+  color: var(--text);
+  max-width: 560px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 18px 22px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.72);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.overlay > .sheet h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  color: var(--text-strong);
+}
+.overlay > .sheet p {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.overlay > .sheet p.warn {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--warn);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12.5px;
+}
+.overlay > .sheet .lp-btns {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+.overlay > .sheet button {
+  padding: 6px 14px;
+  min-height: 32px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.overlay > .sheet button:hover:not(:disabled) {
+  background: var(--panel3);
+  border-color: var(--accent-border);
+}
+.overlay > .sheet button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.overlay > .sheet button.primary,
+.dp-dialog .lp-btns button:first-child:not(.danger),
+.dp-env-block .sheet button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.overlay > .sheet button.primary:hover:not(:disabled),
+.dp-dialog .lp-btns button:first-child:not(.danger):hover:not(:disabled),
+.dp-env-block .sheet button:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.overlay > .sheet button.danger {
+  border-color: var(--err);
+  background: var(--err-soft);
+  color: var(--err);
+  font-weight: 600;
+}
+.dp-dialog { z-index: 10000; }
+.dp-dialog > .sheet { max-width: 640px; max-height: 85vh; }
+.dp-env-block {
+  z-index: 11000;
+  background: rgba(9, 9, 11, 0.96);
+}
+.dp-env-block > .sheet { max-width: 640px; max-height: 85vh; }
+.dp-env-block .muted { color: var(--dim); font-size: 12px; }
+.dp-env-notice {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10500;
+  padding: 10px 16px;
+  background: var(--panel);
+  color: var(--text-strong);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  font-size: 12.5px;
 }
 .dp-env-banner {
-  background: var(--warn-soft); color: var(--warn); border-bottom: 1px solid var(--warn);
-  padding: 6px 12px; font-size: 12px; text-align: center;
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-bottom: 1px solid var(--warn);
+  padding: 6px 12px;
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ── Forge F2-C (DPForgeImport 공용 모달 호환) ── */
+.dp-forge { z-index: 10000; }
+.dp-forge-sheet {
+  width: min(92vw, 920px);
+  max-width: none;
+  height: min(82vh, 760px);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+  overflow-x: hidden;
+}
+.dp-forge-sheet > * { flex-shrink: 0; }
+.dp-forge-sheet [hidden] { display: none; }
+.dp-forge-sheet h2, .dp-forge-status { margin: 0; }
+.dp-forge-heading, .dp-forge-filters, .dp-forge-status-row, .dp-forge-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.dp-forge-heading { justify-content: space-between; }
+.dp-forge-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.dp-forge-columns { width: 100px; max-width: 100%; accent-color: var(--accent); }
+.dp-forge-search {
+  width: 100%;
+  min-width: 0;
+  flex: 1 1 180px;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line2);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.dp-forge-filters select {
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.dp-forge button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.dp-forge-status { color: var(--dim); font-size: 12px; }
+.dp-forge-status-row > p { flex: 1 1 200px; overflow-wrap: anywhere; }
+.dp-forge-grid {
+  --dp-forge-gap: 12px;
+  flex: 1 1 auto;
+  min-height: 160px;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(max(var(--dp-forge-min, 140px), calc((100% - (var(--dp-forge-columns, 4) - 1) * var(--dp-forge-gap)) / var(--dp-forge-columns, 4))), 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: var(--dp-forge-gap);
+}
+.dp-forge-item {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 8px;
+  gap: 6px;
+  text-align: left;
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel2);
+}
+.dp-forge-item.dp-forge-selected { border-color: var(--accent); }
+.overlay > .sheet .dp-forge-pick {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  gap: 6px;
+  padding: 0;
+  min-height: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+.dp-forge-preview {
+  width: 100%;
+  aspect-ratio: 1;
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+}
+.dp-forge-preview img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.dp-forge-label, .dp-forge-meta {
+  width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dp-forge-meta { color: var(--dim); font-size: 11.5px; }
+.dp-forge-badges {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: calc(100% - 8px);
+  pointer-events: none;
+}
+.dp-forge-badges > span, .dp-forge-check {
+  padding: 0 5px;
+  line-height: 1.6;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  border-radius: var(--radius-sm);
+}
+.dp-forge-check {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+.overlay > .sheet .dp-forge-zoom {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  padding: 3px 7px;
+  min-height: 26px;
+  background: var(--panel);
+}
+.dp-forge-item .dp-forge-error, .dp-forge-item .dp-forge-blocked {
+  color: var(--err);
+  font-size: 11.5px;
+  white-space: normal;
+}
+.dp-forge-error:empty { display: none; }
+.dp-forge-footer { justify-content: flex-end; }
+.dp-forge-footer > :first-child { margin-right: auto; }
+.dp-forge-viewer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  background: var(--panel);
+}
+.dp-forge-viewer img {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-width: 100%;
+  width: 100%;
+  object-fit: contain;
+}
+.dp-forge-viewer-title {
+  margin: 0;
+  width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dp-forge-source { min-width: 0; margin: 6px 0; font-size: 12px; color: var(--dim); }
+.dp-forge-source-toggle {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dp-forge-source-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .dp-forge-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1000px) {
+  .dp-forge-grid { --dp-forge-min: 96px; }
 }

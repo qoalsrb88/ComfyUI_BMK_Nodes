@@ -333,6 +333,36 @@ window.DPV2Overlays = (() => {
     if (ov) ov.classList.add("hidden");
   }
 
+  // 우측 4점 캔버스 좌표(기본 틀 0.16..0.84)를 서버 check_corners 규격([[u,v]×4], 항등=[[0,0],[1,0],[1,1],[0,1]])로 변환
+  function quadToServerCorners(quad) {
+    if (!Array.isArray(quad) || quad.length !== 4) return { corners: null };
+    const id = [[0, 0], [1, 0], [1, 1], [0, 1]];
+    const pts = quad.map((pt) => [
+      Math.floor(((pt.x - 0.16) / 0.68) * 10000 + 0.5) / 10000,
+      Math.floor(((pt.y - 0.16) / 0.68) * 10000 + 0.5) / 10000,
+    ]);
+    if (pts.every((p, i) => Math.abs(p[0] - id[i][0]) < 0.0005 && Math.abs(p[1] - id[i][1]) < 0.0005)) {
+      return { corners: null };
+    }
+    if (pts.some((p) => p[0] < -1 || p[0] > 2 || p[1] < -1 || p[1] > 2)) {
+      return { error: "원근 꼭짓점이 허용 범위를 벗어났습니다 — 안쪽으로 조정해 주세요." };
+    }
+    for (let k = 0; k < 4; k++) {
+      const a = pts[k], b = pts[(k + 1) % 4], c = pts[(k + 2) % 4];
+      if ((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]) <= 0) {
+        return { error: "원근 4점이 꼬여 있습니다 — 볼록한 사각형 형태로 맞춰 주세요." };
+      }
+    }
+    const area = pts.reduce((s, p, k) => {
+      const q = pts[(k + 1) % 4];
+      return s + (p[0] * q[1] - p[1] * q[0]);
+    }, 0) / 2;
+    if (area < 0.02) {
+      return { error: "원근 영역 넓이가 너무 작습니다 — 꼭짓점을 넓혀 주세요." };
+    }
+    return { corners: pts };
+  }
+
   async function saveSheetCut(attachToCrop) {
     const img = sheetState.sheetImg;
     if (!img || !sheetState.sheetPath) {
@@ -346,27 +376,67 @@ window.DPV2Overlays = (() => {
       Math.round((r.x + r.w) * img.naturalWidth),
       Math.round((r.y + r.h) * img.naturalHeight),
     ];
+    if (Math.min(rectPx[2] - rectPx[0], rectPx[3] - rectPx[1]) < 16) {
+      Store.toast("오릴 영역의 가로·세로는 최소 16px 이상이어야 합니다.", "err");
+      return;
+    }
+    const cornerCheck = quadToServerCorners(sheetState.quad);
+    if (cornerCheck.error) {
+      Store.toast(cornerCheck.error, "err");
+      return;
+    }
     const cropSel = $("sheet-target-crop");
     const roleSel = $("sheet-role-select");
     const cropId = attachToCrop && cropSel ? cropSel.value : "";
-    const role = roleSel ? roleSel.value : "main";
+    const rawRole = roleSel ? roleSel.value : "main";
+    const role = rawRole === "aux" || rawRole === "sub" ? "aux" : "main";
+    const curSheet = (Store.state.sheets || []).find((s) => s.path === sheetState.sheetPath);
 
     try {
-      const cutRes = await Api.cutRef(Store.state.root, {
+      const cutBody = {
         sheet: sheetState.sheetPath,
         rect: rectPx,
-        quad: sheetState.quad,
-        flip_x: sheetState.flipX,
-      });
-      await Api.saveRef(Store.state.root, Store.state.R?.rev ?? null, {
-        req: cutRes && cutRes.req ? cutRes.req : undefined,
-        sheet: sheetState.sheetPath,
-        rect: rectPx,
-        quad: sheetState.quad,
-        flip_x: sheetState.flipX,
-        crop_id: cropId || undefined,
-        role,
-      });
+        method: "rect",
+      };
+      if (curSheet && curSheet.v) cutBody.sheet_v = curSheet.v;
+      const cutRes = await Api.cutRef(Store.state.root, cutBody);
+      if (!cutRes || !cutRes.req) {
+        throw new Error("시트 오리기 요청 ID를 받지 못했습니다.");
+      }
+
+      const transform = {
+        rotate: 0,
+        flip_h: !!sheetState.flipX,
+        scale: 1.0,
+      };
+      if (cornerCheck.corners) transform.corners = cornerCheck.corners;
+
+      const saveBody = { req: cutRes.req, transform };
+      if (cropId) {
+        saveBody.crop_id = cropId;
+        saveBody.role = role;
+        if (role === "aux") saveBody.desc = `cut_${Date.now().toString(36).slice(-4)}`;
+      } else {
+        saveBody.desc = "";
+      }
+
+      const sendSave = async (body) => {
+        try {
+          return await Api.saveRef(Store.state.root, Store.state.R?.rev ?? null, body);
+        } catch (err) {
+          const ex = err && err.status === 409 && err.data && Array.isArray(err.data.explicit) ? err.data.explicit : null;
+          if (!ex || !ex.length) throw err;
+          const ok = await Data.askDialogConfirm(
+            `${err.message || "기존 레퍼런스를 교체합니다."}\n계속 저장할까요?`,
+            { ok: "저장", cancel: "취소" }
+          );
+          if (!ok) return { cancelled: true };
+          return Api.saveRef(Store.state.root, Store.state.R?.rev ?? null, Object.assign({}, body, { confirm: ex.map((x) => x.file) }));
+        }
+      };
+
+      const saved = await sendSave(saveBody);
+      if (saved && saved.cancelled) return;
       closeSheetOverlay();
       Store.toast(cropId ? "시트 컷을 저장하고 선택한 영역에 연결했습니다." : "시트 컷을 레퍼런스 보관함에 저장했습니다.", "ok");
       await Store.refreshAll(true);
@@ -653,25 +723,40 @@ window.DPV2Overlays = (() => {
       onClick: async () => {
         closeModal();
         const dlUrl = Api.exportDownloadUrl(Store.state.root);
-        const res = await Api.submitStage("export", { root: Store.state.root });
-        if (res && res.pendingIntegration) {
-          if (dlUrl && Store.state.S && Store.state.S.export_state === "same") {
-            const a = document.createElement("a");
-            a.href = dlUrl;
-            a.download = "";
-            a.click();
-            Store.toast("최신 PSD 파일 다운로드를 시작했습니다.", "ok");
-          } else {
-            Store.toast(res.message, "accent");
+        try {
+          const res = await Api.submitStage("export", { root: Store.state.root });
+          if (res && res.pendingIntegration) {
+            if (dlUrl && Store.state.S && Store.state.S.export_state === "same") {
+              const a = document.createElement("a");
+              a.href = dlUrl;
+              a.download = "";
+              a.click();
+              Store.toast("최신 PSD 파일 다운로드를 시작했습니다.", "ok");
+            } else {
+              Store.toast(res.message, "accent");
+            }
+            return;
           }
-          return;
-        }
-        if (res && res.ok && dlUrl) {
-          const a = document.createElement("a");
-          a.href = dlUrl;
-          a.download = "";
-          a.click();
-          Store.toast("PSD 내보내기를 완료했습니다.", "ok");
+          if (res && res.ok) {
+            Store.toast("PSD 파일을 생성하는 중입니다…");
+            const waited = await Api.waitJob(Store.state.root, res.prompt_id);
+            if (waited && waited.done && !waited.ok) {
+              Store.toast("PSD 내보내기 작업이 실패했습니다.", "err");
+              return;
+            }
+            await Store.refreshAll(true);
+            if (dlUrl) {
+              const a = document.createElement("a");
+              a.href = dlUrl;
+              a.download = "";
+              a.click();
+            }
+            Store.toast("PSD 내보내기를 완료했습니다.", "ok");
+          } else if (res) {
+            Store.toast(res.error || res.message || res.reason || "PSD 내보내기를 시작하지 못했습니다.", "err");
+          }
+        } catch (err) {
+          Store.toast(`PSD 내보내기 실패: ${err.message}`, "err");
         }
       },
     });
@@ -752,10 +837,15 @@ window.DPV2Overlays = (() => {
         return;
       }
       for (const proj of list) {
-        const thumb = Api.apiUrl(proj.thumb_url || "");
+        const openable = proj.openable !== false;
+        const thumb = openable ? Api.apiUrl(proj.thumb_url || "") : "";
         grid.append(Data.el("div", {
-          className: "proj-card",
+          className: "proj-card" + (openable ? "" : " disabled"),
           onClick: async () => {
+            if (!openable) {
+              Store.toast(proj.error || "이 프로젝트는 열 수 없습니다.", "err");
+              return;
+            }
             try {
               const r = await Api.openProject(proj.id);
               const key = (r && r.key) || proj.id;
@@ -771,11 +861,13 @@ window.DPV2Overlays = (() => {
           Data.el("div", { className: "proj-card-thumb" }, thumb ? Data.el("img", { src: thumb, alt: proj.name }) : null),
           Data.el("div", { className: "proj-card-body" },
             Data.el("strong", { text: proj.name || proj.id }),
-            Data.el("div", { className: "proj-card-meta" },
-              Data.el("span", { text: `영역 ${proj.crops || 0}개` }),
-              Data.el("span", { text: `후보 ${proj.candidates || 0}장` }),
-              Data.el("span", { text: `확정 ★ ${proj.stars || 0}` }),
-            ),
+            openable
+              ? Data.el("div", { className: "proj-card-meta" },
+                Data.el("span", { text: `영역 ${proj.crops || 0}개` }),
+                Data.el("span", { text: `후보 ${proj.candidates || 0}장` }),
+                Data.el("span", { text: `확정 ★ ${proj.stars || 0}` }),
+              )
+              : Data.el("span", { className: "proj-card-err", text: proj.error || "열 수 없음" }),
             Data.el("span", { className: "proj-card-time", text: proj.modified || "" }),
           ),
         ));
@@ -842,8 +934,34 @@ window.DPV2Overlays = (() => {
         Api.can("forge_import") ? Data.el("button", {
           type: "button", className: "btn-secondary-sm accent-outline", text: "Forge에서 불러오기",
           onClick: () => {
+            const name = nameInput.value.trim();
+            const vErr = Data.validateProjectName(name);
+            if (vErr) {
+              errEl.textContent = vErr || "먼저 프로젝트 이름을 입력해 주세요.";
+              nameInput.focus();
+              return;
+            }
+            errEl.textContent = "";
             if (window.DPForgeImport && typeof window.DPForgeImport.open === "function") {
-              window.DPForgeImport.open({ mode: "target", onPick: (file) => { targetForgeFile = file; targetFile = null; refreshPicked(); } });
+              const opened = window.DPForgeImport.open({
+                into: "target",
+                name,
+                onDone: async (result) => {
+                  if (!result || !/^[0-9a-f]{12}$/.test(result.key || "")) {
+                    Store.toast((result && result.error) || "Forge에서 프로젝트를 만들지 못했습니다.", "err");
+                    return;
+                  }
+                  for (const rf of refFiles) {
+                    try { await Api.uploadSheet(result.key, rf, null); } catch (_) {}
+                  }
+                  closeModal();
+                  const u = new URL(location.href);
+                  u.searchParams.set("root", result.key);
+                  u.searchParams.set("ui", "v2");
+                  location.href = u.pathname + u.search;
+                },
+              });
+              if (!opened) Store.toast("Forge 자료함을 열 수 없습니다 — 연결 상태를 확인해 주세요.", "err");
             } else {
               Store.toast("Forge 가져오기 모듈이 연결되면 바로 선택할 수 있습니다.");
             }
@@ -915,12 +1033,20 @@ window.DPV2Overlays = (() => {
   }
 
   function openForgeImportForRef() {
+    if (!Api.can("forge_import")) {
+      Store.toast("현재 환경에서는 Forge 자료함 가져오기가 비활성화되어 있습니다.");
+      return;
+    }
     if (window.DPForgeImport && typeof window.DPForgeImport.open === "function") {
-      window.DPForgeImport.open({
+      const opened = window.DPForgeImport.open({
         root: Store.state.root,
-        mode: "ref",
-        onDone: () => Store.refreshAll(true),
+        into: "refs",
+        onDone: async () => {
+          Store.toast("Forge 자료함에서 레퍼런스를 가져왔습니다.", "ok");
+          await Store.refreshAll(true);
+        },
       });
+      if (!opened) Store.toast("Forge 자료함을 열 수 없습니다.", "err");
     } else {
       Store.toast("Forge 자료함 연동이 활성화되면 여기에서 바로 불러올 수 있습니다.");
     }

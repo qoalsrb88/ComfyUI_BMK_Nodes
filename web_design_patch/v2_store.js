@@ -209,8 +209,10 @@ window.DPV2Store = (() => {
   function ensurePatchMeta(cropId, cropObj) {
     let m = state.patchMeta.get(cropId);
     if (!m) {
-      const targetText = (cropObj && Array.isArray(cropObj.targets) && cropObj.targets[0] && cropObj.targets[0].text)
-        || (cropObj && cropObj.note) || "";
+      const targetText = !Api.can("v2_spec_edit")
+        ? ((cropObj && Array.isArray(cropObj.targets) && cropObj.targets[0] && cropObj.targets[0].text)
+          || (cropObj && cropObj.note) || "")
+        : "";
       m = {
         purpose: "correct",
         user_instruction_ko: targetText,
@@ -223,6 +225,8 @@ window.DPV2Store = (() => {
         seen: "null",
         crop_sig: "",
         specLoaded: false,
+        needsApplyForSpec: false,
+        specModel: "",
         specState: "template", // template | body | blocked
         specWhy: null,
         specInputHash: "",
@@ -249,17 +253,19 @@ window.DPV2Store = (() => {
     if (!res || typeof res !== "object") return;
     const m = ensurePatchMeta(cropId);
     m.specLoaded = true;
+    m.needsApplyForSpec = false;
     if ("seen" in res) m.seen = res.seen ?? "null";
     if ("crop_sig" in res) m.crop_sig = res.crop_sig ?? "";
     if ("state" in res) m.specState = res.state || "template";
     if ("why" in res) m.specWhy = res.why || null;
     if ("prompt_en" in res) m.prompt_en = res.prompt_en || "";
     if ("input_hash" in res) m.specInputHash = res.input_hash || "";
+    if ("model" in res && typeof res.model === "string") m.specModel = res.model;
     if (Array.isArray(res.images)) m.specImages = res.images;
     if (res.v2 && typeof res.v2 === "object") {
-      if (res.v2.purpose) m.purpose = res.v2.purpose;
-      if (typeof res.v2.user_instruction_ko === "string") m.user_instruction_ko = res.v2.user_instruction_ko;
-      if (typeof res.v2.ai_auto === "boolean") m.aiAuto = res.v2.ai_auto;
+      m.purpose = res.v2.purpose || "correct";
+      m.user_instruction_ko = typeof res.v2.user_instruction_ko === "string" ? res.v2.user_instruction_ko : "";
+      m.aiAuto = typeof res.v2.ai_auto === "boolean" ? res.v2.ai_auto : true;
       const pr = res.v2.prompt;
       if (pr && typeof pr === "object") {
         m.promptSource = pr.source || "";
@@ -274,6 +280,15 @@ window.DPV2Store = (() => {
         m.promptInputHash = "";
         m.skill_ids = [];
       }
+    } else if (res.v2 === null) {
+      m.purpose = "correct";
+      m.user_instruction_ko = "";
+      m.aiAuto = true;
+      m.promptSource = "";
+      m.body_en = "";
+      m.summary_ko = "";
+      m.promptInputHash = "";
+      m.skill_ids = [];
     }
     m.dirtySpec = false;
     m.rawDirty = false;
@@ -290,7 +305,12 @@ window.DPV2Store = (() => {
         emit("selection");
       }
       return m;
-    } catch (_) {
+    } catch (err) {
+      if (err && err.status === 409 && err.data && err.data.reason === "apply_needed") {
+        m.needsApplyForSpec = true;
+        m.specLoaded = false;
+        emit("selection");
+      }
       return m;
     }
   }
@@ -303,6 +323,12 @@ window.DPV2Store = (() => {
     const m = patch.meta;
     if (!m.specLoaded) {
       await loadSpec(patch.id, true);
+      if (m.needsApplyForSpec) {
+        throw Object.assign(new Error("새로 추가한 영역입니다 — 먼저 무료 [합성 적용] 후 지시문을 저장할 수 있습니다."), {
+          status: 409,
+          data: { reason: "apply_needed" },
+        });
+      }
     }
     const payload = {
       crop_id: patch.id,
@@ -315,26 +341,67 @@ window.DPV2Store = (() => {
     if (opts.includeRaw || m.rawDirty) {
       payload.raw_prompt_override = m.body_en || "";
     }
-    const res = await Api.saveSpec(state.root, payload);
-    if (res && !res.unsupported) {
-      applySpecResponse(patch.id, res);
+    try {
+      const res = await Api.saveSpec(state.root, payload);
+      if (res && !res.unsupported) {
+        applySpecResponse(patch.id, res);
+      }
+      emit("selection");
+      return res;
+    } catch (err) {
+      if (err && err.status === 409 && err.data && err.data.reason === "stale") {
+        await loadSpec(patch.id, true);
+      }
+      throw err;
     }
-    emit("selection");
-    return res;
+  }
+
+  function projectPrepareRaw() {
+    const P = state.P;
+    if (!P) return {};
+    return (P.settings && P.settings.prepare)
+      || (P.derived && P.derived.settings && P.derived.settings.prepare)
+      || (P.values && P.values.prepare)
+      || {};
   }
 
   function projectPrepare() {
-    const p = state.P && state.P.values && state.P.values.prepare;
+    const p = projectPrepareRaw();
     const catalog = Data.modelCatalog();
     const defModel = (p && p.model) || (catalog[0] && catalog[0].name) || "gpt-image-2.6-sunburst";
     const info = Data.findModel(defModel);
+    const mergedOpts = Object.assign({}, info ? info.opt_defaults : {}, (p && p.opts) || {});
+    if (p && p.image_size !== undefined) mergedOpts.image_size = p.image_size;
+    if (p && p.thinking_level !== undefined) mergedOpts.thinking_level = p.thinking_level;
     return {
       model: defModel,
       quality: (p && p.quality) || (info && info.default_quality) || "max",
       n: Number((p && p.n) || 4),
       complexity: (p && p.complexity) || "high",
-      opts: Object.assign({}, info ? info.opt_defaults : {}, (p && p.opts) || {}),
+      opts: mergedOpts,
     };
+  }
+
+  function buildPreparePayload(patch = {}) {
+    const base = Object.assign({}, projectPrepareRaw());
+    const next = Object.assign({}, base, patch);
+    delete next.opts;
+    const m = Data.findModel(next.model || projectPrepare().model);
+    if (m) {
+      if (Array.isArray(m.qualities) && m.qualities.length && !m.qualities.includes(next.quality)) {
+        next.quality = m.default_quality || m.qualities[0];
+      }
+      if (Number(next.n) > m.max_n) next.n = m.max_n;
+      for (const optKey of ["image_size", "thinking_level"]) {
+        const choices = m.opts && m.opts[optKey];
+        if (choices && choices.length) {
+          if (!choices.includes(next[optKey])) {
+            next[optKey] = (m.opt_defaults && m.opt_defaults[optKey]) || choices[0];
+          }
+        }
+      }
+    }
+    return next;
   }
 
   function isPatchCheckedForRun(cropId) {
@@ -886,6 +953,7 @@ window.DPV2Store = (() => {
         m: cur,
         start: cur.slice(),
         file: info.edit ? info.edit.file : "",
+        adjust: info.adjust || null,
         layers,
         dirty: false,
         ops: [],
@@ -906,29 +974,38 @@ window.DPV2Store = (() => {
     if (!ms || !state.root) return null;
     const px = new Uint8Array(ms.w * ms.h);
     for (let i = 0; i < px.length; i++) px[i] = Math.max(0, Math.min(255, Math.round(ms.m[i] * 255)));
-    const res = await Api.saveMaskPng(state.root, {
-      key: ms.key,
-      crop: ms.info.crop,
-      base_sha: ms.info.base.sha,
-      expect: ms.info.edit ? ms.info.edit.sha : "",
-      file: ms.file || "",
-    }, px, ms.w, ms.h);
-    if (res && res.conflict) {
-      toast("다른 창에서 마스크가 변경되었습니다 — 최신 상태로 다시 열어주세요.", "err");
+    try {
+      const opsText = (ms.ops && ms.ops.length ? ms.ops.join(" · ") : "붓 편집").slice(0, 200);
+      const res = await Api.saveMaskPng(state.root, {
+        key: ms.key,
+        seen: ms.file || "",
+        ops: opsText,
+        rect: ms.win.join(","),
+      }, px, ms.w, ms.h);
+      if (res && res.conflict) {
+        toast(res.error || "다른 창에서 마스크가 변경되었습니다 — 최신 상태로 다시 열어주세요.", "err");
+        return res;
+      }
+      ms.dirty = false;
+      ms.start = ms.m.slice();
+      ms.ops = [];
+      if (res && res.edit && res.edit.file) {
+        ms.file = res.edit.file;
+        if (ms.info) ms.info.edit = res.edit;
+      }
+      toast("마스크를 저장했습니다.", "ok");
+      await refreshAll(true);
       return res;
+    } catch (err) {
+      toast(`마스크 저장 실패: ${err.message}`, "err");
+      return null;
     }
-    ms.dirty = false;
-    ms.start = ms.m.slice();
-    if (res && res.file) ms.file = res.file;
-    toast("마스크를 저장했습니다.", "ok");
-    await refreshAll(true);
-    return res;
   }
 
   return {
     state, subscribe, emit, toast,
     loadPrefs, savePrefs, applyPrefsToDom, activeTheme, activeAccentHex, initForgeThemeListener,
-    ensurePatchMeta, loadSpec, savePatchSpec, applySpecResponse, projectPrepare,
+    ensurePatchMeta, loadSpec, savePatchSpec, applySpecResponse, projectPrepareRaw, projectPrepare, buildPreparePayload,
     isPatchCheckedForRun, setPatchCheckedForRun, setAllCheckedForRun,
     getPatches, getPatch, primaryPatch, selectedPatches, clearSelection,
     currentCandidate, selectCandidate, selectTargetForCrop, moveCropZ,

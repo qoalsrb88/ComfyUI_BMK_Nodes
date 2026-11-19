@@ -196,7 +196,12 @@ window.DPV2Api = (() => {
   }
 
   async function saveMaskPng(root, params, px, w, h) {
-    const url = apiUrl("mask/save?" + qs(Object.assign({ root }, params)));
+    const sp = new URLSearchParams();
+    sp.set("root", String(root || ""));
+    for (const [k, v] of Object.entries(params || {})) {
+      if (v !== undefined && v !== null) sp.set(k, String(v));
+    }
+    const url = apiUrl("mask/save?" + sp.toString());
     const blob = await encodePngL(px, w, h);
     const res = await fetch(url, { method: "POST", headers: { "Content-Type": "image/png" }, body: blob });
     const data = await readJson(res);
@@ -262,7 +267,7 @@ window.DPV2Api = (() => {
       return await postJson("prompt/assist", payload, ctrl.signal);
     } catch (err) {
       if (err && err.name === "AbortError") {
-        throw new Error("AI 프롬프트 작성이 90초 제한을 초과했습니다 — 잠시 후 다시 시도해 주세요.");
+        throw Object.assign(new Error("AI 프롬프트 작성이 90초 제한을 초과했습니다 — 잠시 후 다시 시도해 주세요."), { isTimeout: true });
       }
       throw err;
     } finally {
@@ -307,10 +312,10 @@ window.DPV2Api = (() => {
     return { ok: false, reason: "unsupported", message: "이 단계에서 지원되지 않는 제출 유형입니다." };
   }
 
-  async function waitJob(root, promptId) {
+  async function waitJob(root, promptId, opts) {
     const mod = submitAdapter();
     if (mod && typeof mod.wait === "function" && promptId) {
-      return mod.wait(root, promptId);
+      return mod.wait(root, promptId, opts);
     }
     return null;
   }
