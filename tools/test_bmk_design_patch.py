@@ -2418,9 +2418,17 @@ def node_integration(psd05, crops03):
         optional = list(cls.INPUT_TYPES().get("optional") or {})
         sig = inspect.signature(getattr(cls, cls.FUNCTION)).parameters
         named = [n for n, p in sig.items() if p.kind != p.VAR_KEYWORD]  # 유료 노드의 **_stale(옛 워크플로의 없는 입력)은 뺀다
-        check(list(req) + optional + hidden == named[1:]
-              and all(sig[o].default is not inspect.Parameter.empty for o in optional),
+        # Prepare 의 해상도·추론 입력은 서버 모드에서만 노드 입력으로 보인다(로컬판의 노드 위젯은 그대로) — 함수 인자에는 늘 있다
+        server_only = ["image_size", "thinking_level"] if nid == "BMKDesignPatchPrepare" else []
+        check(list(req) + optional + hidden == [n for n in named[1:] if n not in server_only]
+              and all(sig[o].default is not inspect.Parameter.empty for o in optional + server_only),
               f"{nid} 입력 이름(+optional 기본값 있음 +hidden) = 함수 인자")
+        if server_only:
+            from unittest.mock import patch as _patch
+            with _patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
+                served = cls.INPUT_TYPES()
+            check(list(served["required"]) + list(served.get("optional") or {}) + list(served.get("hidden") or {}) == named[1:]
+                  and not set(server_only) & set(optional), f"{nid} 서버 모드의 입력 = 함수 인자 전부, 로컬판에는 두 입력이 없음")
     outs = [k for k, v in dp.NODE_CLASS_MAPPINGS.items() if getattr(v, "OUTPUT_NODE", False) is True]
     check(outs == ["BMKDesignPatchSpecDraft", "BMKDesignPatchRun", "BMKDesignPatchReview", "BMKDesignPatchExportPSD",
                    "BMKDesignPatchRefCut"], f"OUTPUT_NODE {outs}")
@@ -61423,6 +61431,25 @@ def forge_models2_unit():
     pinned = key("nano-banana-2.1", good)
     check(good == {"image_size": "2K", "thinking_level": "medium", "aspect_ratio": "4:5"} and pinned == "45d3aca0d5a4c115b323d552",
           f"FN5 나노바나나 생성 조건 키 고정값(예상 크기 표·옵션 이름이 키의 재료다 — 바뀌면 같은 요청이 다시 과금 대상) {pinned}")
+    # 표 전체를 고정한다: 비율마다 그 비율의 크롭(1K 예상 크기 그대로)에서 Prepare 가 쓰는 길(output_size · job_opts)로 얻은 재료의 키
+    recipe = []
+    for name in names:
+        for label, (a, b) in dpm.RATIO_SIZES.items():
+            for tier in dpm.IMAGE_SIZES:
+                opts = dpm.job_opts(name, {"image_size": tier}, src=(a, b))
+                W, H, _info = dpm.output_size(name, a, b, "user_k", opts)
+                check(opts.get("aspect_ratio") == label and dpm.size_problem(name, [W, H], opts) is None,
+                      f"FN5 비율 {label} 의 크롭은 그 비율로 맞고 크기·옵션이 서로 맞음 {name} {tier}")
+                recipe.append(store.cell_key(name, dpm.FIXED_QUALITY, [W, H], "auto", **args, opts=opts))
+    digest = hashlib.sha256(",".join(recipe).encode("ascii")).hexdigest()[:24]
+    check(len(set(recipe)) == len(recipe) == 90 and digest == "6ecc5f1277b18b1cb329e648",
+          f"FN5 나노바나나 계열의 키 재료 전체(모델 3 × 비율 10 × 해상도 3) 고정값 — 예상 크기 표를 고치면 여기서 걸린다 {digest}")
+    check(dpm.size_problem("nano-banana-pro", [1024, 1024], {"aspect_ratio": "4:5", "image_size": "4K"})
+          and dpm.size_problem("nano-banana-pro", [3712, 4608], {"aspect_ratio": "4:5", "image_size": "4K"}) is None
+          and dpm.size_problem("nano-banana-pro", [1856, 2304], {"aspect_ratio": "4:5", "image_size": "4K"})
+          and dpm.size_problem("nano-banana-pro", [1024, 1024], {"image_size": "4K"}) is None
+          and dpm.size_problem("seedream-5.5", [2048, 1536], {"aspect_ratio": "4:5"}) is None,
+          "FN5 크기 기록과 옵션(비율·해상도)이 어긋난 작업은 막는다 — 옵션에 비율이 없으면 표의 값인지만 본다")
 
     # ── 계열 대체·화면용 한 줄 ──
     catalog = {row.get("checkpoint") or row.get("id"): row.get("max_input_images") for row in spec["catalog"]["response"]["models"]}
@@ -61822,18 +61849,1017 @@ def forge_models2_settings_unit():
     """Forge 2단계 둘째 묶음 설정 갈래 — 실행 설정의 해상도·추론, Prepare 의 작업 opts·예상 크기, 전환 미리 보기, env 의 모델 한 줄,
     후보 응답의 모델 옵션·프롬프트 표지. 명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
     section("Forge 모델 설정(둘째 묶음) — forge_models2_settings_unit")
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, patch
+
+    dp = _dp_package()
+    st, rn, bd = dp.store, dp.runner, dp.board
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    models = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_models")
+    srv = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_server")
+    fg = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge")
+    fb = bd._forge_backend()
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="models2_settings_", dir=OUT_ROOT.resolve()))
+    pre = dp.BMKDesignPatchPrepare()
+    base = np.full((128, 192, 3), (60, 100, 140), dtype=np.uint8)
+    rects = [("001_panel", [0, 0, 96, 64]), ("002_square", [96, 32, 192, 128])]
+    option_keys = ("image_size", "thinking_level")
+
+    def project(name, crops=rects):
+        return _fx_project(dp, out, name, crops, base)
+
+    def args(name, **kw):
+        return dict(pl.defaults()["prepare"], model=name, quality="high", variants="V1", n=2,
+                    calls_per_cell=2, complexity="medium") | kw
+
+    def keys(m):
+        return [j["cell_key"] for j in m["jobs"]]
+
+    def settled(root, m):
+        # 완료 원장만 합성한다. 생성·다운로드·네트워크를 실행하지 않는다.
+        for job in m["jobs"]:
+            for rep in range(job["reps"]):
+                rn._write_json(rn._lpath(root, job["cell_key"], rep, "done"), {"slots": []})
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(dp.folder_paths, "get_output_directory", return_value=str(out / "output")))
+        stack.enter_context(patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1", rn.MOCK_ENV: ""}))
+        # B 갈래의 새 읽기 함수는 이 worktree 에 아직 없을 수 있다.
+        used = stack.enter_context(patch.object(fb, "prompt_used", return_value=[], create=True))
+        h, root = project("settings")
+        values = args("nano-banana-2")
+        old = {"schema": pl.SCHEMA, "rev": 1, "confirm": [], **pl.defaults(root), "prepare": dict(values)}
+        for key in option_keys:
+            old["prepare"].pop(key)
+        path = Path(root, pl.PIPELINE_NAME)
+        raw = json.dumps(old, ensure_ascii=False).encode("utf-8")
+        path.write_bytes(raw)
+        loaded = pl.load(root)
+        check(loaded["prepare"] == values and loaded["confirm"] == [] and path.read_bytes() == raw,
+              "FM2S1 옛 설정의 두 기본값·확인 필요 없음·원본 불변")
+        saved = pl.update(root, 1, "prepare", loaded["prepare"])
+        check(saved["rev"] == 1 and path.read_bytes() == raw, "FM2S1 같은 설정 저장은 옛 파일 바이트 보존")
+        for name in models.MODELS:
+            settings = args(name, image_size="4K", thinking_level="medium")
+            check(pl.validate_section("prepare", settings) == settings, f"FM2S1 저장값은 모델과 무관한 선택지 {name}")
+        for key, bad in (("image_size", "8K"), ("thinking_level", "low"), ("image_size", None)):
+            expect_raises(lambda k=key, v=bad: pl.validate_section("prepare", values | {k: v}),
+                          "FM2S1 잘못된 옵션 저장 거부 " + key)
+        for server in (False, True):
+            with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1" if server else ""}):
+                optional = pre.INPUT_TYPES()["optional"]
+                check(list(optional) == ["complexity"] + (list(option_keys) if server else []),
+                      f"FM2S1 서버 입력 추가·로컬 입력 보존 {server}")
+                if server:
+                    check(optional["image_size"][1]["default"] == "2K"
+                          and optional["thinking_level"][1]["default"] == "medium", "FM2S1 노드 옵션 기본값")
+                expected = ("model", "quality", "size_rule", "variants", "n", "ref_style", "calls_per_cell", "complexity")
+                if server:
+                    expected += option_keys
+                check(pl.section_keys("prepare") == expected and tuple(pl.defaults()["prepare"]) == expected
+                      and tuple(pl.settings_widgets()["prepare"]) == expected,
+                      f"FIX-P1 호출 시점의 모드별 절 키·기본값·설정 API {server}")
+                inputs = pre.INPUT_TYPES()
+                check(set(pl.widget_table()["BMKDesignPatchPrepare"]) == set(inputs["required"]) | set(inputs["optional"]),
+                      f"FIX-P1 모드별 그래프 위젯 대조 {server}")
+        lh, lr = project("local-settings")
+        local_values = {k: v for k, v in args("gpt-image-2.5-sunburst").items() if k not in option_keys}
+        server_doc = {"schema": pl.SCHEMA, "rev": 1, "confirm": [], **pl.defaults(lr),
+                      "prepare": local_values | {"image_size": "4K", "thinking_level": "high"}}
+        local_path = Path(lr, pl.PIPELINE_NAME)
+        server_raw = json.dumps(server_doc, ensure_ascii=False).encode("utf-8")
+        local_path.write_bytes(server_raw)
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}), patch.object(rn, "mock_enabled", return_value=True):
+            local_doc = pl.load(lr)
+            check(local_doc["prepare"] == local_values and local_doc["confirm"] == []
+                  and local_path.read_bytes() == server_raw, "FIX-P1 서버 파일의 두 키를 로컬에서 조용히 무시·읽기 원본 불변")
+            expect_raises(lambda: pl.validate_section("prepare", server_doc["prepare"]),
+                          "FIX-P1 로컬 저장 검증은 서버 전용 키 거부", contains="모르는 키")
+            check(pl.prepare_record({"prepare_settings": server_doc["prepare"]}) == ("prepare_settings", local_values),
+                  "FIX-P1 로컬 Prepare 기록에 서버 전용 키 없음")
+            try:
+                saved_local = pl.update(lr, 1, "prepare", local_values | {"n": 3})
+                payload = json.loads(local_path.read_text(encoding="utf-8"))
+                check(payload["prepare"] == local_values | {"n": 3} and saved_local["settings"]["prepare"] == payload["prepare"],
+                      "FIX-P1 로컬 설정 파일 쓰기에 서버 전용 키 없음")
+                graph = pl.build_prompt("apply", saved_local["settings"], lr)
+                check(tuple(graph[pl.NODE_KEYS["prepare"]]["inputs"]) == ("project",) + tuple(local_values),
+                      "FIX-P1 로컬 템플릿은 이전 입력 그대로")
+            except ValueError as error:
+                check(False, f"FIX-P1 로컬 저장·템플릿이 옛 절을 허용해야 함: {error}")
+            pre.run(lh, **local_values)
+            lm = st.load_manifest(lr)
+            settled(lr, lm)
+            settings = dict(pl.defaults(lr), prepare=local_values)
+            preview = pl.switch_preview(lr, lm, settings, prepare=local_values)
+            check(preview.get("prepare") == local_values and preview.get("need") == 0, "FIX-P1 로컬 전환 미리 보기 꼴 불변")
+            check(not set(option_keys) & pl.prepare_record(dict(lm, prepare_settings={}))[1].keys(),
+                  "FIX-P1 로컬 jobs 유도 기록에 서버 전용 키 없음")
+        prompt = pl.build_prompt("apply", loaded, root)
+        check(all(prompt[pl.NODE_KEYS["prepare"]]["inputs"][k] == values[k] for k in option_keys),
+              "FM2S1 실행 설정에서 Prepare 입력까지 두 값 전달")
+
+        # 이 변경 전 동일 합성 프로젝트·고정 시각에서 수집한 jobs·prepare_settings·보고 바이트.
+        pinned = {
+            "gpt-image-2.6-sunburst": "1aa8273c8333bb2bb10e8cb200c4d3840d92579c0ed72680aa9044071e38f514",
+            "gpt-image-2.6-flare": "3f53b9e52ec0ee2820a4be3709ec2c1c5db655c74fcbb908b55c9294a85b03d5",
+            "gpt-image-2.5-sunburst": "d5ad02a5b4d52015a614dd887f7b991a59f6ae510e2e061a2bc2b903f022f124",
+            "gpt-image-2.5-flare": "63349cc76e8e8d4ae806a7ac473c51afd3ac5a0dd0fe2d330d2593689c19597c",
+            "seedream-5.5": "9542e9e985b662f70b469869833f5e3ce86f9cc52c3bab4ebf21479ffa455592",
+            "ideogram-4.5": "223f6514cd3e9fcc47c28f313c84451229e57b219be30efc60768a8c1fd85bc3",
+        }
+        with patch.object(rn, "mock_enabled", return_value=True), patch.object(dp.time, "time", return_value=1000.0):
+            for name, digest in pinned.items():
+                gh, gr = project(name)
+                gh, _, report = pre.run(gh, **args(name, image_size="4K", thinking_level="high"))
+                gm = st.load_manifest(gr)
+                packed = json.dumps({"jobs": gm["jobs"], "prepare_settings": gm["prepare_settings"], "report": report},
+                                    ensure_ascii=False).encode("utf-8")
+                check(hashlib.sha256(packed).hexdigest() == digest, f"FM2S2 기존 모델 Prepare 바이트 불변 {name}")
+                check(all("opts" not in j for j in gm["jobs"])
+                      and not set(option_keys) & gm["prepare_settings"].keys(), "FM2S2 옵션 없는 모델은 새 기록 키 없음")
+                derived = pl.derive(gr, gm)
+                check(not any(x.startswith("prepare.") for x in derived["confirm"]), "FM2S2 옛 Prepare 기록의 확인 필요 없음")
+                settings = derived["settings"]
+                settings["prepare"].update(image_size="1K", thinking_level="minimal")
+                check(pl.drift(settings, gm) == [], f"FM2S2 쓰지 않는 옵션의 갈라짐 없음 {name}")
+                settled(gr, gm)
+                preview = pl.switch_preview(gr, gm, settings, prepare=settings["prepare"])
+                check(preview.get("exact") is True and preview.get("need") == 0,
+                      f"FM2S2 쓰지 않는 옵션의 추가 승인 없음 {name}")
+                pre.run(gh, **settings["prepare"])
+                check(keys(st.load_manifest(gr)) == keys(gm), f"FM2S2 쓰지 않는 옵션의 키 불변 {name}")
+
+        for empty in (None, {}):
+            eh, er = project("empty-options")
+            values = args("gpt-image-2.5-sunburst")
+            with patch.object(models, "job_opts", return_value=empty):
+                pre.run(eh, **values)
+                em = st.load_manifest(er)
+                check(all("opts" not in j for j in em["jobs"]), f"FIX-P5 Prepare 는 빈 옵션 키 생략 {empty!r}")
+                settings = pl.derive(er, em)["settings"]
+                with patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+                    preview = pl.switch_preview(er, em, settings, prepare=values)
+                proposed = plans.call_args.args[0]["jobs"] if plans.called else []
+                check(preview.get("exact") is True and len(proposed) == len(em["jobs"])
+                      and all("opts" not in j for j in proposed), f"FIX-P5 전환 미리 보기도 빈 옵션 키 생략 {empty!r}")
+
+        with patch.object(rn, "mock_enabled", return_value=False):
+            for name in ("nano-banana-2.1", "nano-banana-2", "nano-banana-pro",
+                         "gpt-image-2.5-sunburst", "seedream-5.5", "ideogram-4.5"):
+                rh, rr = project("rule-" + name)
+                values = args(name)
+                pre.run(rh, **values)
+                rm = st.load_manifest(rr)
+                settled(rr, rm)
+                settings = pl.derive(rr, rm)["settings"]
+                changed = values | {"size_rule": "int_k_2560"}
+                rows = pl.drift(dict(settings, prepare=changed), rm)
+                preview = pl.switch_preview(rr, rm, settings, prepare=changed)
+                if models.get(name).ratios:
+                    check(rows == [], f"FIX-P2 비율 목록 모델의 크기 규칙은 갈라짐 아님 {name}")
+                    check(preview.get("exact") is True and preview.get("need") == 0 and preview.get("cells") == 0,
+                          f"FIX-P2 크기 규칙만 변경한 비율 모델의 미리 보기 0건 {name}")
+                    pre.run(rh, **changed)
+                    check(keys(st.load_manifest(rr)) == keys(rm), f"FIX-P2 비율 모델의 크기 규칙 변경은 키 불변 {name}")
+                    target = args("nano-banana-2" if name != "nano-banana-2" else "nano-banana-pro")
+                    base_preview = pl.switch_preview(rr, rm, settings, prepare=target)
+                    rule_preview = pl.switch_preview(rr, rm, settings, prepare=target | {"size_rule": "int_k_2560"})
+                    check(base_preview.get("exact") is True and rule_preview.get("exact") is True
+                          and base_preview.get("need") == rule_preview.get("need") == 4,
+                          "FIX-P2 비율 모델 사이 전환도 크기 규칙 차이를 무시")
+                else:
+                    check([r["field"] for r in rows] == ["size_rule"] and preview.get("exact") is False,
+                          f"FIX-P2 기존 모델의 크기 규칙 갈라짐·미리 보기 유지 {name}")
+
+        fh, fr = _fx_project(dp, out, "ratio-flags", [("001_panel", [0, 0, 813, 1000])],
+                             np.full((1000, 813, 3), (60, 100, 140), dtype=np.uint8))
+        pre.run(fh, **args("nano-banana-2.1"))
+        fm = st.load_manifest(fr)
+        fj = fm["jobs"][0]
+        req = dict(fj, backend="forge", rep=0, call_id=rn.call_id_for(fj["cell_key"], 0))
+        received = ([1856, 2304], [2048, 2048], [1636, 2000], [1600, 2000])
+        done = {"slots": [{"slot": i, "file": fj["inputs"][0]["file"], "size": size} for i, size in enumerate(received)]}
+        rn._add_candidates(fm, req, done, [])
+        req_path = Path(rn._lpath(fr, fj["cell_key"], 0, "req"))
+        rn._write_json(str(req_path), req)
+        for name, expected in (("nano-banana-2.1", [False, True, False, True]),
+                               ("seedream-5.5", [False, True, True, False])):
+            for cand in fm["candidates"]:
+                cand["origin_info"]["model"] = name
+            st.save_manifest(fr, fm)
+            candidates = [c for t in bd.build_state(fr)["targets"] for c in t["candidates"]]
+            check([c.get("ratio_changed", False) for c in candidates] == expected,
+                  f"FIX-P3 후보 모델별 크롭 대 출력·원장 대 출력 판정 {name}")
+        for cand in fm["candidates"]:
+            cand["origin_info"]["model"] = "nano-banana-2.1"
+        st.save_manifest(fr, fm)
+        req_path.unlink()
+        candidates = [c for t in bd.build_state(fr)["targets"] for c in t["candidates"]]
+        check([c.get("ratio_changed", False) for c in candidates] == [False, True, False, True],
+              "FIX-P3 비율 모델의 크롭 비교는 원장 요청 크기와 무관")
+
+        integration_cases = (
+            ("gpt-to-nano", args("gpt-image-2.5-sunburst"), args("nano-banana-2.1"), 2),
+            ("nano-to-gpt", args("nano-banana-2.1"), args("gpt-image-2.5-sunburst"), 4),
+            ("resolution", args("nano-banana-2.1"), args("nano-banana-2.1", image_size="4K"), 2),
+            ("thinking", args("nano-banana-2.1"), args("nano-banana-2.1", thinking_level="high"), 2),
+        )
+        with patch.object(rn, "mock_enabled", return_value=False):
+            for case, before_values, target, expected_need in integration_cases:
+                ih, ir = project("real-backend-" + case,
+                                 [("001_match", [0, 0, 80, 100]), ("002_mismatch", [90, 0, 172, 100])])
+                pre.run(ih, **before_values)
+                im = st.load_manifest(ir)
+                settled(ir, {"jobs": [j for j in im["jobs"] if models.opts_problem(j["model"], j.get("opts")) is None]})
+                legacy = copy.deepcopy(im)
+                for key in option_keys:
+                    legacy["prepare_settings"].pop(key, None)
+                current = pl.current(ir, legacy)
+                derived = pl.derive(ir, legacy)
+                check(not {"prepare.variants", "prepare.ref_style"} & set(current["confirm"])
+                      and all(derived["from"]["prepare." + k] == "manifest" for k in ("variants", "ref_style")),
+                      "FIX-P6 옛 Prepare 기록으로 처음 열어도 변형·참조 표기 확인 필요 없음")
+                settings = pl.derive(ir, im)["settings"]
+                # spy 는 호출만 기록한다. 실제 제출 전 판정을 교체하거나 우회하지 않는다.
+                with patch.object(fb, "blocked_reason", wraps=fb.blocked_reason) as guard, \
+                        patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+                    preview = pl.switch_preview(ir, im, settings, prepare=target)
+                proposed = copy.deepcopy(plans.call_args.args[0]["jobs"]) if plans.called else []
+                ratio_target = bool(models.get(target["model"]).ratios)
+                check(len(proposed) == 2 and all((bool(j.get("opts")) if ratio_target else "opts" not in j) for j in proposed),
+                      f"FIX-P6 미리 보기 사본은 대상 모델 옵션을 전달 {case}")
+                reasons = [fb.blocked_reason(j) for j in proposed]
+                check(guard.called and reasons == [None, models.ratio_problem(target["model"]) if ratio_target else None],
+                      f"FIX-P6 실제 백엔드 판정은 비율 불일치만 차단 {case}")
+                pre.run(ih, **target)
+                actual = st.load_manifest(ir)
+                ap = rn.split_approval(rn.plan_calls(actual, ir), "", backend=rn.BACKEND_FORGE)
+                check(proposed == actual["jobs"] and preview.get("exact") is True
+                      and preview.get("need") == len(ap["needs_approval"]) == expected_need
+                      and preview.get("cells") == expected_need // 2
+                      and sum(bool(e.get("blocked")) for e in ap["blocked"]) == (2 if ratio_target else 0),
+                      f"FIX-P6 실제 판정 포함 미리 보기 승인 수 = 반영 후 승인 수 {case}")
+                by_key = {j["cell_key"]: j for j in actual["jobs"]}
+                check(all(e["job"].get("opts") == by_key[e["cell_key"]].get("opts")
+                          and ("opts" in e["job"]) == bool(by_key[e["cell_key"]].get("opts"))
+                          for e in ap["needs_approval"] + ap["blocked"]),
+                      f"FIX-P6 승인 계획의 작업도 opts 규칙 유지 {case}")
+
+        # 나머지 Prepare 단위 사례는 제출 판정과 분리한다. 실제 백엔드 통합 판정은 위에서 검사한다.
+        with patch.object(rn, "blocked_reason", return_value=None):
+            ratio_crops = [("001_match", [0, 0, 80, 100]), ("002_mismatch", [90, 0, 172, 100])]
+            for name in ("nano-banana-2.1", "nano-banana-2", "nano-banana-pro"):
+                nh, nr = project(name, ratio_crops)
+                values = args(name)
+                nh, _, report = pre.run(nh, **values)
+                nm = st.load_manifest(nr)
+                effective = {"image_size": "2K"}
+                if name != "nano-banana-pro":
+                    effective["thinking_level"] = "medium" if name == "nano-banana-2.1" else "minimal"
+                check(nm["prepare_settings"] == {k: v for k, v in values.items() if k not in option_keys} | effective,
+                      f"FM2S3 Prepare 기록은 모델별 실제 옵션만 {name}")
+                matched, mismatched = nm["jobs"]
+                check(matched["opts"] == effective | {"aspect_ratio": "4:5"} and matched["size"] == [1856, 2304]
+                      and matched["size_info"]["method"] == "ratio" and matched["size_info"]["src"] == [80, 100]
+                      and matched["size_info"]["image_size"] == "2K" and matched["size_info"]["ratio"] == "4:5",
+                      f"FM2S3 맞는 크롭의 옵션·예상 크기 {name}")
+                problem = models.ratio_problem(name)
+                check(mismatched["opts"] == effective and mismatched["size_info"]["problem"] == problem
+                      and models.opts_problem(name, mismatched["opts"]) == problem and problem in report,
+                      f"FM2S3 안 맞는 크롭도 작업 생성·비율 없음·반영 경고 {name}")
+                check(all(j["quality"] == "standard" and "complexity" not in j and j["cell_key"] == st.cell_key(
+                      name, "standard", j["size"], dp._BACKGROUND, j["prompt"], [i["sha"] for i in j["inputs"]],
+                      dp.dprompt.TEMPLATE_VERSION, j["variant"], opts=j["opts"]) for j in nm["jobs"]),
+                      f"FM2S3 고정 품질·생성 조건에 작업 옵션 반영 {name}")
+                derived = pl.derive(nr, nm)["settings"]
+                check(pl.drift(dict(derived, prepare=values), nm) == [], "FM2S3 저장값과 모델별 기본값은 같은 생성 조건")
+                old_jobs = pl.derive(nr, dict(nm, prepare_settings={}))
+                check(all(old_jobs["settings"]["prepare"][k] == v for k, v in effective.items())
+                      and not any("prepare." + k in old_jobs["confirm"] for k in option_keys), "FM2S3 jobs 에서 옵션 복구")
+                changed = values | {"image_size": "4K"}
+                drift = pl.drift(dict(derived, prepare=changed), nm)
+                check([(d["field"], d["kind"]) for d in drift] == [("image_size", "cell")], "FM2S3 해상도 변경은 셀 갈라짐")
+                pre.run(nh, **changed)
+                enlarged = st.load_manifest(nr)
+                check(keys(enlarged) != keys(nm) and enlarged["jobs"][0]["size"] == [3712, 4608], "FM2S3 4K 는 새 키·예상 크기")
+                one = values | {"image_size": "1K"}
+                pre.run(nh, **one)
+                small = st.load_manifest(nr)
+                check(small["jobs"][0]["size"] == [928, 1152] and keys(small) != keys(nm), "FM2S3 1K 는 새 키·예상 크기")
+                high = one | {"thinking_level": "high"}
+                drift = pl.drift(dict(derived, prepare=high), small)
+                pre.run(nh, **high)
+                check((keys(st.load_manifest(nr)) != keys(small)) == (name != "nano-banana-pro")
+                      and [d["field"] for d in drift] == ([] if name == "nano-banana-pro" else ["thinking_level"]),
+                      f"FM2S3 추론 변경은 지원하는 모델만 새 키·갈라짐 {name}")
+                pre.run(nh, **values)
+                if name == "nano-banana-2":
+                    pre.run(nh, **(values | {"thinking_level": "minimal"}))
+                    check(keys(st.load_manifest(nr)) == keys(nm), "FM2S3 2의 medium 은 minimal 과 같은 키")
+
+            sh, sr = project("switch")
+            values = args("nano-banana-2.1")
+            sh = pre.run(sh, **values)[0]
+            transitions = [(values, 0), (values | {"image_size": "4K"}, 4),
+                           (values | {"image_size": "4K", "thinking_level": "high"}, 4),
+                           (args("nano-banana-2"), 4), (args("nano-banana-2", thinking_level="minimal"), 0),
+                           (args("nano-banana-pro"), 4), (args("gpt-image-2.5-sunburst"), 4), (args("nano-banana-2.1"), 0)]
+            for values, expected_need in transitions:
+                previous = st.load_manifest(sr)
+                snapshot = copy.deepcopy(previous)
+                settled(sr, previous)
+                settings = pl.derive(sr, previous)["settings"]
+                with patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+                    preview = pl.switch_preview(sr, previous, settings, prepare=values)
+                proposed = copy.deepcopy(plans.call_args.args[0]["jobs"]) if plans.called else []
+                sh = pre.run(sh, **values)[0]
+                actual = st.load_manifest(sr)
+                check(proposed == actual["jobs"] and previous == snapshot, "FM2S4 미리 보기 작업·키 = 실제 Prepare, 원본 불변")
+                plan = rn.plan_calls(actual, sr)
+                ap = rn.split_approval(plan, "", backend=rn.BACKEND_FORGE)
+                check(preview.get("exact") is True and preview.get("need") == len(ap["needs_approval"]) == expected_need
+                      and preview.get("cells") == len({e["cell_key"] for e in ap["needs_approval"]}) == expected_need // 2,
+                      "FM2S4 옵션만 변경·모델 전환·같은 유효 옵션·이전 키 복귀의 승인 건수")
+
+            # B 갈래가 쓸 후보 origin_info 를 직접 구성해 보드 응답 경로만 검증한다.
+            ch, cr = project("candidates")
+            pre.run(ch, **args("nano-banana-2.1"))
+            cm = st.load_manifest(cr)
+            job = cm["jobs"][0]
+            req = dict(job, backend="forge", rep=0, call_id=rn.call_id_for(job["cell_key"], 0))
+            done = {"slots": [{"slot": i, "file": job["inputs"][0]["file"], "size": job["size"]} for i in range(3)]}
+            rn._add_candidates(cm, req, done, [])
+            for cand in cm["candidates"]:
+                cand["origin_info"]["opts"] = dict(job["opts"])
+            st.save_manifest(cr, cm)
+            rows = bd.build_state(cr)
+            check(all(c["opts"] == job["opts"] for t in rows["targets"] for c in t["candidates"])
+                  and all(c["opts"] == j["opts"] for t, j in zip(rows["targets"], cm["jobs"]) for c in t["cells"]),
+                  "FM2S5 origin_info·작업 요약의 옵션이 후보·셀 응답까지 전달")
+            check(srv._public_json(rows, bd) == rows, "FM2S5 서버 응답 정리에서도 옵션 보존")
+            for name in ("ideogram-4.5", "gpt-image-2.6-sunburst"):
+                for cand in cm["candidates"]:
+                    cand["origin_info"]["model"] = name
+                    cand["origin_info"].pop("opts", None)
+                st.save_manifest(cr, cm)
+                text = "서버가 쓴 프롬프트\n" * 600
+                used.return_value = [text, None, "unchanged"]
+                with patch.object(fb, "prompt_changed", return_value=[True, True, False]):
+                    candidates = [c for t in bd.build_state(cr)["targets"] for c in t["candidates"]]
+                    flag = "prompt_rewritten" if name == "ideogram-4.5" else "prompt_changed"
+                    other = "prompt_changed" if flag == "prompt_rewritten" else "prompt_rewritten"
+                    check([c.get(flag, False) for c in candidates] == [True, True, False]
+                          and all(other not in c and "opts" not in c for c in candidates), "FM2S5 후보 자신의 모델로 표지 구분")
+                    check(candidates[0].get("prompt_used") is True and all("prompt_used" not in c for c in candidates[1:])
+                          and text[:100] not in json.dumps(candidates, ensure_ascii=False), "FIX-P4 상태에는 글 대신 존재 표지만")
+                    check([c.get("slot") for c in candidates] == [0, 1, 2]
+                          and all(c["call_id"] == req["call_id"] for c in candidates), "FIX-P4 후보의 call_id·정수 slot 전달")
+                    used.return_value = []
+                    candidates = [c for t in bd.build_state(cr)["targets"] for c in t["candidates"]]
+                    check(candidates[0][flag] and all("prompt_used" not in c for c in candidates), "FM2S5 옛 기록은 표지만")
+                    with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}):
+                        check(bd._forge_candidate_flags(cr, cm["candidates"][0]["origin_info"]) == {}, "FM2S5 로컬 후보 표지 불변")
+                for slot in (-1, True, None, 99):
+                    with patch.object(fb, "prompt_changed", return_value=[True]):
+                        check(bd._forge_candidate_flags(cr, dict(cm["candidates"][0]["origin_info"], slot=slot)) == {},
+                              "FM2S5 잘못된 슬롯은 표지 없음")
+            used.reset_mock()
+            check(bd._forge_candidate_flags(cr, {"backend": "mock", "slot": 0}) == {} and not used.called,
+                  "FM2S5 Forge 이외 후보는 기록 조회 없음")
+
+            async def prompt_query(query, scope):
+                token = bd.set_scope(scope)
+                try:
+                    response = await bd.prompt_handler(types.SimpleNamespace(query=query, path=bd.API + "/prompt"))
+                    return response.status, json.loads(response.text)
+                finally:
+                    bd.reset_scope(token)
+
+            scope = {"input": str(out), "output": str(out / "output"), "home": str(out), "org": "example", "account": "example"}
+            query = {"root": st.root_key(cr), "call": req["call_id"], "slot": "0"}
+            crop_query = {"root": query["root"], "crop": job["crop_id"]}
+            crop_status, crop_before = asyncio.run(prompt_query(crop_query, scope))
+            check(crop_status == 200 and set(crop_before) == {"crop", "name", "rev", "jobs", "targets", "spec_error"}
+                  and crop_before["jobs"][0]["prompt"] == job["prompt"]
+                  and crop_before["jobs"][0]["variant"] == job["variant"], "FIX-P4 기존 crop 질의 응답 계약")
+            used.return_value = [text, None, "다른 슬롯의 글"]
+            for slot, expected in (("0", text[:4000]), ("1", None), ("2", "다른 슬롯의 글"), ("99", None)):
+                status, body = asyncio.run(prompt_query(query | {"slot": slot}, scope))
+                check(status == 200 and body == {"prompt_used": expected}, f"FIX-P4 prompt 라우트의 슬롯별 본문 {slot}")
+            used.return_value = []
+            status, body = asyncio.run(prompt_query(query, scope))
+            check(status == 200 and body == {"prompt_used": None}, "FIX-P4 옛 기록은 null")
+            used.return_value = [None]
+            status, body = asyncio.run(prompt_query(query, scope))
+            check(status == 200 and body == {"prompt_used": None}, "FIX-P4 글을 보관하지 않은 슬롯은 null")
+            invalid = [{"call": ""}, {"call": "invalid"}, {"call": "../outside_r0"},
+                       {"call": "a" * 24 + "_r-1"}, {"slot": ""}, {"slot": "-1"}, {"slot": "1.0"},
+                       {"slot": "true"}, {"slot": " 0"}]
+            for change in invalid:
+                used.reset_mock()
+                status, _ = asyncio.run(prompt_query(query | change, scope))
+                check(status == 400 and not used.called, "FIX-P4 잘못된 call·slot 은 읽기 전에 400")
+            for missing in ("call", "slot"):
+                status, _ = asyncio.run(prompt_query({k: v for k, v in query.items() if k != missing}, scope))
+                check(status == 400, "FIX-P4 call·slot 은 함께 필요")
+            for scoped, expected in ((None, 401), (dict(scope, input=str(out / "another-account")), 404)):
+                used.reset_mock()
+                status, _ = asyncio.run(prompt_query(query, scoped))
+                check(status == expected and not used.called, "FIX-P4 프롬프트 조회도 기존 계정 격리 유지")
+            used.reset_mock()
+            check(asyncio.run(prompt_query(crop_query, scope)) == (crop_status, crop_before) and not used.called,
+                  "FIX-P4 crop 질의는 원래 응답 그대로·서버 글 조회 없음")
+
+        class Runner:
+            def __init__(self, **kw):
+                self.closed = False
+
+            def close(self, timeout=0):
+                self.closed = True
+
+        async def env_cases():
+            jobs = types.SimpleNamespace(JobRunner=Runner, routes=lambda runner: ())
+            transport = AsyncMock(side_effect=AssertionError("외부 호출 금지"))
+            catalog = {m.checkpoint: m.max_inputs for m in models.MODELS.values()}
+            for connected in (False, True):
+                cfg = srv.ServerConfig(data_dir=str(out / "env"), public_origin="https://studio.example",
+                                       forge=fg.ForgeConfig("https://forge.example", media_origins=("https://forge.example",)) if connected else None)
+                with patch.dict(os.environ, {rn.MOCK_ENV: ""}), patch.object(srv, "_server_secret", return_value=b"synthetic"), \
+                        patch.object(fb, "ensure_catalog", new=AsyncMock(return_value=catalog)) as ensure, \
+                        patch.object(fb, "catalog_failed", return_value=False):
+                    app = srv.make_app(cfg, jobs_module=jobs, forge_transport=transport)
+                    app.freeze()
+                    try:
+                        request = {"bmk_dp_session": {"name": "example", "tag": "synthetic",
+                                                     "scope": {"org": "example", "account": "example"}}}
+                        body = json.loads((await bd.env_handler(request)).text)
+                        if not connected:
+                            check("models" not in body["caps"] and not ensure.called, "FM2S6 Forge 미연결 env 는 models 없음")
+                            continue
+                        check(body["caps"]["models"] == [models.describe(n, catalog, checked=True) for n in models.MODELS],
+                              "FM2S6 실제 env 응답의 전체 모델 줄")
+                        by_name = {row["name"]: row for row in body["caps"]["models"]}
+                        row = by_name["nano-banana-2.1"]
+                        check(row["opt_defaults"] == {"image_size": "2K", "thinking_level": "medium"}
+                              and row["family"] == "nano-banana" and row["ratios"] == list(models.RATIOS)
+                              and row["ratio_tolerance"] == 0.01 and row["fallback"] is None, "FM2S6 새 env 필드 보존")
+                        retired = dict(catalog)
+                        retired.pop(models.get("nano-banana-2.1").checkpoint)
+                        ensure.return_value = retired
+                        body = json.loads((await bd.env_handler(request)).text)
+                        row = next(r for r in body["caps"]["models"] if r["name"] == "nano-banana-2.1")
+                        check(row["available"] is False and row["fallback"] == "nano-banana-2", "FM2S6 퇴역 모델의 계열 대체")
+                    finally:
+                        await app.cleanup()
+                    check(app[srv._RUNNER_KEY].closed, "FM2S6 앱 대역 종료")
+            check(not transport.called, "FM2S6 모든 env 검증은 외부 호출 없음")
+
+        asyncio.run(env_cases())
 
 
 def forge_models2_dev_unit():
     """Forge 2단계 둘째 묶음 가짜 Forge 갈래 — 나노바나나 계열의 목록·요청 검사·장마다 따로 부르는 흉내.
     명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
     section("Forge 모델 가짜 Forge(둘째 묶음) — forge_models2_dev_unit")
+    import bmk_design_patch_forge_dev as dev
+    import bmk_design_patch_models as dpm
+    from unittest.mock import patch
+
+    fixture = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
+    models = fixture["models"]
+    names = ("nano-banana-2.1", "nano-banana-2", "nano-banana-pro")
+    catalog = copy.deepcopy(models["catalog"]["response"])
+    # 정본의 count가 모델 추가보다 늦게 갱신돼도 목록의 모든 값과 실제 개수는 그대로 검증한다.
+    catalog["count"] = len(catalog["models"])
+    token = dev.issue_token("models2_test")
+    headers = {"Authorization": "Bearer " + token}
+    with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": ""}):
+        fake = dev.FakeForge(clock=lambda: 1700000000.0)
+    encoded = io.BytesIO()
+    with Image.new("RGB", (48, 32), (40, 90, 180)) as picture:
+        picture.save(encoded, format="PNG")
+    uri = "data:image/png;base64," + base64.b64encode(encoded.getvalue()).decode()
+    serial = 0
+
+    def payload(name, **changes):
+        nonlocal serial
+        serial += 1
+        data = copy.deepcopy(models["requests"][name]["request"])
+        data.update(request_id="models2-" + str(serial), input_images=[[uri, uri]])
+        data.update(changes)
+        return data
+
+    async def call(method, path, data=None, *, instance=fake, auth=headers):
+        status, response_headers, body = await instance.handle(
+            method, path, auth, json.dumps(data).encode() if data is not None else None)
+        return status, json.loads(body) if response_headers.get("Content-Type") == "application/json" else body
+
+    async def generate(data):
+        status, submitted = await call("POST", "/api/image/generate", data)
+        check(status == 200 and set(submitted) == set(fixture["generate"]["response"]), "FND 제출은 정본 모양으로 접수")
+        if status != 200:
+            raise AssertionError("가짜 Forge 나노바나나 요청 접수 실패")
+        status, job = await call("GET", "/api/image/jobs/" + submitted["job_id"])
+        check(status == 200, "FND 접수된 잡 조회")
+        return job, fake.requests[-1]
+
+    async def failed(data, label):
+        job, record = await generate(data)
+        check(job["status"] == "failed" and job["result_data"] is None and job["error_category"] == "ailabs"
+              and isinstance(job["error_message"], str) and bool(job["error_message"])
+              and record["provider_calls"] == [] and record["used_input_indices"] == [],
+              "FND3 공급자 호출 없는 실패 잡: " + label)
+        check(record["keys"] == sorted(data) and record["checkpoint"] == data["checkpoint"],
+              "FND3 실패한 요청도 키·checkpoint 기록: " + label)
+        return job
+
+    async def result_size(job):
+        status, png = await call("GET", job["result_data"]["images"][0], auth={})
+        with Image.open(io.BytesIO(png)) as picture:
+            size = picture.size
+            check(status == 200 and picture.format == "PNG", "FND4 결과는 무인증 PNG")
+            picture.verify()
+        return size
+
+    async def run():
+        path = models["catalog"]["path"]
+        check(await call("GET", path) == (200, catalog), "FND1 세 모델을 포함한 정본 목록·실제 개수")
+        for name in names:
+            checkpoint = models["names"][name]
+            fake.retire(checkpoint)
+            current = (await call("GET", path))[1]
+            expected = dict(catalog, models=[row for row in catalog["models"] if row["checkpoint"] != checkpoint],
+                            count=catalog["count"] - 1)
+            check(current == expected, "FND1 퇴역은 지정한 나노바나나 하나만 제거: " + name)
+            job, record = await generate(payload(name))
+            check(job["status"] == "completed" and record["retired"] and record["checkpoint"] == checkpoint
+                  and record["effective_checkpoint"] != checkpoint
+                  and job["request_data"]["checkpoint"] == record["effective_checkpoint"],
+                  "FND1 퇴역 요청의 기존 대체 모델 기록 유지: " + name)
+            fake.retire(checkpoint, False)
+            check(await call("GET", path) == (200, catalog), "FND1 퇴역 해제는 전체 목록 복구")
+        checkpoints = [models["names"][name] for name in names]
+        for retired in ([checkpoint] for checkpoint in checkpoints):
+            with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": " , ".join(retired)}):
+                env_fake = dev.FakeForge()
+            current = (await call("GET", path, instance=env_fake))[1]
+            check(current == dict(catalog, models=[row for row in catalog["models"] if row["checkpoint"] not in retired],
+                                  count=catalog["count"] - len(retired)), "FND1 환경 변수도 세 id 각각에 적용")
+        with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": " , ".join(checkpoints)}):
+            env_fake = dev.FakeForge()
+        check((await call("GET", path, instance=env_fake))[1]
+              == dict(catalog, models=[row for row in catalog["models"] if row["checkpoint"] not in checkpoints],
+                      count=catalog["count"] - len(checkpoints)), "FND1 환경 변수로 세 모델 동시 퇴역")
+
+        for name in names:
+            spec, limits = models["requests"][name], models["limits"][name]
+            data = payload(name)
+            job, record = await generate(data)
+            count = data["num_outputs"]
+            check(job["status"] == "completed" and len(job["result_data"]["images"]) == count
+                  and set(job["result_data"]) == set(models["job"]["seedream_partial"]["result_data"])
+                  and job["result_data"]["result_metadata"] == [{"call_index": i} for i in range(count)],
+                  "FND2 정본 요청은 장별 메타데이터로 완료·prompt_used 없음: " + name)
+            check(record == {"keys": sorted(data), "checkpoint": data["checkpoint"], "provider_calls": list(range(count)),
+                             "effective_checkpoint": data["checkpoint"], "retired": False, "input_count": 2,
+                             "used_input_indices": [0, 1], "job_id": job["id"], "reused": False,
+                             "successful_calls": list(range(count))}, "FND2 받은 요청 기록의 기존 꼴 유지: " + name)
+            expected_size = tuple(side * dpm.IMAGE_SIZES[data["image_size"]] for side in dpm.RATIO_SIZES[data["aspect_ratio"]])
+            check(await result_size(job) == expected_size, "FND2 기본 해상도 PNG는 모델 표의 예상 크기: " + name)
+            before = len(fake.jobs)
+            status, again = await call("POST", "/api/image/generate", data)
+            check(status == 200 and again["job_id"] == job["id"] and again["status"] == "completed"
+                  and len(fake.jobs) == before and fake.requests[-1]["reused"] and not fake.requests[-1]["provider_calls"],
+                  "FND2 재제출은 새 잡·공급자 호출 없음: " + name)
+
+            for key in spec["never"]:
+                await failed(payload(name, **{key: None}), name + " 금지 키 " + key)
+            for key in ("aspect_ratio", *limits["opts"]):
+                missing = payload(name)
+                del missing[key]
+                await failed(missing, name + " 누락 " + key)
+                invalid = (None, [], {}, True, 0, "", "unsupported")
+                invalid += {"aspect_ratio": ("4/5", "auto", "16:10"), "image_size": ("2k", "8K", "2048x2048"),
+                            "thinking_level": ("low", "MEDIUM")}[key]
+                if key == "thinking_level" and name == "nano-banana-2":
+                    invalid += ("medium",)
+                for value in invalid:
+                    await failed(payload(name, **{key: value}), name + " 잘못된 " + key)
+            if name == "nano-banana-pro":
+                for value in ("minimal", "medium", "high", []):
+                    await failed(payload(name, thinking_level=value), name + " 추론 옵션 금지")
+            for thinking in limits["opts"].get("thinking_level", ()):
+                job, _ = await generate(payload(name, thinking_level=thinking, input_images=[]))
+                check(job["status"] == "completed", "FND3 모델별 추론 선택지 허용: " + name + " " + thinking)
+
+            limit = limits["max_inputs"]
+            for groups in ([[uri] * (limit + 1)], [[uri] * 7, [uri] * (limit - 6)]):
+                await failed(payload(name, input_images=groups), name + " 입력 상한 초과")
+            for groups in ([], [[]], [[uri] * limit], [[uri] * 7, [uri] * (limit - 7)]):
+                job, record = await generate(payload(name, input_images=groups, num_outputs=limits["max_n"]))
+                check(job["status"] == "completed" and len(job["result_data"]["images"]) == limits["max_n"]
+                      and record["input_count"] == sum(map(len, groups))
+                      and record["used_input_indices"] == list(range(sum(map(len, groups))))
+                      and record["provider_calls"] == list(range(limits["max_n"])),
+                      "FND3 입력 0·14장과 출력 8장 허용·그룹 경계에서 절삭 없음: " + name)
+
+            resolutions = tuple(dpm.IMAGE_SIZES)
+            for index, ratio in enumerate(dpm.RATIOS):
+                for image_size in resolutions:
+                    job, _ = await generate(payload(name, aspect_ratio=ratio, image_size=image_size, input_images=[], num_outputs=1))
+                    check(job["status"] == "completed", "FND4 모든 비율·해상도 조합 허용: " + name)
+                    # 비율 전부와 해상도 세 단계를 실제 PNG로 확인한다.
+                    if image_size == resolutions[index % len(resolutions)]:
+                        expected_size = tuple(side * dpm.IMAGE_SIZES[image_size] for side in dpm.RATIO_SIZES[ratio])
+                        check(await result_size(job) == expected_size, "FND4 예상 크기의 PNG: " + name + " " + ratio + " " + image_size)
+
+            for marker, indices in (("[[fake:partial=2]]", [0, 2]), ("[[fake:partial=1]]", [0]),
+                                    ("[[fake:partial=0]]", []), ("[[fake:empty]]", [])):
+                job, record = await generate(payload(name, num_outputs=3, prompt=marker))
+                result = job["result_data"]
+                check(job["status"] == "completed" and len(result["images"]) == len(indices)
+                      and len(result["result_ids"]) == len(indices) and len(result["thumbnails"]) == len(indices)
+                      and result["result_metadata"] == [{"call_index": i} for i in indices]
+                      and record["provider_calls"] == [0, 1, 2] and record["successful_calls"] == indices
+                      and "warning" not in result and "warning" not in job,
+                      "FND5 부분 성공·빈 완료는 Seedream과 같은 장별 호출·경고 없음: " + name)
+            for autopilot in (None, {"candidate_prompt": "다른 글"}):
+                data = payload(name, prompt="원문 [[fake:changed]]", prompt_autopilot=autopilot)
+                if autopilot is None:
+                    del data["prompt_autopilot"]
+                job, _ = await generate(data)
+                check(job["status"] == "completed" and all("prompt_used" not in item for item in job["result_data"]["result_metadata"]),
+                      "FND5 changed 표지·autopilot 값에도 prompt_used 없음: " + name)
+            await failed(payload(name, aspect_ratio=token, image_size=uri), name + " 잘못된 값 비노출")
+        snapshot = json.dumps({"calls": list(fake.calls), "requests": list(fake.requests), "jobs": fake.jobs}, ensure_ascii=False)
+        check(token not in snapshot and uri not in snapshot and "data:image/" not in snapshot and "Authorization" not in snapshot,
+              "FND6 요청 기록·잡 응답에 인증 헤더·입력 본문·잘못된 옵션 값 없음")
+
+    asyncio.run(run())
 
 
 def forge_models2_js_unit():
     """Forge 2단계 둘째 묶음 화면 갈래 — 실행 설정의 해상도·추론 칸, 대체 모델 전환, [모델 비율로 넓히기], 승인 상자·후보의 옵션 표시,
     프롬프트 표지. 명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §9. --quick 포함."""
     section("Forge 모델 화면(둘째 묶음) — forge_models2_js_unit")
+    import bmk_design_patch_models as models
+
+    node = shutil.which("node")
+    if not node:
+        skip("FM2J node 없음 — 모델 화면 VM 시험 못 돌림")
+        return
+    web = PKG / "web_design_patch"
+    out = OUT_ROOT / "forge_models2_js"
+    out.mkdir(parents=True, exist_ok=True)
+    catalog = [models.describe(name) for name in models.MODELS]
+    nano = [m for m in catalog if m["family"] == "nano-banana"]
+    # 서버 식과 직접 대조: 명시된 경계 양쪽 + 모든 비율의 경계 근처·임의 크기.
+    sizes = [(800, 1000), (813, 1000), (815, 1000), (798, 1000), (796, 1000), (1920, 1080),
+             (2122, 900), (2100, 900), (750, 1000), (1000, 1000), (300, 900), (0, 1000)]
+    for ratio in nano[0]["ratios"]:
+        a, b = nano[0]["ratio_sizes"][ratio]
+        for h in (128, 999, 4096):
+            sizes.extend((round(h * a / b * scale), h) for scale in (.989, .990, .991, 1, 1.009, 1.010, 1.011))
+    rng = random.Random(49)
+    sizes.extend((rng.randrange(1, 8193), rng.randrange(1, 8193)) for _ in range(200))
+    data = {"api": _pl_api(), "forge": _server_api(), "models": catalog,
+            "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"),
+            "dialog": (web / "dialog.js").read_text(encoding="utf-8"),
+            "ratios": nano[0]["ratios"], "ratio_sizes": nano[0]["ratio_sizes"], "tolerance": nano[0]["ratio_tolerance"],
+            "matches": [[w, h, models.match_ratio(nano[0]["name"], w, h)] for w, h in sizes],
+            "problem": models.ratio_problem(nano[0]["name"])}
+    h = _PL_JS_HARNESS
+    cut = [h[h.index(a):h.index(b, h.index(a))] for a, b in
+           (("import fs", "async function run("), ("class El {", "async function mouse("),
+            ("function boardState()", 'await scenario("panel"'), ("function quietPipeline(mod)", 'await scenario("panelDrift"'))]
+    ui = "\n".join(cut) + _PAID_STUDIO_JS_HARNESS.split('// ── J-P3 승인 단추:', 1)[0] + r'''
+const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b),catalog=IN.models,nano=catalog.filter(m=>m.family==="nano-banana");
+const gpt=catalog.find(m=>m.name.includes("2.5"));
+function mode(server=true,models=catalog){ctx.window.DPEnv={serverMode:server,backend:"forge",caps:{...IN.forge.env_server_forge.response.caps,
+  ...(models?{models:clone(models)}:{})},can:n=>IN.forge.env_server_forge.response.caps[n]===true};}
+function dialog(){
+  const events=new Map();ctx.window.addEventListener=(t,f)=>events.set(t,[...events.get(t)||[],f]);
+  ctx.window.removeEventListener=(t,f)=>events.set(t,(events.get(t)||[]).filter(x=>x!==f));
+  El.prototype.appendChild=function(x){this.append(x);return x;};vm.runInContext(IN.dialog,ctx);
+}
+async function studio({server=true,models=catalog,prepare={},plan=null,absent=[]}={}){
+  mode(server,models);
+  const e=await mkStudio({P:b=>{
+    Object.assign(b.settings.prepare,{model:nano[0].name,quality:"standard",n:2,image_size:"2K",thinking_level:"medium"},prepare);
+    b.derived.settings.prepare=clone(b.settings.prepare);
+    for(const [key,choices] of Object.entries({image_size:["1K","2K","4K"],thinking_level:["minimal","medium","high"]})){
+      b.widgets.prepare[key]={type:"COMBO",choices};b.derived.from["prepare."+key]="manifest";
+    }
+    for(const key of absent){delete b.settings.prepare[key];delete b.derived.settings.prepare[key];}
+  },plan:p=>{p.run.backend="forge";p.run.pre=0;if(plan)plan(p);}});
+  dialog();e.h=e.pipe._models2;
+  e.field=k=>e.panel.querySelectorAll(".pp-sec").find(x=>x.children[0].textContent==="Prepare")?.children
+    .find(x=>x.classList.contains("pp-field")&&x.children[0].textContent===
+      (server&&models?({model:"모델",quality:"품질",image_size:"해상도",thinking_level:"추론"}[k]||k):k));
+  e.input=k=>e.field(k)?.children.find(x=>["INPUT","SELECT"].includes(x.tagName));
+  e.change=async(k,v)=>{const input=e.input(k);input.focus();input.value=v;input.fire(input.tagName==="SELECT"?"change":"input");await sleep(5);};
+  return e;
+}
+for(const m of nano)await scenario("FM2J 옵션 칸 "+m.name,async()=>{
+  const e=await studio({prepare:{model:m.name,image_size:"unknown",thinking_level:"medium"}});await e.h.openSettings();
+  const r={size:eq(e.input("image_size").children.map(x=>x.value),["1K","2K","4K"])&&e.input("image_size").value==="2K",
+    quality:e.input("quality").disabled&&e.input("quality").children[0].textContent==="사용 안 함"};
+  if(m.opts.thinking_level){
+    r.choices=eq(e.input("thinking_level").children.map(x=>x.value),m.opts.thinking_level);
+    r.labels=eq(e.input("thinking_level").children.map(x=>x.textContent),m.opts.thinking_level.map(x=>({minimal:"간단히",medium:"보통",high:"깊게"}[x])));
+    r.default=e.input("thinking_level").value===m.opt_defaults.thinking_level;
+  }else r.noThinking=!e.field("thinking_level");
+  r.noAutoEdits=!Object.keys(e.h.editState().form.prepare||{}).length;
+  e.stop();return r;
+});
+for(const m of catalog.filter(m=>!m.opts.image_size))await scenario("FM2J 옵션 없는 모델 "+m.name,async()=>{
+  const e=await studio({prepare:{model:m.name}});await e.h.openSettings();
+  const r=!e.field("image_size")&&!e.field("thinking_level");e.stop();return r;
+});
+for(const server of [false,true])await scenario("FM2J 로컬·옛 서버 "+server,async()=>{
+  const e=await studio({server,models:server?null:catalog,prepare:{model:gpt.name}});await e.h.openSettings();
+  const r={hidden:!e.field("image_size")&&!e.field("thinking_level"),labels:e.field("model").children[0].textContent==="model",
+    cropModel:!e.pipe.savedModel()};e.stop();return r;
+});
+await scenario("FM2J 모델 왕복은 자동값을 편집 상태로 남기지 않음",async()=>{
+  const e=await studio();await e.h.openSettings();await e.change("model",nano[1].name);
+  const r={default:e.input("thinking_level").value==="minimal",direct:eq(e.h.editState().form.prepare,{model:nano[1].name}),
+    savedCrop:e.pipe.savedModel().name===nano[0].name};
+  await e.change("model",nano[0].name);r.clean=e.input("thinking_level").value==="medium"&&!Object.keys(e.h.editState().form.prepare||{}).length;
+  await e.change("thinking_level","high");await e.change("image_size","4K");
+  await e.change("model",nano[2].name);await e.change("model",nano[0].name);
+  r.directKept=e.input("thinking_level").value==="high"&&e.input("image_size").value==="4K"
+    &&eq(e.h.editState().form.prepare,{thinking_level:"high",image_size:"4K"});e.stop();return r;
+});
+for(const key of ["image_size","thinking_level"])for(const accept of [false,true])await scenario("FM2J 옵션만 저장 "+key+accept,async()=>{
+  const e=await studio();await e.h.openSettings();const value=key==="image_size"?"4K":"high";await e.change(key,value);e.doc.activeElement.blur();
+  const saved=clone(e.h.PS.P);e.srv.route.settings=(q,b)=>{saved.settings.prepare=clone(b.values);saved.rev++;return [200,saved];};
+  e.srv.route.pipeline=()=>[200,saved];
+  const pending=e.h.saveSection("prepare");await until(()=>!!e.box());const box=e.box();
+  const sent=JSON.parse(e.srv.log.findLast(x=>x.path==="pipeline"&&x.q.prepare).q.prepare);
+  const r={before:e.srv.count("pipeline/settings","POST")===0,page:!!box&&!e.confirms.length,
+    preview:box.textContent.includes("다음 [반영] 뒤 생성 승인 필요")&&box.textContent.includes(key==="image_size"?"해상도 4K":"추론 깊게"),sent:sent[key]===value};
+  e.B(accept?"확인":"취소",box).onclick({isTrusted:true});await pending;
+  r.save=accept?e.srv.log.findLast(x=>x.path==="pipeline/settings")?.body.values[key]===value:e.srv.count("pipeline/settings","POST")===0;
+  r.noGeneration=!e.tab.got.length&&!e.srv.log.some(x=>x.path==="jobs/prompt"||x.path==="api/prompt");e.stop();return r;
+});
+await scenario("FM2J 모델별 유효 옵션으로 변경 비교",async()=>{
+  const e=await studio(),changed=e.h.prepareChanged,base={...e.h.PS.P.settings.prepare,model:nano[1].name};
+  const r={same:!changed(base,{...base,thinking_level:"minimal"}),size:changed(base,{...base,image_size:"4K"}),
+    unused:!changed({...base,model:gpt.name},{...base,model:gpt.name,image_size:"4K",thinking_level:"high"}),
+    pro:!changed({...base,model:nano[2].name},{...base,model:nano[2].name,thinking_level:"high"})};e.stop();return r;
+});
+await scenario("FM2J 퇴역 모델 전환은 선택만 바꾼 뒤 확인 저장",async()=>{
+  const list=clone(catalog),old=list.find(m=>m.name===nano[0].name);old.available=false;old.fallback=nano[1].name;
+  const e=await studio({models:list});await e.h.openSettings();const b=e.B(nano[1].label+" 로 전환");e.click(b);await sleep(10);
+  const r={selected:e.input("model").value===nano[1].name,default:e.input("thinking_level").value==="minimal",
+    noWrite:e.srv.count("pipeline/settings","POST")===0,savedCrop:e.pipe.savedModel().name===nano[0].name};
+  const saved=clone(e.h.PS.P);e.srv.route.settings=(q,b)=>{saved.settings.prepare=clone(b.values);saved.rev++;return [200,saved];};
+  e.srv.route.pipeline=()=>[200,saved];const pending=e.h.saveSection("prepare");await until(()=>!!e.box());
+  r.confirm=e.box().textContent.includes(nano[1].label)&&e.box().textContent.includes("추론 간단히");
+  e.B("확인",e.box()).onclick({isTrusted:true});await pending;
+  r.saved=e.pipe.savedModel().name===nano[1].name&&saved.settings.prepare.thinking_level==="medium";e.stop();return r;
+});
+function persist(e){
+  const saved=clone(e.h.PS.P);e.srv.route.settings=(q,b)=>{saved.settings.prepare=clone(b.values);saved.rev++;return [200,saved];};
+  e.srv.route.pipeline=()=>[200,saved];return saved;
+}
+async function save(e){
+  e.doc.activeElement.blur();const before=e.srv.count("pipeline/settings","POST"),pending=e.h.saveSection("prepare");
+  await until(()=>!!e.box()||e.srv.count("pipeline/settings","POST")>before);const asked=!!e.box();
+  if(asked)e.B("확인",e.box()).onclick({isTrusted:true});await pending;return asked;
+}
+await scenario("U2 저장한 모델 왕복은 옵션 원래 값 보존",async()=>{
+  const e=await studio({prepare:{image_size:"4K"}}),saved=persist(e);await e.h.openSettings();await e.change("model",nano[1].name);
+  const r={shown:e.input("thinking_level").value==="minimal",firstConfirm:await save(e),
+    firstRaw:saved.settings.prepare.thinking_level==="medium"&&saved.settings.prepare.image_size==="4K"};
+  await e.h.openSettings();await e.change("model",nano[0].name);r.secondConfirm=await save(e);await e.h.openSettings();
+  r.returned=saved.settings.prepare.thinking_level==="medium"&&e.input("thinking_level").value==="medium";
+  e.stop();return r;
+});
+await scenario("U2 나노바나나 2 직접 고른 추론은 저장",async()=>{
+  const e=await studio({prepare:{model:nano[1].name}}),saved=persist(e);await e.h.openSettings();await e.change("thinking_level","high");
+  const r={confirm:await save(e),raw:saved.settings.prepare.thinking_level==="high"};e.stop();return r;
+});
+await scenario("U2 같은 유효 값은 미저장 경고·새 생성 조건 아님",async()=>{
+  const e=await studio({prepare:{model:nano[1].name}}),saved=persist(e);await e.h.openSettings();
+  await e.change("thinking_level","high");const r={changed:!!e.pipe.canLeave().confirm};await e.change("thinking_level","minimal");
+  r.effectiveClean=!e.pipe.canLeave().confirm;r.noConfirm=!await save(e);r.directRaw=saved.settings.prepare.thinking_level==="minimal";
+  e.stop();return r;
+});
+await scenario("U2 GPT의 숨은 옵션 편집은 경고·전환 차단·새 생성 조건 아님",async()=>{
+  const e=await studio({prepare:{model:gpt.name,quality:gpt.default_quality}}),saved=persist(e);await e.h.openSettings();
+  await e.change("model",nano[0].name);await e.change("image_size","4K");await e.change("thinking_level","high");await e.change("model",gpt.name);
+  const r={clean:!e.pipe.canLeave().confirm,switchEnabled:!e.B("2.6 으로 전환").disabled,
+    noNewCondition:!await save(e),raw:saved.settings.prepare.image_size==="4K"&&saved.settings.prepare.thinking_level==="high",
+    noPreview:!e.srv.log.some(x=>x.path==="pipeline"&&x.q.prepare)};e.stop();return r;
+});
+for(const server of [true,false])await scenario("U2 설정에 없는 옵션은 숨기고 전송하지 않음 "+server,async()=>{
+  const e=await studio({server,prepare:{model:server?nano[0].name:gpt.name},absent:["image_size","thinking_level"]}),saved=persist(e);
+  await e.h.openSettings();const r={hidden:!e.field("image_size")&&!e.field("thinking_level")};await save(e);
+  r.absent=!["image_size","thinking_level"].some(k=>Object.hasOwn(saved.settings.prepare,k));e.stop();return r;
+});
+await scenario("U2 비율 목록 모델의 size_rule 변경은 새 생성 조건 아님",async()=>{
+  const e=await studio(),saved=persist(e);await e.h.openSettings();
+  const old=saved.settings.prepare.size_rule,next=e.input("size_rule").children.map(x=>x.value).find(v=>v!==old);await e.change("size_rule",next);
+  const r={savedWithoutPreview:!await save(e),saved:saved.settings.prepare.size_rule===next,
+    gptStillChanges:e.h.prepareChanged({model:gpt.name,size_rule:old},{model:gpt.name,size_rule:next}),
+    modelStillChanges:e.h.prepareChanged({model:nano[0].name,size_rule:old},{model:nano[1].name,size_rule:next})};e.stop();return r;
+});
+for(const m of nano)await scenario("FM2J 승인·진행의 작업 옵션 "+m.name,async()=>{
+  const opts={image_size:"4K",...(m.opts.thinking_level?{thinking_level:"high"}:{})};
+  const e=await studio({prepare:{model:m.name,...opts},plan:p=>{p.run.prepare={model:m.name,quality:"standard",n:2,opts};}});
+  const expected="모델 "+m.label+" · 해상도 4K"+(m.opts.thinking_level?" · 추론 깊게":"");
+  await e.pipe.showTab("generate");const progress=e.rows("진행 — Run")[0]||"";
+  e.click(e.B("생성 승인"));await until(()=>!!e.box());const box=e.box();
+  const r={progress:progress.includes(expected),approval:box.textContent.includes(expected),fanOut:box.textContent.includes("이 모델은 장마다 따로 생성합니다"),
+    noQuality:!box.textContent.includes("품질")};e.click(e.B("취소",box));await sleep(5);
+  e.h.PS.P.settings.prepare.image_size="2K";e.h.PS.P.drift=[];await e.pipe.showTab("generate");
+  r.stale=!(e.rows("진행 — Run")[0]||"").includes(" · 모델 ");e.stop();return r;
+});
+await scenario("FM2J 비율 차단 사유는 받은 문구 그대로",async()=>{
+  const e=await studio(),report=P.paidReport("run",RUN_H({backend:"forge",stopped_reason:"none",approved_now:false,stop_note:IN.problem}));
+  e.h.PS.last.run={state:"done",report};await e.pipe.showTab("generate");
+  const r={report:report==="발사 못 함 — "+IN.problem,dom:e.panel.textContent.includes(report),noGeneration:!e.tab.got.length};e.stop();return r;
+});
+function review(reply){
+  mode();const doc=new Doc(),nodes={},calls=[],candidate={key:"one",n:1,model:nano[0].name,quality:"standard",origin:"run",label:"후보",
+    origin_info:{opts:{image_size:"2K",thinking_level:"medium"}},prompt_rewritten:true,prompt_used:true,call_id:"call/one&test",slot:0};
+  const target={size:[512,512],focus_box:[0,0,512,512],cells:[],refs:[],candidates:[candidate]},crop={calls:0,dup_picks:[],stale_picked:[]};
+  El.prototype.querySelector=function(){return null;};
+  const c=vm.createContext({window:ctx.window,document:doc,URLSearchParams,ROOT:KEY,apiUrl:A,promptCache:new Map(),
+    fetch:async(url,init)=>{calls.push({url,init});return reply(url,init);},$:id=>nodes[id]??=doc.createElement("div"),
+    el:(tag,cls="",text="")=>{const n=doc.createElement(tag);n.className=cls;n.textContent=text;return n;},
+    chip:(text,cls)=>{const n=doc.createElement("span");n.className="chip "+cls;n.textContent=text;return n;},
+    curTarget:()=>target,curCand:()=>candidate,cropOf:()=>crop,targetTitle:()=>"타깃",refIdx:0,qHeld:false,view:"cand",cKey:null,pad:String,
+    setImg(){},oldCell:()=>false,ranText:()=>"",tileBadges:()=>doc.createElement("div"),selectCand(){},setStar(){},GATE_NAMES:{}});
+  for(const name of ["promptWarning","candidateModel","row","tookText","tookSummary","tookRow","renderCompare","renderGrid","renderDetail"])vm.runInContext(boardFn(name),c);
+  const draw=()=>{c.renderCompare();c.renderGrid();c.renderDetail();};draw();
+  const chips=()=>nodes.grid.all().filter(x=>x.classList.contains("dp-prompt-changed")),toggle=()=>nodes.detail.all().find(x=>x.tagName==="BUTTON"&&x.textContent==="서버가 쓴 프롬프트 보기");
+  return {candidate,c,nodes,calls,draw,chips,toggle,text:()=>nodes.detail.all().find(x=>x.tagName==="PRE")};
+}
+await scenario("U3 후보 옵션·프롬프트 지연 조회·재사용·옛 기록·로컬",async()=>{
+  const raw="<img src=x onerror=bad()>\n원문 & 그대로",e=review(async()=>({ok:true,json:async()=>({prompt_used:raw})}));
+  const {candidate,c,nodes,calls,draw,chips,toggle}=e;
+  const text=nodes.detail.all().find(x=>x.tagName==="PRE"),b=toggle();
+  const r={model:nodes.detail.textContent.includes(nano[0].label+" · 해상도 2K · 추론 보통"),
+    rewritten:nodes.detail.textContent.includes("공급자가 프롬프트를 고쳐 씀")&&!chips().length,
+    button:!!b,lazy:calls.length===0};if(!b)return r;
+  r.empty=text.hidden&&!text.textContent;b.fire("click");await sleep(5);
+  r.safe=text.textContent===raw&&!text.children.length;r.open=!text.hidden&&b.attrs["aria-expanded"]==="true";
+  const url=new URL(calls[0].url);r.route=url.pathname.endsWith("/prompt")&&eq(Object.fromEntries(url.searchParams),{root:KEY,call:candidate.call_id,slot:"0"});
+  b.fire("click");r.close=text.hidden&&b.attrs["aria-expanded"]==="false";b.fire("click");await sleep(5);r.cached=calls.length===1&&text.textContent===raw;
+  draw();toggle().fire("click");await sleep(5);r.redrawCached=calls.length===1&&e.text().textContent===raw;
+  candidate.slot=1;draw();toggle().fire("click");await sleep(5);r.slot=calls.length===2&&new URL(calls[1].url).searchParams.get("slot")==="1";
+  delete candidate.prompt_used;draw();r.oldRecord=!toggle()&&nodes.detail.textContent.includes("공급자가 프롬프트를 고쳐 씀");
+  candidate.prompt_rewritten=false;candidate.prompt_changed=true;candidate.prompt_used=true;draw();
+  r.changed=chips().length===1&&!!toggle();
+  candidate.prompt_used="old inline text";draw();r.onlyBoolean=!toggle();
+  candidate.model=nano[2].name;candidate.opts={image_size:"1K"};draw();r.pro=c.candidateModel(candidate)===nano[2].label+" · 해상도 1K";
+  delete candidate.opts;delete candidate.origin_info;candidate.prompt_changed=false;delete candidate.prompt_used;draw();
+  r.legacy=!nodes.detail.textContent.includes("해상도")&&!toggle();
+  candidate.prompt_changed=true;candidate.prompt_rewritten=true;candidate.prompt_used=true;mode(false);draw();
+  r.local=!nodes.detail.textContent.includes("프롬프트")&&!chips().length&&!toggle()&&calls.length===2;return r;
+});
+for(const failure of ["null","http","network","json"])await scenario("U3 원문 조회 실패 "+failure,async()=>{
+  const e=review(async()=>{if(failure==="network")throw Error("offline");return {ok:failure!=="http",json:async()=>{
+    if(failure==="json")throw Error("bad json");return {prompt_used:null};}};});
+  const b=e.toggle();if(!b)return {button:false};b.fire("click");await sleep(5);
+  return {message:e.text()?.textContent==="프롬프트를 불러오지 못했습니다",visible:e.text()?.hidden===false};
+});
+await scenario("U3 받는 중 접기·중복 요청·다른 후보 격리",async()=>{
+  let resolve;const e=review(()=>new Promise(r=>resolve=r)),b=e.toggle();if(!b)return {button:false};
+  b.fire("click");b.fire("click");b.fire("click");await sleep(5);const old=e.text(),r={oneRequest:e.calls.length===1};
+  b.fire("click");e.candidate.slot=1;e.draw();resolve({ok:true,json:async()=>({prompt_used:"첫 슬롯의 글"})});await sleep(5);
+  r.closed=old.hidden;r.isolated=e.text().hidden&&!e.text().textContent;r.noAutoRequest=e.calls.length===1;return r;
+});
+console.log(JSON.stringify(out));process.exit(0);
+'''
+    hook = '.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _models2: { PS, openSettings, saveSection, prepareChanged, editState: () => ({ form, edits }) }, stateChanged, enter, leave, select, queue: boardQueue")'
+    ui = ui.replace('fs.readFileSync(IN.pipelineJs, "utf8")', 'fs.readFileSync(IN.pipelineJs, "utf8")' + hook)
+    layout = _LAYOUT_EDIT_HARNESS.split('// 배치 3-1(F17):', 1)[0] + r'''
+const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b),ratios=IN.ratios,tolerance=IN.tolerance,sizes=IN.ratio_sizes;
+const match=(w,h,labels=ratios)=>G.ratioMatch(w,h,labels,tolerance,sizes);
+const fit=(rect,bounds,labels=ratios)=>G.ratioFitRect(rect,bounds,labels,tolerance,sizes);
+for(const [w,h,want] of IN.matches)await scenario(`FM2J ratioMatch ${w}x${h}`,async()=>match(w,h)===want);
+await scenario("U1 예상 출력 크기의 비율·옛 서버",async()=>{
+  const expected=[[800,1000,"4:5"],[813,1000,"4:5"],[815,1000,null],[798,1000,"4:5"],[796,1000,null],
+    [1920,1080,"16:9"],[2122,900,"21:9"],[2100,900,null],[750,1000,"3:4"],[1000,1000,"1:1"]];
+  return {examples:expected.every(([w,h,label])=>match(w,h)===label),
+    wide:eq(fit([0,0,2100,900],[3000,2000]),{rect:[0,0,2122,900],ratio:"21:9"}),
+    noSizes:G.ratioMatch(800,1000,ratios,tolerance)===null&&G.ratioFitRect([0,0,815,1000],[2000,2000],ratios,tolerance)===null};
+});
+await scenario("FM2J ratioFitRect 예·가장자리·불가능·다음 비율",async()=>{
+  const a=fit([100,100,915,1100],[2000,2000]),b=fit([0,0,300,900],[1000,1000]);
+  const r={first:eq(a,{rect:[100,94,915,1106],ratio:"4:5"}),second:eq(b,{rect:[0,0,503,900],ratio:"9:16"})};
+  r.corner=eq(fit([1185,1000,2000,2000],[2000,2000],["4:5"]),{rect:[1185,988,2000,2000],ratio:"4:5"});
+  r.impossible=fit([0,0,815,1000],[815,1000])===null;
+  r.next=eq(fit([0,0,815,1000],[1000,1000]),{rect:[0,0,1000,1000],ratio:"1:1"});
+  const rect=[10,20,810,1020],before=rect.slice();r.matched=eq(fit(rect,[2000,2000]),{rect:before,ratio:"4:5"})&&eq(rect,before);
+  r.offset=eq(fit([10,20,310,920],[10,20,1010,1020],["9:16"]),{rect:[10,20,513,920],ratio:"9:16"});
+  r.small=eq(fit([0,0,7,4],[19,8],["21:9"]),{rect:[0,0,19,8],ratio:"21:9"});
+  r.rounding=eq(fit([0,0,100,50],[104,60],["16:9"]),{rect:[0,0,100,56],ratio:"16:9"});
+  r.invalid=fit([-1,0,500,700],[1000,1000])===null&&match(1.2,1)===null;
+  return r;
+});
+await scenario("FM2J 확장 불변 조건",async()=>{
+  let checked=0;
+  for(const [w,h] of IN.matches){if(w<1||h<1)continue;
+    const rect=[31,47,31+w,47+h],before=rect.slice(),bounds=[w+2000,h+2000],fit=G.ratioFitRect(rect,bounds,ratios,tolerance,sizes);
+    if(!fit)continue;checked++;const [x0,y0,x1,y1]=fit.rect;
+    if(!eq(rect,before)||!fit.rect.every(Number.isInteger)||x0>rect[0]||y0>rect[1]||x1<rect[2]||y1<rect[3]
+      ||x0<0||y0<0||x1>bounds[0]||y1>bounds[1]||match(x1-x0,y1-y0,[fit.ratio])!==fit.ratio)return false;
+  }return checked>200;
+});
+const nano=IN.models.find(m=>m.family==="nano-banana");
+async function open({rect=[100,100,915,1100],canvas=[2000,2000],stateCanvas=canvas,model=nano,server=true,locked=false}={}){
+  ctx.window.DPEnv={serverMode:server};let saved=model,resolve;
+  const c=crop("001_aaaaaa","001_모자",rect,{locked}),e=await editor([c],{canvas},{canvas:stateCanvas,crops:[c]},{savedModel:()=>saved});
+  ctx.window.DPDialog={confirm:message=>{e.confirms.push(message);return new Promise(r=>resolve=r);}};
+  e.answer=v=>resolve(v);e.saved=m=>{saved=m;e.ed.modelChanged();};await e.pick(c.name);e.ed.modelChanged();return e;
+}
+for(const options of [{server:false},{model:null},{model:IN.models.find(m=>!m.ratios.length)}])await scenario("FM2J 비율 UI 숨김 "+JSON.stringify(options),async()=>{
+  const e=await open(options),r=!e.button(e.panel,"모델 비율로 넓히기")&&!e.list.textContent.includes("비율 안 맞음");e.ed.leave();return r;
+});
+await scenario("U1 ratio_sizes 없는 모델은 비율 UI 숨김",async()=>{
+  const model={...nano};delete model.ratio_sizes;const e=await open({model});
+  const r=!e.button(e.panel,"모델 비율로 넓히기")&&!e.list.textContent.includes("비율 안 맞음");e.ed.leave();return r;
+});
+await scenario("U1 출력 비율 표 변경은 옛 제안을 버림",async()=>{
+  const e=await open();e.button(e.panel,"모델 비율로 넓히기").fire("click");
+  e.saved({...nano,ratio_sizes:{...nano.ratio_sizes,"4:5":[900,1200]}});
+  const r=!e.button(e.panel,"제안 적용")&&e.srv.log.length===0;e.ed.leave();return r;
+});
+await scenario("FM2J 크롭 제안·취소·확인·저장·실행 취소",async()=>{
+  const e=await open(),b=e.button(e.panel,"모델 비율로 넓히기");
+  const r={enabled:!b.disabled,chip:e.list.textContent.includes("비율 안 맞음")};b.fire("click");
+  r.preview=e.panel.textContent.includes("모델 비율로 넓히기 · 4:5")&&e.srv.log.length===0;
+  e.button(e.panel,"제안 적용").fire("click");await sleep(5);r.confirm=e.confirms[0].includes("⑤ 생성에서 승인할 때만 유료")&&e.srv.log.length===0;
+  e.answer(false);await sleep(5);r.cancel=e.srv.log.length===0&&!!e.button(e.panel,"제안 적용");
+  e.button(e.panel,"제안 적용").fire("click");await sleep(5);e.answer(true);await sleep(30);
+  r.saved=e.srv.log.length===1&&e.srv.log[0].path==="layout/crop"&&eq(e.srv.log[0].rect,[100,94,915,1106])&&!e.queued.length;
+  r.fitted=!e.list.textContent.includes("비율 안 맞음")&&e.button(e.panel,"모델 비율로 넓히기").disabled;
+  e.key("KeyZ",{key:"z",ctrlKey:true});await sleep(30);r.undo=eq(e.srv.lay.crops[0].rect,[100,100,915,1100]);e.ed.leave();return r;
+});
+for(const kind of ["locked","matched","impossible"])await scenario("FM2J 크롭 경계 "+kind,async()=>{
+  const e=await open(kind==="locked"?{locked:true}:kind==="matched"?{rect:[0,0,800,1000]}:{rect:[0,0,815,1000],canvas:[815,1000]});
+  const b=e.button(e.panel,"모델 비율로 넓히기"),r={disabled:b.disabled===(kind!=="impossible")};b.fire("click");
+  r.noWrite=e.srv.log.length===0&&!e.button(e.panel,"제안 적용");
+  if(kind==="impossible")r.notice=e.toasts.at(-1)==="warn:캔버스 안에서 이 모델의 비율로 넓힐 수 없습니다";
+  e.ed.leave();return r;
+});
+for(const [name,rect,canvas,stateCanvas,want,label] of [
+  ["오른쪽 아래 가장자리",[1185,1000,2000,2000],[2000,2000],[3000,3000],[1185,988,2000,2000],"4:5"],
+  ["왼쪽 위 가장자리",[0,0,300,900],[1000,1000],[100,100],[0,0,503,900],"9:16"],
+  ["다음 가까운 비율",[0,0,815,1000],[1000,1000],[3000,3000],[0,0,1000,1000],"1:1"],
+])await scenario("U4 기존 편집 경계로 제안·저장 "+name,async()=>{
+  const e=await open({rect,canvas,stateCanvas});e.button(e.panel,"모델 비율로 넓히기").fire("click");
+  const r={geometry:eq(fit(rect,canvas),{rect:want,ratio:label}),
+    preview:e.panel.textContent.includes(`[${want.join(", ")}]`)&&e.panel.textContent.includes("모델 비율로 넓히기 · "+label)&&e.srv.log.length===0};
+  const apply=e.button(e.panel,"제안 적용");if(!apply){e.ed.leave();return {...r,apply:false};}
+  apply.fire("click");await sleep(5);e.answer(true);await sleep(30);
+  r.saved=e.srv.log.length===1&&eq(e.srv.log[0].rect,want)&&!G.rectProblem(e.srv.log[0].rect,canvas);
+  e.ed.leave();return r;
+});
+for(const [name,rect,canvas] of [
+  ["어느 비율도 못 들어감",[0,0,815,1000],[815,1000]],
+  ["왼쪽 밖",[-1,0,814,1000],[1000,1000]],
+  ["위쪽 밖",[0,-1,815,999],[1000,1000]],
+  ["오른쪽 밖",[186,0,1001,1000],[1000,1000]],
+  ["아래쪽 밖",[0,1,815,1001],[1000,1000]],
+  ["비율이 맞아도 왼쪽 밖",[-1,0,799,1000],[1000,1000]],
+  ["비율이 맞아도 위쪽 밖",[0,-1,800,999],[1000,1000]],
+  ["비율이 맞아도 오른쪽 밖",[201,0,1001,1000],[1000,1000]],
+  ["비율이 맞아도 아래쪽 밖",[0,1,800,1001],[1000,1000]],
+])await scenario("U4 들어가지 않는 크롭은 제안 없이 안내 "+name,async()=>{
+  const before=rect.slice(),e=await open({rect,canvas,stateCanvas:[3000,3000]});
+  const b=e.button(e.panel,"모델 비율로 넓히기"),r={nullFit:fit(rect,canvas)===null,enabled:!b.disabled};b.fire("click");
+  r.notice=e.toasts.at(-1)==="warn:캔버스 안에서 이 모델의 비율로 넓힐 수 없습니다";
+  r.unchanged=e.srv.log.length===0&&!e.button(e.panel,"제안 적용")&&eq(e.srv.lay.crops[0].rect,before);
+  e.ed.leave();return r;
+});
+await scenario("FM2J 확인 중 저장 모델 변경은 옛 제안을 쓰지 않음",async()=>{
+  const e=await open();e.button(e.panel,"모델 비율로 넓히기").fire("click");e.button(e.panel,"제안 적용").fire("click");await sleep(5);
+  e.saved(IN.models.find(m=>!m.ratios.length));e.answer(true);await sleep(20);
+  const r=e.srv.log.length===0&&!e.button(e.panel,"제안 적용")&&!e.button(e.panel,"모델 비율로 넓히기");e.ed.leave();return r;
+});
+console.log(JSON.stringify(out));process.exit(0);
+'''
+    (out / "in.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8", newline="\n")
+    for name, script, args in (("ui", ui, [str(out / "in.json")]),
+                               ("layout", layout, [str(web / "layout_geom.js"), str(web / "layout_edit.js"), str(out / "in.json")])):
+        path = out / f"{name}.mjs"
+        path.write_text(script, encoding="utf-8", newline="\n")
+        result = subprocess.run([node, str(path), *args], capture_output=True, text=True, encoding="utf-8", timeout=60)
+        (out / f"{name}-result.txt").write_text(result.stdout + result.stderr, encoding="utf-8", newline="\n")
+        if result.returncode or not result.stdout.strip():
+            check(False, f"FM2J {name} VM 실패: {result.stderr[-3000:]}")
+            continue
+        for case, values in json.loads(result.stdout.strip().splitlines()[-1]).items():
+            for key, value in (values.items() if isinstance(values, dict) else [("", values)]):
+                check(value is True, f"{case} {key}" if value is True else f"{case} {key}: {value}")
 
 
 def forge_models_backend_unit():
@@ -62899,6 +63925,8 @@ def forge_models_settings_unit():
         with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1"}), \
                 patch.object(rn, "mock_enabled", return_value=False):
             for name in models.FORGE_ONLY:
+                if models.get(name).area is None:
+                    continue  # 비율 목록 모델은 forge_models2_settings_unit 에서 별도로 단정한다.
                 lim = fixture["limits"][name]
                 for rule in st.GPT_SIZE_RULES:
                     nh, nr = project(f"{name}-{rule}")
@@ -62907,7 +63935,8 @@ def forge_models_settings_unit():
                         nh, _, _ = pre.run(nh, **values)
                     nm = st.load_manifest(nr)
                     check(approvals.call_args.kwargs["backend"] == rn.BACKEND_FORGE, "FMS5 Prepare 승인 해시는 실행 백엔드 사용")
-                    check(nm["prepare_settings"] == values and len(nm["jobs"]) == len(rects),
+                    check(nm["prepare_settings"] == {k: v for k, v in values.items() if k not in ("image_size", "thinking_level")}
+                          and len(nm["jobs"]) == len(rects),
                           f"FMS5 위젯 값 보존·크롭별 작업 생성 {name} {rule}")
                     for job, (_, rect) in zip(nm["jobs"], rects):
                         w, h0 = rect[2] - rect[0], rect[3] - rect[1]
@@ -62982,7 +64011,8 @@ def forge_models_settings_unit():
             return [c for t in bd.build_state(rr)["targets"] for c in t["candidates"]]
 
         with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}), \
-                patch.object(bd._forge_backend(), "prompt_changed", return_value=[True, False, False, False]):
+                patch.object(bd._forge_backend(), "prompt_changed", return_value=[True, False, False, False]), \
+                patch.object(bd._forge_backend(), "prompt_used", return_value=[], create=True):
             rows = candidates()
             check([c.get("ratio_changed", False) for c in rows] == [True, False, False, False]
                   and [c.get("prompt_changed", False) for c in rows] == [True, False, False, False]
@@ -63102,7 +64132,9 @@ def forge_models_dev_unit():
             return result.size
 
     async def run():
-        catalog = models["catalog"]
+        catalog = copy.deepcopy(models["catalog"])
+        # 목록의 모든 값을 대조하고 count는 확장된 모델 목록의 실제 길이로 검증한다.
+        catalog["response"]["count"] = len(catalog["response"]["models"])
         check(await call(catalog["method"], catalog["path"]) == (200, catalog["response"]), "FMD1 모델 목록은 정본 전체 응답")
         for auth in ({}, {"Authorization": "Bearer " + dev.issue_token("models_test", 0, clock=lambda: 1700000000.0)}):
             check(await call(catalog["method"], catalog["path"], auth=auth)
@@ -68858,8 +69890,22 @@ def forge_f3_server_unit():
             if not mode:
                 local_derived = derived
             else:
-                check({k: v for k, v in derived.items() if k != "notes"}
-                      == {k: v for k, v in local_derived.items() if k != "notes"}, "F3S2 문구 분기가 유도값·설정 키를 바꾸지 않음")
+                # 서버 모드에만 있는 Prepare 두 칸(해상도·추론 — 2단계 둘째 묶음)을 뺀 나머지가 로컬판과 같다
+                server_only = ("image_size", "thinking_level")
+                names = server_only + tuple("prepare." + k for k in server_only)
+
+                def without(value):
+                    if isinstance(value, dict):
+                        return {k: without(v) for k, v in value.items() if k not in names}
+                    if isinstance(value, (list, tuple)):
+                        return [without(v) for v in value if not (isinstance(v, str) and v in names)]
+                    return value
+
+                check(without({k: v for k, v in derived.items() if k != "notes"})
+                      == without({k: v for k, v in local_derived.items() if k != "notes"}), "F3S2 문구 분기가 유도값·설정 키를 바꾸지 않음")
+                check(not any(name in json.dumps(local_derived, ensure_ascii=False) for name in server_only)
+                      and all(name in json.dumps(derived, ensure_ascii=False) for name in server_only),
+                      "F3S2 해상도·추론 두 칸은 서버 모드의 유도값에만 있다")
             wording(store.adopt_stale(crop, {}), "매니페스트 타깃이 레이어명 + _layer_targets 와 다름 — 다음 큐에서 Import PSD 가 반영", mode)
             parsed = store.parse_crop_layer_name(crop["layer_name"])
             for value, local in ((5, "_layer_targets 는 문자열이어야 합니다: 5"),

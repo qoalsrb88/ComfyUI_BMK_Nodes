@@ -184,13 +184,25 @@ class FakeForge:
         """스튜디오의 요청 계약을 검사하되 입력 오류도 접수된 잡의 실패로 돌려준다."""
         limits = self._fixture["models"]["limits"][name]
         errors = spec["errors"]["input"]
-        kind = "ideogram" if "ideogram" in spec["request"] else "seedream"
+        kind = "gemini" if limits.get("family") == "nano-banana" else "ideogram" if "ideogram" in spec["request"] else "seedream"
         inputs = [value for group in groups for value in group]
         used = inputs[:limits["max_inputs"]] if kind == "seedream" else inputs
         size = [1024, 1024]
         error = None
         forbidden = any(key in data for key in spec["never"])
-        if kind == "seedream":
+        if kind == "gemini":
+            gemini = self._fixture["models"]["limits"]["gemini"]
+            ratio = data.get("aspect_ratio")
+            # Forge는 잘못된 비율·해상도를 말없이 바꾸지만, 가짜는 스튜디오의 잘못된 요청을 잡으려고 실패시킨다.
+            if (forbidden or not isinstance(ratio, str) or ratio not in gemini["ratios"]
+                    or any(not isinstance(data.get(key), str) or data[key] not in choices
+                           for key, choices in limits["opts"].items())
+                    or len(inputs) > limits["max_inputs"]):
+                error = "생성 요청이 올바르지 않습니다."
+            else:
+                scale = gemini["image_sizes"][data["image_size"]]
+                size = [side * scale for side in gemini["ratio_sizes"][ratio]]
+        elif kind == "seedream":
             if "background" in data:
                 error = errors[1] + "."
             else:
@@ -381,7 +393,7 @@ class FakeForge:
                                    or isinstance(autopilot, dict) and "candidate_prompt" in autopilot)
         record.update(job_id=job_id, reused=False)
         if kind != "gpt":
-            record["provider_calls"] = list(range(count if kind == "seedream" else 1)) if failure is None else []
+            record["provider_calls"] = list(range(count if kind in ("seedream", "gemini") else 1)) if failure is None else []
             self._states[job_id].update(kind=kind, input_error=failure, changed=scenario["changed"], record=record)
         return _json(200, {"job_id": job_id, "job_ids": [job_id], "status": "pending"})
 
@@ -419,24 +431,24 @@ class FakeForge:
         actual = 0 if state["empty"] else min(count, state["partial"] if state["partial"] is not None else count)
         metadata = [{} for _ in range(actual)]
         kind = state.get("kind")
-        if kind in ("seedream", "ideogram"):
+        if kind in ("seedream", "ideogram", "gemini"):
             indices = list(range(actual))
-            if kind == "seedream" and 1 < actual < count:
+            if kind in ("seedream", "gemini") and 1 < actual < count:
                 indices[-1] = count - 1
             metadata = [{"call_index": index} for index in indices]
             if kind == "ideogram":
                 for item in metadata:
                     item["prompt_used"] = job["request_data"]["prompt"]
-            if state["changed"] and actual:
+            if kind != "gemini" and state["changed"] and actual:
                 metadata[-1]["prompt_used"] = job["request_data"]["prompt"] + " (rewritten)"
-            state["record"]["successful_calls"] = indices if kind == "seedream" else ([0] if actual else [])
+            state["record"]["successful_calls"] = indices if kind in ("seedream", "gemini") else ([0] if actual else [])
         elif state["changed"] and actual:
             metadata = [{"arm": "control", "call_index": i} for i in range(actual)]
             metadata[-1].update(arm="autopilot", prompt_used=job["request_data"]["prompt"] + " (rewritten)")
         result = {"images": [f"{self.media_origin}/fake-media/{job_id}/{i}.png" for i in range(actual)],
                   "result_ids": [f"{job_id}:{i}" for i in range(actual)], "result_metadata": metadata,
                   "thumbnails": [{} for _ in range(actual)], "saved_id": job_id}
-        if actual < count and kind != "seedream":
+        if actual < count and kind not in ("seedream", "gemini"):
             result["warning"] = self._fixture["job"]["completed_partial"]["result_data"]["warning"]
         job.update(status="completed", result_data=result)
         return job
