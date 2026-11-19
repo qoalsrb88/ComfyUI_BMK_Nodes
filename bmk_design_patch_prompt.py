@@ -622,10 +622,11 @@ _ADDRESS = re.compile(r"(?im)\b[a-z][a-z0-9+.-]*://|\b(?:10\.\d{1,3}|192\.168|17
 # 본문이 틀의 줄(범례·Canvas·Guide·Target·Integration·Preserve·Notes·Request)을 흉내 내면 뒤의 규칙과 섞인다 — 그런 줄 머리는 받지 않는다.
 # 줄 머리의 낱말 뒤에 머리말 꼴의 부호(콜론·등호·여는 괄호·줄표, 띄어 쓴 하이픈)가 오면 틀의 줄로 본다. "Preserve the face …"·
 # "Preserve @image1's lighting …"·'Target "SALE" on the sign.' 같은 문장은 통과(전각 부호는 _WIDE 가 따로 막는다).
-_RESERVED_LINE = re.compile(r"(?im)^[ \t]*(?:input images\b|(?:canvas|guide|targets?|integration|preserve|notes|request)\b[ \t]*"
+_RESERVED_LINE = re.compile(r"(?im)^[^\S\r\n]*(?:input[^\S\r\n]+images\b|(?:canvas|guide|targets?|integration|preserve|notes|request)\b[^\S\r\n]*"
                             r"(?:[:=(\[\u2012-\u2015]|-(?=[\s-]|$)))")
 _WIDE = re.compile("[\uff00-\uffef]")  # 전각·반각 꼴 문자 — 영문 본문에 쓸 일이 없고, 줄 머리·그림 표기 검사를 피하는 데 쓰일 수 있다
-_INVISIBLE = re.compile("[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]")  # 보이지 않는 서식 문자
+# 보이지 않는 서식 문자 + 줄·문단 구분 문자(U+2028·2029 — 줄바꿈으로 보이지만 줄 머리 검사의 줄 경계가 아니다)
+_INVISIBLE = re.compile("[\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u206f\ufeff]")
 _FILE_SHA: dict = {}
 
 
@@ -766,8 +767,10 @@ def v2_roles(spec: dict, root: str = "") -> list:
     order, roles = _plan_images(spec)
     out = []
     for path in order[1:]:
-        full = path if os.path.isabs(path) else os.path.join(root, path)
-        out.append([roles[path][0][0], _file_sha(full)])
+        kind = roles[path][0][0]
+        # Prepare 가 여는 파일 그대로: 가이드·붙이기 전은 프로젝트 폴더 기준, 레퍼런스는 스펙의 경로 그대로(레퍼런스 폴더가 붙은 절대 경로)
+        full = path if os.path.isabs(path) or kind == "ref" else os.path.join(root, path)
+        out.append([kind, _file_sha(full)])
     return out
 
 

@@ -1789,7 +1789,8 @@
     }
   }
 
-  async function goProjects() {
+  async function goProjects(to) {
+    const v2 = to === "v2";  // [새 화면 시험하기]: 같은 확인을 거쳐 같은 프로젝트를 새 화면으로(쿼리 유지)
     if (maskEd && maskEd.pending.locked && maskEd.pending.locked()) {
       toast("적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 나가세요", "warn");
       return;
@@ -1805,11 +1806,12 @@
     // 실행 모듈이 있으면 canLeave 가 마스크 획까지 센다(opts.maskPending) — 없을 때만 여기서(같은 내용을 두 번 묻지 않게)
     const left = !(pipe && pipe.canLeave) && maskEd && maskEd.pending();
     if (left) notes.push(`적용 안 한 마스크 획 ${left.n}개는 버려집니다 — 이동한 뒤에는 이어서 편집할 수 없습니다.`);
-    const ask = typeof gate.confirm === "string" && notes.length === 1 ? notes[0] : ["프로젝트 목록으로 이동할까요?", ...notes].join("\n");
+    const ask = typeof gate.confirm === "string" && notes.length === 1 ? notes[0] : [v2 ? "새 화면으로 이동할까요?" : "프로젝트 목록으로 이동할까요?", ...notes].join("\n");
     if (notes.length && !await askFree(ask)) return;
     const move = () => {
       // 이동 전용 확인을 이미 받았으므로 마스크 beforeunload 확인을 중복으로 띄우지 않는다.
       window.removeEventListener("beforeunload", onUnload);
+      if (v2) { const u = new URL(location.href); u.searchParams.set("ui", "v2"); location.assign(u.href); return; }
       location.assign(location.pathname);
     };
     if (editor && editor.flush) return editor.flush().then(move, (e) => toast(e.message, "err"));
@@ -2124,10 +2126,11 @@
     on("btn-mask", () => goMode("mask"));
     on("btn-export", () => pipe && pipe.exportNow());
     // 새 화면(v2) 전환 단추: 서버가 v2 화면 파일을 갖고 있을 때만(caps.ui_v2) 보인다 — 같은 프레임에서 쿼리를 유지한 채 ?ui=v2 로.
+    // 이동은 goProjects 의 절차 그대로(저장 안 한 실행 설정·적용 안 한 마스크 획 확인, 크롭 편집 저장 대기).
     const toV2 = $("btn-v2");
     if (toV2) {
-      toV2.hidden = !(window.DPEnv && window.DPEnv.can("ui_v2"));
-      toV2.addEventListener("click", () => { const u = new URL(location.href); u.searchParams.set("ui", "v2"); location.assign(u.href); });
+      toV2.hidden = !(globalThis.DPEnv && globalThis.DPEnv.can("ui_v2"));
+      toV2.addEventListener("click", () => goProjects("v2"));
     }
     const exportMenu = $("export-menu");
     $("btn-export-folder").hidden = !can("open_folder");

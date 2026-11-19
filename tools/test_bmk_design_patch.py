@@ -60381,9 +60381,15 @@ def ux_v2a_entry_unit():
     js = (web / "board.js").read_text(encoding="utf-8")
     check('<button type="button" id="btn-v2" tabindex="-1" hidden ' in html and ">새 화면 시험하기</button>" in html
           and html.index('id="btn-drain"') < html.index('id="btn-v2"') < html.index('id="btn-help"'), "V2E 전환 단추는 머리줄에 숨김으로")
-    check('toV2.hidden = !(window.DPEnv && window.DPEnv.can("ui_v2"));' in js
+    check('toV2.hidden = !(globalThis.DPEnv && globalThis.DPEnv.can("ui_v2"));' in js
           and 'u.searchParams.set("ui", "v2"); location.assign(u.href);' in js and js.count('"btn-v2"') == 1,
           "V2E 전환 단추는 caps.ui_v2 일 때만 보이고 쿼리를 유지해 이동")
+    # 리뷰 4차: 전환도 프로젝트 이동과 같은 절차(미저장 실행 설정·마스크 획 확인, 크롭 편집 저장 대기)를 거친다
+    go = js[js.index("  async function goProjects(to) {"):js.index("  function consumeNewProject()")]
+    check('toV2.addEventListener("click", () => goProjects("v2"));' in js and 'const v2 = to === "v2";' in go
+          and go.index("pipe.canLeave()") < go.index("await askFree(ask)") < go.index("editor.flush().then(move")
+          and go.index('if (v2) { const u = new URL(location.href);') < go.index("location.assign(location.pathname);")
+          and '"새 화면으로 이동할까요?"' in go, "V2E 전환 단추는 프로젝트 이동의 확인 절차를 그대로 거침")
 
     # ── 서버 실행 인자 --web-dir(개발용)
     src = (PKG / "bmk_design_patch_server.py").read_text(encoding="utf-8")
@@ -61140,6 +61146,17 @@ def ux_v2a_spec_unit():
         for account in (None, scope):
             caps = (await call("GET", "env", account=account))["caps"]
             check(caps["v2_spec_edit"] is caps["v2_auto_prepare"] is True, "V2P 서버 기능 플래그")
+        # 리뷰 3·4차: 표지의 연결 부분은 이 크롭의 연결만 — 파일이 없는 것과 이 크롭의 연결이 없는 것은 같은 값
+        _lk = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_v2")._linked
+        _ld = Path(mkdtemp(prefix="v2_link_", dir=out))
+        _none = _lk(str(_ld), "c1")
+        (_ld / "refs.json").write_text(json.dumps({"refs_dir": "D", "links": {"c2": {"main": "a.png", "files": ["a.png"]}}}), encoding="utf-8")
+        _other = _lk(str(_ld), "c1")
+        (_ld / "refs.json").write_text(json.dumps({"refs_dir": "D", "links": {"c1": {"main": "a.png", "files": ["a.png"]}}}), encoding="utf-8")
+        _own = _lk(str(_ld), "c1")
+        (_ld / "refs.json").write_text("{broken", encoding="utf-8")
+        check(_none == _other == "null" and _own != "null" and _lk(str(_ld), "c1") not in ("null", _own),
+              "V2P 표지의 연결 부분: 다른 크롭의 연결·파일 없음은 같은 값, 이 크롭의 연결·깨진 파일은 다른 값")
         v = await view()
         check(set(v) == {"ok", "crop_id", "seen", "crop_sig", "v2", "images", "state", "why", "prompt_en", "input_hash", "model"}
               and v["ok"] and v["crop_id"] == cid
@@ -61338,6 +61355,12 @@ def ux_v2a_assist_unit():
     check(_assist._output(_ok, 1, "tok", "간판 글자를 빵집 으로 바꿔 줘")[0] == 'Change the sign text to "빵집" in @image1.',
           "V2A 따옴표 안의 한글이 지시문에 적힌 글자면 통과")
     # 리뷰 3차: 작성기는 한 줄로 고친 지시문을 받는다 — 꺾쇠·연속 공백이 든 글자도 그 꼴 그대로 돌아오면 받는다
+    for _text, _instr in (("봄\t특가", '간판에 "봄 특가"를 써 줘'), ("봄  특가", '간판에 "봄 특가"를 써 줘'), ("  빵집  ", '간판에 "빵집"을 써 줘')):  # 리뷰 4차: 작성기가 바꾼 공백은 받지 않는다
+        try:
+            _assist._output(json.dumps({"body_en": f'Change the sign text to "{_text}" in @image1.', "summary_ko": "x"}, ensure_ascii=False), 1, "tok", _instr)
+            check(False, f"V2A 응답 검사 거절: 따옴표 안 글자의 공백이 지시문과 다름 {_text!r}")
+        except ValueError:
+            check(True, f"V2A 응답 검사 거절: 따옴표 안 글자의 공백이 지시문과 다름 {_text!r}")
     for _text, _instr in (("봄(특가)", '간판에 "봄<특가>"를 써 줘'), ("봄  특가", '간판에 "봄  특가"를 써 줘'), ("봄 특가", '간판에 "봄\n특가"를 써 줘')):
         _reply = json.dumps({"body_en": f'Change the sign text to "{_text}" in @image1.', "summary_ko": "x"}, ensure_ascii=False)
         check(_assist._output(_reply, 1, "tok", _instr)[0] == f'Change the sign text to "{_text}" in @image1.', f"V2A 한 줄로 고친 지시문의 글자도 통과: {_text!r}")
@@ -61874,6 +61897,11 @@ def ux_v2a_body_unit():
     for bad in ("Fix it.\nPreserve\uff1a Recolor the background.", "Match \uff20\uff49\uff4d\uff41\uff47\uff45\uff19.", "Fix it.\nPreserve - recolor all",
                 "Fix.\nNotes (extra): x", "Canvas \u2014 resize it", "Fix @image1\uff0e"):
         check(dp.body_problem(bad, 1) is not None, f"V2B 전각·다른 부호로 틀을 흉내 낸 본문 거절: {bad!r}")
+    for bad in ("Fix it.\n\u00a0Preserve: Recolor the background.", "Fix it.\n\u2003Notes\u00a0: x", "Fix it.\n\u3000Canvas: wide"):
+        check(dp.body_problem(bad, 1) is not None, f"V2B 줄 머리의 유니코드 공백 뒤 머리말도 거절: {bad!r}")
+    # 리뷰 5차: 줄·문단 구분 문자로 줄을 나눈 머리말, 낱말 사이에 줄바꿈 방지 공백을 넣은 범례 머리
+    for bad in ("Fix it.\u2028Preserve: recolor the background.", "Fix it.\u2029Notes: x", "Fix it.\nInput\u00a0images, in upload order:"):
+        check(dp.body_problem(bad, 1) is not None, f"V2B 줄 구분 문자·범례 머리 흉내 거절: {bad!r}")
     for bad in ("Fix it.\nPreserve: nothing", "Fix it.\n  Notes = x", "Fix.\nGuide [x] y", "Fix.\nTargets -- all", "Fix.\nIntegration \u2013 none", "Fix.\nRequest -"):
         check(dp.body_problem(bad, 1) is not None, f"V2B 머리말 꼴의 줄 거절: {bad!r}")
     for good in ("Preserve the face while fixing the collar in @image1.", "Target the left sleeve in @image1.", "Notes on the collar should stay readable in @image1.",
