@@ -2129,7 +2129,7 @@
     // 이동은 goProjects 의 절차 그대로(저장 안 한 실행 설정·적용 안 한 마스크 획 확인, 크롭 편집 저장 대기).
     const toV2 = $("btn-v2");
     if (toV2) {
-      toV2.hidden = !(window.DPEnv && window.DPEnv.can("ui_v2"));
+      toV2.hidden = !(globalThis.DPEnv && globalThis.DPEnv.can("ui_v2"));
       toV2.addEventListener("click", () => goProjects("v2"));
     }
     const exportMenu = $("export-menu");

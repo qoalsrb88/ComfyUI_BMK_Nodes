@@ -135,7 +135,7 @@ def _output(text, image_count, token, instruction=""):
         raise ValueError("영문 본문에 한글이 있습니다(그림에 넣을 글자는 큰따옴표 안에).")
     # 따옴표 안의 한글은 사용자가 지시문에 적은 글자 그대로여야 한다 — 번역하지 않은 지시를 따옴표로 감싼 본문을 받지 않는다.
     for quoted in _QUOTED.findall(body):
-        inner = quoted[1:-1].strip()
+        inner = quoted[1:-1]  # 따옴표 안 전체 — 작성기가 양끝에 넣은 공백도 그림에 넣을 글자가 된다
         # 작성기는 한 줄로 고친 지시문(_one_line — 공백 정리·꺾쇠는 괄호)을 받았다 — 원문과 그 꼴 어느 쪽에 글자 그대로 있어야 받는다
         # (공백을 접어 비교하면 작성기가 넣은 탭·겹친 공백이 그림에 넣을 글자로 저장된다).
         if hangul(inner) and (len(inner) > 60 or not (inner in instruction or inner in _one_line(instruction))):
