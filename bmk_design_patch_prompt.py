@@ -620,8 +620,10 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _ADDRESS = re.compile(r"(?im)\b[a-z][a-z0-9+.-]*://|\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b|[A-Za-z]:[\\/]|\\\\"
                       r"|(?:^|[\s\"'(=\[])(?:\.{1,2}/|~/|/)[A-Za-z0-9_.-]")
 # 본문이 틀의 줄(범례·Canvas·Guide·Target·Integration·Preserve·Notes·Request)을 흉내 내면 뒤의 규칙과 섞인다 — 그런 줄 머리는 받지 않는다.
-# 줄 머리의 낱말 뒤에 문장 부호가 바로 오면(반각·전각 콜론, 괄호, 줄표 …) 틀의 줄로 본다. "Preserve the face …" 같은 문장은 통과.
-_RESERVED_LINE = re.compile(r"(?im)^[ \t]*(?:input images\b|(?:canvas|guide|targets?|integration|preserve|notes|request)\b[ \t]*[^\w\s])")
+# 줄 머리의 낱말 뒤에 머리말 꼴의 부호(콜론·등호·여는 괄호·줄표, 띄어 쓴 하이픈)가 오면 틀의 줄로 본다. "Preserve the face …"·
+# "Preserve @image1's lighting …"·'Target "SALE" on the sign.' 같은 문장은 통과(전각 부호는 _WIDE 가 따로 막는다).
+_RESERVED_LINE = re.compile(r"(?im)^[ \t]*(?:input images\b|(?:canvas|guide|targets?|integration|preserve|notes|request)\b[ \t]*"
+                            r"(?:[:=(\[\u2012-\u2015]|-(?=[\s-]|$)))")
 _WIDE = re.compile("[\uff00-\uffef]")  # 전각·반각 꼴 문자 — 영문 본문에 쓸 일이 없고, 줄 머리·그림 표기 검사를 피하는 데 쓰일 수 있다
 _INVISIBLE = re.compile("[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]")  # 보이지 않는 서식 문자
 _FILE_SHA: dict = {}
@@ -787,10 +789,15 @@ IMAGES_MOVED = "올라갈 그림의 구성이 프롬프트를 쓸 때와 다릅�
 
 
 def v2_layout(spec: dict) -> list:
-    """업로드 자리마다 그 그림이 맡은 역할 목록 [[역할, 타깃 id], …](_plan_images 그대로). Prepare 가 평탄화 전·후의 값을 대조한다 —
-    그림 수가 같아도 한쪽이 갈라지고 다른 쪽이 합쳐지면 @imageN 이 다른 그림을 가리킨다. 자리마다 역할 목록이 같아야 같은 구성이다."""
+    """업로드 자리마다 그 그림이 맡은 역할 목록(_plan_images 의 순서) — 가이드·붙이기 전 = [역할, None], 레퍼런스 = [역할, 타깃 id,
+    그 타깃 안의 순번]. Prepare 가 평탄화 전·후의 값을 대조한다 — 그림 수가 같아도 한쪽이 갈라지고 다른 쪽이 합쳐지거나, 같은 타깃의
+    두 레퍼런스가 자리를 바꾸면(가이드와 픽셀이 같은 쪽이 가이드 자리로 합쳐짐) @imageN 이 다른 그림을 가리킨다."""
     order, roles = _plan_images(spec)
-    return [[[kind, owner] for kind, owner in roles[path]] for path in order]
+    slots = {path: [[kind, owner] for kind, owner in roles[path] if kind != "ref"] for path in order}
+    for t in spec["targets"]:
+        for i, r in enumerate(t.get("refs", [])):
+            slots[r].append(["ref", t["id"], i])
+    return [slots[path] for path in order]
 
 
 def v2_images(spec: dict) -> list:

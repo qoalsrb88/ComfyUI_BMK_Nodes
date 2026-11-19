@@ -136,7 +136,9 @@ def _output(text, image_count, token, instruction=""):
     # 따옴표 안의 한글은 사용자가 지시문에 적은 글자 그대로여야 한다 — 번역하지 않은 지시를 따옴표로 감싼 본문을 받지 않는다.
     for quoted in _QUOTED.findall(body):
         inner = quoted[1:-1].strip()
-        if hangul(inner) and (inner not in instruction or len(inner) > 60):
+        # 작성기는 한 줄로 고친 지시문(_one_line — 공백 정리·꺾쇠는 괄호)을 받았다 — 원문과 그 꼴 어느 쪽에 있어도 받는다.
+        flat = " ".join(inner.split())
+        if hangul(inner) and (len(inner) > 60 or not (flat in " ".join(instruction.split()) or flat in _one_line(instruction))):
             raise ValueError("영문 본문의 따옴표 안 한글이 지시문에 적힌 글자와 다릅니다.")
     if any(unicodedata.category(c) == "Cs" for c in body):
         raise ValueError("영문 본문에 잘못된 유니코드 문자가 있습니다.")
@@ -211,9 +213,10 @@ def routes(accounts, *, model: str | None = None, timeout: float = 90.0, per_min
         calls = 0
         try:
             await asyncio.wait_for(accounts.ensure_access(scope), timeout)
-        except forge.ForgeError as exc:
-            raise _access_error(exc) from None
-        except (TimeoutError, asyncio.TimeoutError):
+        except (forge.ForgeError, TimeoutError, asyncio.TimeoutError) as exc:
+            # 접근 확인이 시간 안에 끝나지 않음(바깥 마감·Forge 창구의 자체 제한) = 작성 호출의 시간 초과와 같은 응답
+            if isinstance(exc, forge.ForgeError) and exc.kind != "timeout":
+                raise _access_error(exc) from None
             return {"ok": True, "status": "failed", "reason": "timeout", "error": _TIMEOUT, "crop_id": view["crop_id"],
                     "seen": view["seen"], "cached": False, "forge_calls": calls}
         ctx = accounts.context(scope)

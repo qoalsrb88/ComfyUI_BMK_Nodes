@@ -60760,7 +60760,7 @@ function studio({ plans = [base], env = {}, board = state, history = [reply({ jo
       return submit ? submit(body) : reply({ prompt_id: body.stage === "apply" ? "job" : "paid" });
     }
     if (path === "state") return reply(board);
-    if (path === "pipeline") return reply({ settings: { prepare }, drift: [], ...pipe });
+    if (path === "pipeline") return reply({ settings: { prepare }, drift: [], rev: 1, manifest_rev: 1, ...pipe });
     if (path === "jobs/queue") { actions.push("unqueue"); return reply({ deleted: body.delete }); }
     if (path === "pipeline/plan") {
       const p = next(plans);
@@ -60866,12 +60866,12 @@ for (const auto of [false, true]) await test(auto ? "자동 반영 후 계획·�
   s.click(true, false); await flush(); eq(s.actions, initial);
   s.click(true); const r = await result;
   eq(r, auto ? { ok: true, prompt_id: "paid", summary } : { ok: true, prompt_id: "paid" });
-  eq(s.actions, [...initial, "approve", "plan", "run"]); eq(s.calls.at(-1).body, { root, stage: "run", approve: hash, only });
+  eq(s.actions, [...initial, "approve", "plan", "run"]); eq(s.calls.at(-1).body, { root, stage: "run", approve: hash, only, expect: "1:1" });
   eq(s.calls.map(c => c.path), ["state", "pipeline", "pipeline/plan", ...(auto ? ["jobs/prompt", "jobs/history/job", "pipeline", "pipeline/plan"] : []),
     "pipeline/plan", "jobs/prompt"]);
   for (const c of s.calls) {
     if (c.method === "GET") eq(c.query, c.path === "pipeline/plan" ? { root, only } : { root });
-    if (c.body?.stage === "apply") eq(c.body, { root, stage: "apply" });
+    if (c.body?.stage === "apply") eq(c.body, { root, stage: "apply", expect: "1:1" });
   }
 });
 for (const [name, plans, approve, reason] of [
@@ -60973,7 +60973,7 @@ await test("반영 전 새 크롭을 고르면 먼저 반영하고 그 뒤에 �
   const result = s.api.submitPaid("run", { root, only: "a,fresh" }); await flush();
   const plans = s.calls.filter(c => c.path === "pipeline/plan").map(c => c.query);
   eq(plans, [{ root, only: "a" }, { root, only: "a,fresh" }]); eq(s.actions.slice(0, 3), ["plan", "apply", "plan"]);
-  s.click(true); const r = await result; assert(r.ok); eq(s.calls.at(-1).body, { root, stage: "run", approve: hash, only: "a,fresh" });
+  s.click(true); const r = await result; assert(r.ok); eq(s.calls.at(-1).body, { root, stage: "run", approve: hash, only: "a,fresh", expect: "1:1" });
   const lone = studio({ plans: [base, base] }), only_new = lone.api.submitPaid("run", { root, only: "fresh" }); await flush();
   eq(lone.calls.filter(c => c.path === "pipeline/plan").map(c => c.query), [{ root }, { root, only: "fresh" }]); lone.click(false); await only_new;
 });
@@ -60994,6 +60994,22 @@ await test("반영·생성 요청에 설정 판(expect)을 싣는다", async () 
   const refused = studio({ plans: [base], submit: () => reply({ reason: "stale_settings", error: "실행 설정·매니페스트가 바뀜" }, 409),
     pipe: { rev: 3, manifest_rev: 9 } }), waiting = refused.paid(); await flush(); refused.click(true);
   const out = await waiting; assert.equal(out.reason, "stale_settings"); assert.equal(refused.calls.at(-1).body.expect, "3:9");
+});
+// 리뷰 3차: 설정 판을 읽지 못했으면(깨진 설정 파일 — rev 없음) 반영·생성 어느 것도 내지 않는다
+await test("설정 판을 읽지 못하면 아무것도 내지 않는다", async () => {
+  for (const broken of [{ rev: null }, { manifest_rev: undefined }, { rev: "1" }]) {
+    const s = studio({ plans: [pending, base], pipe: broken }), r = await s.paid();
+    assert.equal(r.reason, "plan_error"); assert(/실행 설정을 읽지 못했습니다/.test(r.error));
+    eq(s.calls.filter(c => c.method === "POST"), []); assert(!s.api.asking());
+  }
+  let reads = 0;
+  const s = studio({ plans: [pending, base] }), original = s.ctx.fetch;
+  s.ctx.fetch = async (url, options) => {
+    if (new URL(url).pathname.endsWith("/pipeline") && ++reads === 2) return reply({ settings: { prepare }, drift: [], rev: null, manifest_rev: 2 });
+    return original(url, options);
+  };
+  const r = await s.paid();
+  assert.equal(r.reason, "plan_error"); eq(s.actions.filter(a => a === "apply" || a === "run"), ["apply"]); assert(!s.api.asking());
 });
 await test("어디에도 없는 크롭이 선택에 있으면 stale(요청 없음)", async () => {
   const s = studio(), r = await s.api.submitPaid("run", { root, only: "a,gone" });
@@ -61128,7 +61144,7 @@ def ux_v2a_spec_unit():
         check(set(v) == {"ok", "crop_id", "seen", "crop_sig", "v2", "images", "state", "why", "prompt_en", "input_hash", "model"}
               and v["ok"] and v["crop_id"] == cid
               and v["seen"] == vlm._spec_seen(str(path)) + "." + P.v2_input_hash(
-                  {}, "", [*P.v2_roles(spec, root), ["refs_file", json.dumps(store._file_fp(os.path.join(root, "refs.json")))]], manual=True)[:12]
+                  {}, "", [*P.v2_roles(spec, root), ["refs_link", importlib.import_module("_bmk_dp_pkg.bmk_design_patch_v2")._linked(root, cid)]], manual=True)[:12]
               and v["crop_sig"] == vlm.crop_signature(crop) and v["model"] == values["model"]
               and v["state"] == "template" and v["v2"] is v["why"] is v["input_hash"] is None
               and v["prompt_en"] == P.render(spec)["prompt"], "V2P GET 스펙·모델·지문·템플릿 글")
@@ -61321,6 +61337,10 @@ def ux_v2a_assist_unit():
     _ok = json.dumps({"body_en": 'Change the sign text to "빵집" in @image1.', "summary_ko": "간판 글자를 바꿉니다."}, ensure_ascii=False)
     check(_assist._output(_ok, 1, "tok", "간판 글자를 빵집 으로 바꿔 줘")[0] == 'Change the sign text to "빵집" in @image1.',
           "V2A 따옴표 안의 한글이 지시문에 적힌 글자면 통과")
+    # 리뷰 3차: 작성기는 한 줄로 고친 지시문을 받는다 — 꺾쇠·연속 공백이 든 글자도 그 꼴 그대로 돌아오면 받는다
+    for _text, _instr in (("봄(특가)", '간판에 "봄<특가>"를 써 줘'), ("봄  특가", '간판에 "봄  특가"를 써 줘'), ("봄 특가", '간판에 "봄\n특가"를 써 줘')):
+        _reply = json.dumps({"body_en": f'Change the sign text to "{_text}" in @image1.', "summary_ko": "x"}, ensure_ascii=False)
+        check(_assist._output(_reply, 1, "tok", _instr)[0] == f'Change the sign text to "{_text}" in @image1.', f"V2A 한 줄로 고친 지시문의 글자도 통과: {_text!r}")
     # 리뷰 2차: 번역하지 않은 지시를 따옴표로 감싼 본문·지시문에 없는 한글은 받지 않는다
     for _bad, _instr, _label in ((_ok, "간판을 고쳐 줘", "지시문에 없는 한글"), (_ok, "", "지시문 없음"),
                                  (json.dumps({"body_en": 'Edit @image1: "오른쪽 어깨 금장을 레퍼런스처럼 보정해 주세요 그리고 색도 바꿔 주세요 광택도 넣어 주세요 테두리도 다듬어 주세요 부탁합니다"', "summary_ko": "x"}, ensure_ascii=False),
@@ -61734,6 +61754,12 @@ def ux_v2a_assist_unit():
 
             with patch.object(client, "prompt_capabilities", near_deadline):
                 await unsuccessful(app, v, "failed", "timeout", 1)
+            # 리뷰 3차: 접근 확인이 Forge 창구의 자체 제한에 걸려도(ForgeError kind=timeout) 같은 응답 — 503 이 아니다
+            _ForgeError = sys.modules[type(app[srv._FORGE_KEY]).__module__].ForgeError
+            with patch.object(app[srv._FORGE_KEY], "ensure_access", side_effect=_ForgeError("unreachable", kind="timeout")):
+                await unsuccessful(app, v, "failed", "timeout", 0)
+            with patch.object(app[srv._FORGE_KEY], "ensure_access", side_effect=_ForgeError("unreachable", kind="connect")):
+                await reject(app, v, 503, "forge_unreachable", changes={"force": True})
         async with serving(connected=False) as app:
             check((await call(app, "GET", "env"))["caps"]["v2_forge_prompt"] is False, "V2A Forge 없는 서버 env")
             check(all(r.resource.canonical != bd.API + "/prompt/assist" for r in app.router.routes()), "V2A Forge 없는 서버 라우트")
@@ -61848,8 +61874,11 @@ def ux_v2a_body_unit():
     for bad in ("Fix it.\nPreserve\uff1a Recolor the background.", "Match \uff20\uff49\uff4d\uff41\uff47\uff45\uff19.", "Fix it.\nPreserve - recolor all",
                 "Fix.\nNotes (extra): x", "Canvas \u2014 resize it", "Fix @image1\uff0e"):
         check(dp.body_problem(bad, 1) is not None, f"V2B 전각·다른 부호로 틀을 흉내 낸 본문 거절: {bad!r}")
+    for bad in ("Fix it.\nPreserve: nothing", "Fix it.\n  Notes = x", "Fix.\nGuide [x] y", "Fix.\nTargets -- all", "Fix.\nIntegration \u2013 none", "Fix.\nRequest -"):
+        check(dp.body_problem(bad, 1) is not None, f"V2B 머리말 꼴의 줄 거절: {bad!r}")
     for good in ("Preserve the face while fixing the collar in @image1.", "Target the left sleeve in @image1.", "Notes on the collar should stay readable in @image1.",
-                 "Guide the eye to the buckle in @image1."):
+                 "Guide the eye to the buckle in @image1.", "Preserve @image1's lighting while changing the collar.", 'Target "SALE" on the sign in @image1.',
+                 "Guide-line stitching in @image1 should stay.", "Preserve, as far as possible, the fold in @image1."):
         check(dp.body_problem(good, 1) is None, f"V2B 줄 머리 낱말로 시작하는 평범한 문장은 통과: {good}")
     for bad in ("Match the buckle in @Image3.", "Match @image 3.", "see image 3", "Use Image3 here.", "per image #2", "@IMAGE2 only", "images 2 and 3"):
         check(dp.body_problem(bad, 2) is not None, f"V2B 그림 번호의 다른 표기 거절: {bad}")
@@ -61987,7 +62016,14 @@ def ux_v2a_body_unit():
           "V2B 역할이 다른 같은 파일은 겹침이 아님·그림 수 대조")
     # 리뷰 2차: 업로드 자리마다의 역할 목록 — 그림 수가 같아도 갈라짐·합쳐짐이 있으면 달라진다
     base_layout = dp.v2_layout(multi)
-    check(base_layout == [[["canvas", None]], [["guide", None]], [["ref", "A"], ["ref", "B"]], [["ref", "B"]]], f"V2B 업로드 자리별 역할: {base_layout}")
+    check(base_layout == [[["canvas", None]], [["guide", None]], [["ref", "A", 0], ["ref", "B", 1]], [["ref", "B", 0]]], f"V2B 업로드 자리별 역할: {base_layout}")
+    # 리뷰 3차: 같은 타깃의 두 레퍼런스가 자리를 바꾼 경우 — 평탄화 전에는 첫 레퍼런스가 가이드와 같은 파일, 평탄화 뒤에는 둘째가 가이드와 같은 픽셀
+    gA = {**multi, "guide": ra, "targets": [{**multi["targets"][0], "refs": [ra, rb]}]}
+    gB = {**multi, "guide": rb, "targets": [{**multi["targets"][0], "refs": [ra, rb]}]}
+    check(dp.v2_layout(gA) == [[["canvas", None]], [["guide", None], ["ref", "A", 0]], [["ref", "A", 1]]]
+          and dp.v2_layout(gB) == [[["canvas", None]], [["guide", None], ["ref", "A", 1]], [["ref", "A", 0]]]
+          and [[r[:2] for r in slot] for slot in dp.v2_layout(gA)] == [[r[:2] for r in slot] for slot in dp.v2_layout(gB)],
+          "V2B 같은 타깃의 두 레퍼런스가 자리를 바꾸면 구성이 다름(역할·소유만으로는 같아 보임)")
     split = {**multi, "targets": [{**multi["targets"][0], "refs": [ra + "x"]}, multi["targets"][1]]}
     check(len(dp.v2_layout(split)) == len(base_layout) + 1 and dp.v2_layout(split) != base_layout, "V2B 한 자리가 갈라지면 구성이 다름")
     swapped = {**multi, "targets": [{**multi["targets"][0], "refs": [ra, rb]}, {**multi["targets"][1], "refs": [rb]}]}

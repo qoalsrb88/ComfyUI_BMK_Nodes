@@ -43,13 +43,24 @@ def _inputs(root, m, crop, ov):
     return model, spec, roles, dprompt.render(spec)
 
 
+def _linked(root, crop_id):
+    """레퍼런스 연결 파일(refs.json)에서 이 크롭에 닿는 것(레퍼런스 폴더·이 크롭의 연결)의 글. 다른 크롭의 연결 편집은 넣지 않는다 —
+    넣으면 남의 편집 때문에 이 크롭에서 쓰던 글·AI 작성 결과가 낡은 판으로 버려진다. 읽지 못하면 파일 지문 전체."""
+    path = os.path.join(root, store._REFS_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+        return json.dumps([doc.get("refs_dir"), (doc.get("links") or {}).get(crop_id)], ensure_ascii=False, sort_keys=True)
+    except (OSError, ValueError, AttributeError):
+        return json.dumps(store._file_fp(path))
+
+
 def _token(vlm, root, crop_id, roles):
     """화면이 본 판의 표지 = 스펙 파일 지문 + 레퍼런스 구성 지문. 스펙 파일이 그대로여도 연결된 그림이 바뀌면(다른 창의 레퍼런스 편집·
     반영) 화면이 보던 @imageN 이 다른 그림이 된다 — 그 판에서 쓴 글을 저장하지 않게 표지에 함께 넣는다."""
-    # 레퍼런스 연결 파일(refs.json)의 지문도 넣는다 — 연결을 바꿨지만 아직 반영 전이면 매니페스트의 구성은 그대로라 roles 만으로는 모른다.
-    linked = store._file_fp(os.path.join(root, store._REFS_FILE))
+    # 이 크롭의 레퍼런스 연결(refs.json)도 넣는다 — 연결을 바꿨지만 아직 반영 전이면 매니페스트의 구성은 그대로라 roles 만으로는 모른다.
     return (vlm._spec_seen(vlm._spec_path(root, crop_id)) + "."
-            + dprompt.v2_input_hash({}, "", [*roles, ["refs_file", json.dumps(linked)]], manual=True)[:12])
+            + dprompt.v2_input_hash({}, "", [*roles, ["refs_link", _linked(root, crop_id)]], manual=True)[:12])
 
 
 def spec_view(root: str, crop_id: str) -> dict:

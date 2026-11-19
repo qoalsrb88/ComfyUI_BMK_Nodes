@@ -191,7 +191,9 @@ window.DPSubmit = (() => {
       let pipe = (await read("pipeline", { root })).data;
       // 요청에 실어 보내는 표지: 서버는 실행 설정·매니페스트가 이 판과 다르면 받지 않는다(다른 창이 그 사이 설정을 바꾼 경우).
       const sigOf = (p) => (Number.isInteger(p?.rev) && Number.isInteger(p?.manifest_rev) ? `${p.rev}:${p.manifest_rev}` : undefined);
-      const stamped = (body, p) => (sigOf(p) ? { ...body, expect: sigOf(p) } : body);
+      const stamped = (body, p) => ({ ...body, expect: sigOf(p) });
+      const unread = () => failed("plan_error", "실행 설정을 읽지 못했습니다 — ① 준비에서 실행 설정을 확인한 뒤 다시 눌러 주세요");
+      if (!sigOf(pipe)) return unread();  // 판 없이(깨진 설정 파일 등) 반영·생성을 내면 서버가 그 사이의 설정 변경을 가려낼 수 없다
       // 실행 설정이 마지막 반영과 다름(모델·장 수 같은 Prepare 설정, 가져오기 설정) — 계획의 apply_pending 에는 없지만 서버는 생성을 막는다.
       const drifted = (pipe?.drift || []).some((d) => d.section === "prepare" || d.kind === "import");
       const notes = (p) => (Array.isArray(p.notes) ? p.notes : []);
@@ -223,6 +225,7 @@ window.DPSubmit = (() => {
         }
         summary = result.record.apply_summary;
         pipe = (await read("pipeline", { root })).data;  // 반영으로 매니페스트가 바뀌었다 — 승인 상자의 모델·장 수와 제출 표지는 이 판으로
+        if (!sigOf(pipe)) return { ...unread(), summary };
         current = await plan(root, only);
         bad = trouble(current);
         if (bad) return { ...bad, summary };
