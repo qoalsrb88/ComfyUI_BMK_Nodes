@@ -452,6 +452,79 @@ window.DPV2Data = (() => {
     return typeof fn === "function" ? fn.call(dlg, message) : Promise.resolve();
   }
 
+  // #C15-5: 닫기(Esc·배경 클릭)와 「버리기」를 명확히 구분하는 다중 선택 대화 상자 (sandbox iframe 안전 · textContent 전용)
+  function askDialogChoice(message, choices = [], options = {}) {
+    const cancelId = options.cancelId || "cancel";
+    const dlg = window.DPDialog;
+    if (!dlg || typeof dlg.lock !== "function" || typeof dlg.unlock !== "function") {
+      return Promise.resolve(cancelId);
+    }
+    const list = Array.isArray(choices) && choices.length
+      ? choices
+      : [{ id: "ok", label: "확인" }, { id: cancelId, label: "취소" }];
+    let finish = null;
+    const buttons = [];
+    const handleKeys = (e) => {
+      if (["Tab", "Enter", " ", "Spacebar", "Escape"].includes(e.key)) e.preventDefault();
+      if (e.type !== "keydown" || !finish) return;
+      if (e.key === "Escape") {
+        finish(cancelId);
+        return;
+      }
+      const idx = buttons.indexOf(document.activeElement);
+      if (e.key === "Tab" && buttons.length) {
+        buttons[(idx + (e.shiftKey ? buttons.length - 1 : 1)) % buttons.length].focus();
+      } else if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+        if (idx >= 0 && list[idx]) finish(list[idx].id);
+      }
+    };
+    if (!dlg.lock({ keys: handleKeys })) return Promise.resolve(cancelId);
+    return new Promise((resolve) => {
+      let settled = false;
+      const overlay = document.createElement("div");
+      const sheet = document.createElement("div");
+      const row = document.createElement("div");
+      overlay.className = "overlay dp-dialog";
+      sheet.className = "sheet";
+      row.className = "lp-btns";
+      sheet.setAttribute("role", "dialog");
+      sheet.setAttribute("aria-modal", "true");
+      sheet.setAttribute("aria-label", options.title || "확인");
+      const lines = Array.isArray(message) ? message : String(message || "").split("\n");
+      for (const line of lines) {
+        const p = document.createElement("p");
+        p.textContent = line || "\u00a0";
+        sheet.appendChild(p);
+      }
+      finish = (choiceId) => {
+        if (settled) return;
+        settled = true;
+        overlay.remove();
+        dlg.unlock();
+        resolve(choiceId);
+      };
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) finish(cancelId);
+      });
+      for (const item of list) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = item.label || item.id;
+        if (item.primary) btn.className = "primary";
+        else if (item.danger) btn.className = "danger";
+        btn.addEventListener("click", () => finish(item.id));
+        row.appendChild(btn);
+        buttons.push(btn);
+      }
+      sheet.appendChild(row);
+      overlay.appendChild(sheet);
+      document.body.appendChild(overlay);
+      const focusIdx = list.findIndex((x) => x.id === options.focusId);
+      const targetBtn = buttons[focusIdx >= 0 ? focusIdx : 0];
+      if (targetBtn) targetBtn.focus();
+    });
+  }
+
   function hexMix(a, b, w) {
     const clean = (h) => {
       const s = String(h || "#000000").replace("#", "");
@@ -616,7 +689,7 @@ window.DPV2Data = (() => {
 
   return {
     THEMES, POINT_COLORS, LAYOUT_PRESETS, PURPOSES, SNAP_STEPS, MODEL_GUIDE, RATIO_SIZES, THINKING_LABELS,
-    el, svgEl, icon, appendSvgIcon, askDialogConfirm, showDialogNotice, hexMix, hexToRgba, computeAutoCropFrame,
+    el, svgEl, icon, appendSvgIcon, askDialogConfirm, askDialogChoice, showDialogNotice, hexMix, hexToRgba, computeAutoCropFrame,
     validateProjectName, formatElapsed, trafficLight, buildSwitchUrl, purposeInfo, purposeColor, modelCatalog, findModel,
   };
 })();
