@@ -61175,6 +61175,422 @@ def ux_v2a_spec_unit():
 def ux_v2a_assist_unit():
     """UX v2-A Forge 프롬프트 브릿지 POST /prompt/assist(명세 D510–D522). --quick 포함."""
     section("UX v2-A — 프롬프트 브릿지 (ux_v2a_assist_unit)")
+    # 응답 검사(순수 함수): 그림에 넣을 글자는 큰따옴표 안에서만 한글 허용
+    import bmk_design_patch_assist as _assist
+    _ok = json.dumps({"body_en": 'Change the sign text to "빵집" in @image1.', "summary_ko": "간판 글자를 바꿉니다."}, ensure_ascii=False)
+    check(_assist._output(_ok, 1, "tok")[0] == 'Change the sign text to "빵집" in @image1.', "V2A 따옴표 안의 한글(그림에 넣을 글자)은 통과")
+    for _bad, _label in (('Change the 간판 text in @image1.', "따옴표 밖 한글"), ('Change it to "빵집 in @image1.', "닫히지 않은 따옴표"),
+                         ('Change it to "bakery" in @image1.\n간판', "줄을 넘긴 한글")):
+        try:
+            _assist._output(json.dumps({"body_en": _bad, "summary_ko": "x"}, ensure_ascii=False), 1, "tok")
+            check(False, f"V2A 응답 검사 거절: {_label}")
+        except ValueError:
+            check(True, f"V2A 응답 검사 거절: {_label}")
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, patch
+    from aiohttp.test_utils import make_mocked_request
+
+    dp = _dp_package()
+    bd, pl = dp.board, dp.board.pl
+    srv = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_server")
+    assist = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_assist")
+    dev = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge_dev")
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="v2_assist_", dir=OUT_ROOT.resolve()))
+    scopes = [dict(_fj_scope(out / f"home{i}"), account=f"fixture{i}") for i in range(3)]
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))["prompt"]
+    caps_path, prep_path, writer_path = (fixture[k]["path"] for k in ("capabilities", "prepare", "assist"))
+    forge_config = assist.forge.ForgeConfig("https://forge.test", media_origins=("https://media.test",))
+    config = srv.ServerConfig(str(out / "data"), public_origin="https://studio.test", forge=forge_config)
+    args = ["--data", str(out / "data"), "--assist-model", "fixture-writer"]
+    with contextlib.redirect_stderr(io.StringIO()):
+        expect_raises(lambda: srv.main(args), "V2A Forge 없는 CLI 모델 거절", SystemExit)
+    with patch.object(srv, "_validate_config", side_effect=RuntimeError("parsed")) as parsed:
+        expect_raises(lambda: srv.main([*args, "--forge-api", forge_config.api, "--forge-media-origin", forge_config.media_origins[0]]),
+                      "V2A CLI 설정 전달", RuntimeError, "parsed")
+        check(parsed.call_args.args[0].assist_model == "fixture-writer", "V2A --assist-model 값 보존")
+    for bad in ("", "x" * 129, "two words", "name\x01", "name\u200b", 123):
+        expect_raises(lambda: srv._validate_config(dataclasses.replace(config, assist_model=bad)), "V2A 작성 모델 값 검사")
+    fake = dev.FakeForge()
+    tick = [0.0]
+    model = "gpt-image-2.6-sunburst"
+    instruction = "@원본 테두리를 @참조1처럼, @참조9는 그대로"
+    secrets = [dev.issue_token(s["account"]) for s in scopes]
+    projects = []
+    last_writer = {}
+    gate = None
+
+    async def transport(method, url, headers, body, timeout):
+        path = urllib.parse.urlsplit(url).path
+        if path == writer_path:
+            last_writer.clear()
+            last_writer.update(json.loads(body))
+        result = await fake.handle(method, url, headers, body, timeout)
+        if gate and path == writer_path:
+            entered, release = gate
+            entered.put_nowait(True)
+            await release.wait()
+        return result
+
+    def setup_project(i):
+        scope = scopes[i]
+        token = bd.set_scope(scope)
+        try:
+            handle, root = _fx_project(dp, scope["input"], "patches", [
+                ("001_panel | A: panel", [0, 0, 64, 64]), ("002_ring | A: ring", [64, 0, 128, 64])], texture(64, 128, 7))
+            m = store.load_manifest(root)
+            crop, other = m["crops"]
+            refs = Path(root, "refs")
+            refs.mkdir(exist_ok=True)
+            for name, level in (("guide.png", 32), ("design.png", 160)):
+                Image.new("RGB", (32, 32), (level, 0, 0)).save(refs / name)
+            m["source"] = dict(m.get("source") or {}, refs_dir=str(refs))
+            store.save_manifest(root, m)
+            path = Path(root, "specs", crop["id"] + ".json")
+            store.write_json_atomic(str(path), {"guide": "refs/guide.png", "targets": [
+                {"id": "A", "refs": ["design.png"], "guide_color": "red"}]})
+            values = dict(pl.defaults(root)["prepare"], model=model)
+            pl.update(root, 0, "prepare", values)
+            return handle, root, path, crop["id"], other["id"], values
+        finally:
+            bd.reset_scope(token)
+
+    @contextlib.asynccontextmanager
+    async def serving(*, writer=None, timeout=90, connected=True):
+        original_routes = assist.routes
+
+        def timed_routes(accounts, **kw):
+            return original_routes(accounts, clock=lambda: tick[0], timeout=timeout, **kw)
+
+        cfg = dataclasses.replace(config, assist_model=writer, forge=forge_config if connected else None)
+        with patch.object(assist, "routes", side_effect=timed_routes):
+            app = srv.make_app(cfg, forge_transport=transport)
+        app.freeze()
+        try:
+            if connected:
+                for scope, secret in zip(scopes, secrets):
+                    sessions = app[srv._SESSION_KEY]
+                    sid = sessions.create(dict(organization_id=scope["org"], account_id=scope["account"], name="fixture"),
+                                          scope, "fixture")
+                    sessions.set_token(sid, secret, None)
+                    sessions.mark_access(scope["org"], scope["account"], sessions.clock())
+            yield app
+        finally:
+            await app.cleanup()
+
+    async def call(app, method, path, *, data=None, query=None, scope=scopes[0], status=200, headers=None):
+        url = bd.API + "/" + path
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
+        req = make_mocked_request(method, url, headers={"Content-Type": "application/json"}, app=app)
+        req.read = AsyncMock(return_value=json.dumps(data).encode())
+        token = bd.set_scope(scope)
+        try:
+            response = await (await app.router.resolve(req)).handler(req)
+            check(response.status == status, f"V2A {path} HTTP {response.status} (기대 {status})")
+            if headers is not None:
+                headers.update(response.headers)
+            body = response.text
+            check(all(s not in body for s in [*secrets, "data:image/", str(out), str(out).replace('\\', '\\\\')]),
+                  f"V2A {path} 응답 비밀·그림·서버 경로 없음")
+            return json.loads(body)
+        finally:
+            bd.reset_scope(token)
+
+    def params(v, i=0):
+        return {k: v[k] for k in ("seen", "crop_sig", "crop_id")} | {"root": store.root_key(projects[i][1])}
+
+    async def view(app, i=0, *, other=False):
+        return await call(app, "GET", "spec", scope=scopes[i], query={"root": store.root_key(projects[i][1]),
+                                                                      "crop_id": projects[i][4 if other else 3]})
+
+    async def edit(app, v, i=0, **kw):
+        return await call(app, "POST", "spec", scope=scopes[i], data=params(v, i) | kw)
+
+    async def write(app, v, i=0, *, changes=None, **kw):
+        kw.setdefault("scope", scopes[i])
+        return await call(app, "POST", "prompt/assist", data=params(v, i) | (changes or {}), **kw)
+
+    async def reject(app, v, status, reason, *, calls=0, **kw):
+        before = projects[0][2].read_bytes()
+        count = len(fake.calls)
+        res = await write(app, v, status=status, **kw)
+        check(res.get("reason") == reason and len(fake.calls) == count + calls and projects[0][2].read_bytes() == before,
+              f"V2A 거절 {reason}·전송 {calls}건·스펙 바이트 보존")
+        return res
+
+    async def unsuccessful(app, v, status, reason, calls):
+        before = projects[0][2].read_bytes()
+        count = len(fake.prompt_calls)
+        res = await write(app, v, changes={"force": True})
+        check(res == dict(ok=True, status=status, reason=reason, error=res["error"], crop_id=v["crop_id"],
+                          seen=v["seen"], cached=False, forge_calls=calls)
+              and len(fake.prompt_calls) == count + calls and projects[0][2].read_bytes() == before,
+              f"V2A {status}/{reason}·전송 {calls}건·스펙 바이트 보존")
+        return res
+
+    async def workflow(app):
+        handle, root, path, cid, _, values = projects[0]
+        check((await call(app, "GET", "env"))["caps"]["v2_forge_prompt"] is True, "V2A Forge env")
+        v = await view(app)
+        await reject(app, v, 400, "no_instruction")
+        await reject(app, v, 401, "no_session", scope=None)
+        await reject(app, v, 404, None, scope=scopes[1])
+        for field in ("seen", "crop_sig"):
+            await reject(app, v, 409, "stale", changes={field: "old"})
+        for field in ("purpose", "model", "user_instruction_ko"):
+            res = await reject(app, v, 400, None, changes={field: "unknown"})
+            check(field in res["error"], "V2A 모르는 키 이름")
+        await reject(app, v, 400, None, changes={"force": 1})
+        with patch.dict(os.environ, {"BMK_DP_MOCK_API": "1"}):
+            await reject(app, v, 409, "no_backend")
+            check((await call(app, "GET", "env"))["caps"]["v2_forge_prompt"] is False, "V2A mock 우선 env")
+        original = path.read_bytes()
+        store.write_json_atomic(str(path), {"_v2": []})
+        broken = await view(app)
+        check((await reject(app, broken, 409, "bad_spec"))["error"] == broken["why"], "V2A 손상 스펙 안내")
+        path.write_bytes(original)
+        v = await edit(app, await view(app), ai_auto=False, user_instruction_ko=instruction)
+        await reject(app, v, 400, "ai_off")
+        v = await edit(app, v, ai_auto=True)
+        result = await write(app, v)
+        full = await view(app)
+        prompt = json.loads(path.read_bytes())["_v2"]["prompt"]
+        check(set(result) == {"ok", "status", "reason", "crop_id", "skill_ids", "guidance_revision", "model", "summary_ko",
+                              "body_en", "prompt_en", "cached", "input_hash", "seen", "state", "forge_calls"}
+              and result["ok"] and result["status"] == "written" and result["reason"] is None
+              and result["forge_calls"] == 3 and not result["cached"] and result["seen"] == full["seen"] != v["seen"]
+              and result["crop_id"] == cid and result["model"] == model and result["state"] == full["state"] == "body"
+              and result["prompt_en"] == full["prompt_en"] and result["body_en"] in result["prompt_en"]
+              and all(result[k] == prompt[k] for k in ("skill_ids", "guidance_revision", "body_en", "summary_ko", "input_hash"))
+              and prompt == full["v2"]["prompt"] and prompt["source"] == "assist" and prompt["writer"] == "forge-default"
+              and prompt["profile"] == "gpt_image_25" and prompt["input_hash"] == full["input_hash"] == v["input_hash"],
+              "V2A 성공 응답·저장된 본문·지문")
+        check([c["path"] for c in fake.prompt_calls] == [caps_path, prep_path, writer_path], "V2A 첫 호출 순서")
+        prep = fake.prompt_calls[-2]["body"]
+        skills = ["scoped-component-edit", "element-add-replace"]
+        check(prep["checkpoint"] == "gpt_image_25_sunburst" and prep["skill_ids"] == result["skill_ids"] == skills
+              and prep["request_brief"]["request"] == instruction and prep["image_count"] == 3, "V2A 2.6 지침 모델·스킬·그림 수")
+        sent = last_writer["prompt"]
+        guide = fixture["prepare"]["response"]["guidance"]
+        expected_system = "\n\n".join([guide["rewrite"], guide["global"], guide["model"],
+                                       *(f"# {s}\n\n- Guidance for {s}." for s in skills), assist.OUTPUT_CONTRACT])
+        check(not {"feature", "provider", "images", "model"} & last_writer.keys() and last_writer["system"] == expected_system
+              and sent.startswith("<user_prompt>\nPurpose: ") and sent.endswith("\n</user_prompt>")
+              and "Instruction (Korean, from the user): @image1 테두리를 @image3처럼, @참조9는 그대로" in sent
+              and "- @image1:" in sent and sent.count(" (attached)") == 1 and sent.count(" (not attached)") == 2
+              and "Targets in this crop: panel" in sent and not any(s in sent for s in (
+                  "@원본", "@참조1", "guide.png", "design.png", root, scopes[0]["account"])), "V2A 글쓰기 요청·역할·비공개 값")
+        def jpeg_size():
+            prefix, data = last_writer["image"].split(",", 1)
+            with Image.open(io.BytesIO(base64.b64decode(data, validate=True))) as image:
+                check(prefix == "data:image/jpeg;base64" and image.format == "JPEG" and image.mode == "RGB",
+                      "V2A 실제 JPEG 바이트")
+                return image.size
+        check(jpeg_size() == (64, 64), "V2A 크롭 그림 크기")
+        token = bd.set_scope(scopes[0])
+        try:
+            dp.BMKDesignPatchPrepare().run(handle, **values)
+        finally:
+            bd.reset_scope(token)
+        jobs = [j for j in store.load_manifest(root)["jobs"] if j["crop_id"] == cid]
+        check([j["variant"] for j in jobs] == ["B1_body"] and jobs[0]["prompt"] == result["prompt_en"], "V2A Prepare 본문 작업")
+        other = await edit(app, await view(app, other=True), user_instruction_ko="색 보정")
+        n = len(fake.prompt_calls)
+        second = await write(app, other)
+        check(second["forge_calls"] == 1 and [c["path"] for c in list(fake.prompt_calls)[n:]] == [writer_path],
+              "V2A 다른 패치는 목록·같은 지침 재사용")
+        before = path.read_bytes()
+        n = len(fake.calls)
+        cached = await write(app, full)
+        check(cached == dict(result, forge_calls=0, cached=True) and len(fake.calls) == n and before == path.read_bytes(),
+              "V2A 저장본 재사용")
+        forced = await write(app, full, changes={"force": True})
+        check(forced["forge_calls"] == 1 and not forced["cached"], "V2A 강제 재작성")
+        v = await edit(app, await view(app), user_instruction_ko="새 지시")
+        check(v["state"] == "blocked" and (await write(app, v))["body_en"] != result["body_en"], "V2A 변경된 지시문으로 재작성")
+        for purpose, expected in (("add", "element-add-replace"), ("remove", "content-removal"),
+                                  ("vary", "scoped-component-edit"), ("detail", "detail-repair")):
+            message = "추가" if purpose == "add" else ""
+            v = await edit(app, await view(app), purpose=purpose, user_instruction_ko=message)
+            res = await write(app, v)
+            prep = fake.prompt_calls[-2]["body"]
+            check(res["skill_ids"] == [expected] == prep["skill_ids"] and res["forge_calls"] == 2
+                  and prep["request_brief"]["request"] == (message or assist.PURPOSE[purpose])
+                  and ("Instruction (Korean" in last_writer["prompt"]) == bool(message), f"V2A 목적별 지침 {purpose}")
+        check(not any(c["classified"] for c in fake.prompt_calls), "V2A 분류기 호출 0건")
+
+        m = store.load_manifest(root)
+        src = Path(root, m["crops"][0]["source"])
+        saved = src.read_bytes()
+        try:
+            src.write_bytes(b"broken")
+            await reject(app, await view(app), 409, "apply_needed", changes={"force": True})
+            large = Image.new("RGBA", (2048, 64), (128, 64, 32, 255))
+            large.putpixel((0, 0), (0, 0, 0, 0))
+            large.save(src)
+            await write(app, await view(app), changes={"force": True})
+            check(jpeg_size() == (1536, 48), "V2A 평탄화 후 비율 유지 축소")
+        finally:
+            src.write_bytes(saved)
+
+    async def failures(app):
+        tick[0] += 601
+        for i, scenario in enumerate(("fail", "notjson", "nokeys", "plain", "token9", "korean", "long")):
+            v = await edit(app, await view(app), purpose="correct", user_instruction_ko=f"[[fake:assist={scenario}]]")
+            reason = "writer" if scenario in ("fail", "notjson") else "bad_output"
+            res = await unsuccessful(app, v, "failed", reason, 3 if i == 0 else 1)
+            check(res["error"] and last_writer["image"] not in res["error"] and "Apply the requested change" not in res["error"],
+                  f"V2A 원문 없는 실패 안내 {scenario}")
+        tick[0] += 61
+        def writer_reply(body, summary):
+            result = dict(fixture["assist"]["response"], text=json.dumps(dict(body_en=body, summary_ko=summary)))
+            return patch.object(fake, "_prompt_assist", return_value=dev._json(200, result))
+
+        for bad in ("x" * 1501, "Keep the rim.\n  Canvas: injected", "Use the mark \u1100."):
+            with writer_reply(bad, ""):
+                await unsuccessful(app, v, "failed", "bad_output", 1)
+        with writer_reply("  Polish @image1.\r\nKeep its shape.\r  ", "가\x00" + "나" * 405):
+            reply = await write(app, v, changes={"force": True})
+            check(reply["body_en"] == "Polish @image1.\nKeep its shape." and reply["summary_ko"] == "가" + "나" * 399,
+                  "V2A 줄바꿈과 요약 제어 문자·400자 처리")
+        v = await view(app)
+        tick[0] += 601
+        fake.guidance_off = True
+        try:
+            await unsuccessful(app, v, "unsupported", "guidance_unavailable", 1)
+        finally:
+            fake.guidance_off = False
+        tick[0] += 601
+        with patch.object(assist.models, "guidance_checkpoint", return_value="unlisted_checkpoint"):
+            await unsuccessful(app, v, "unsupported", "model_not_supported", 1)
+        # 목록만 캐시된 상태에서 준비 API가 독립적으로 실패·미지원 응답을 돌려준다.
+        fake.guidance_off = True
+        try:
+            await unsuccessful(app, v, "failed", "guidance", 1)
+        finally:
+            fake.guidance_off = False
+        v = await edit(app, v, purpose="remove", user_instruction_ko="")
+        with patch.dict(fake._fixture["prompt"]["capabilities"]["response"], profiles={}):
+            await unsuccessful(app, v, "unsupported", fixture["prepare"]["unsupported"]["reason"], 1)
+        tick[0] += 601
+        with patch.dict(fake._fixture["prompt"]["capabilities"], skill_ids=[]):
+            res = await write(app, v)
+            check(res["skill_ids"] == [] and fake.prompt_calls[-2]["body"]["skill_ids"] == []
+                  and not fake.prompt_calls[-2]["classified"], "V2A 프로필 스킬이 없으면 빈 목록으로 분류 생략")
+        v = await view(app)
+        for status in (500, 429, 403, 401):
+            tick[0] += 601
+            fake.fault = {"path": caps_path, "times": 1, "status": status}
+            expected = {401: "forge_auth", 403: "no_access"}.get(status, "forge_unreachable")
+            await reject(app, v, status if status in (401, 403) else 503, expected, calls=1, changes={"force": True})
+        check(app[srv._FORGE_KEY].context(scopes[0])["token_of"]() is None, "V2A 거절된 토큰 표시")
+        await reject(app, v, 401, "forge_auth", changes={"force": True})
+
+    async def load_cases(app):
+        nonlocal gate
+        tick[0] += 601
+        v = [await edit(app, await view(app, i), i, purpose="detail", user_instruction_ko="광택") for i in range(3)]
+        fake.fault = {"path": writer_path, "times": 2, "delay": 0.03}
+        entered, release = asyncio.Queue(), asyncio.Event()
+        gate = entered, release
+        tasks = []
+        try:
+            tasks.append(asyncio.create_task(write(app, v[0])))
+            await asyncio.wait_for(entered.get(), 5)
+            await reject(app, v[0], 409, "busy")
+            tasks.append(asyncio.create_task(write(app, v[1], 1)))
+            await asyncio.wait_for(entered.get(), 5)
+            n = len(fake.calls)
+            before = projects[2][2].read_bytes()
+            busy = await write(app, v[2], 2, status=409)
+            check(busy["reason"] == "busy" and n == len(fake.calls) and projects[2][2].read_bytes() == before, "V2A 전체 슬롯 초과")
+        finally:
+            release.set()
+            gate = None
+            results = await asyncio.gather(*tasks)
+        check(all(r["status"] == "written" for r in results), "V2A 앞선 두 계정은 정상 완료")
+        check(last_writer["model"] == "fixture-writer" and json.loads(projects[0][2].read_bytes())["_v2"]["prompt"]["writer"]
+              == "fixture-writer", "V2A 설정된 작성 모델")
+
+        # 저장 직전의 스펙 변경과 요청 취소를 각각 같은 계정에서 재현한다.
+        for cancel in (False, True):
+            v0 = await view(app)
+            entered, release = asyncio.Queue(), asyncio.Event()
+            gate = entered, release
+            task = asyncio.create_task(write(app, v0, changes={"force": True}, status=200 if cancel else 409))
+            try:
+                await asyncio.wait_for(entered.get(), 5)
+                if cancel:
+                    before = projects[0][2].read_bytes()
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                    check(task.cancelled(), "V2A 요청 취소 전파")
+                else:
+                    await edit(app, v0, user_instruction_ko="다른 창")
+                    before = projects[0][2].read_bytes()
+                    release.set()
+                    check((await task)["reason"] == "stale", "V2A 글쓰기 도중 다른 편집")
+            finally:
+                release.set()
+                gate = None
+            check(projects[0][2].read_bytes() == before, "V2A 경합·취소 시 파일 보존")
+            check((await write(app, await view(app), changes={"force": True}))["status"] == "written", "V2A 슬롯 반환")
+
+        tick[0] += 61
+        for _ in range(12):
+            full = await view(app)
+            check((await write(app, full))["cached"], "V2A 캐시 적중은 분당 한도 면제")
+            await write(app, full, changes={"force": True})
+        tick[0] += 0.3
+        full = await view(app)
+        headers = {}
+        await reject(app, full, 429, "rate_limited", changes={"force": True}, headers=headers)
+        check(headers["Retry-After"] == "60" and (await write(app, full))["cached"], "V2A 대기 초 올림·한도 도달 뒤 캐시")
+        tick[0] += 59.7
+        check((await write(app, full, changes={"force": True}))["status"] == "written", "V2A 이동 창 만료 뒤 작성")
+
+    async def run():
+        async with serving() as app:
+            projects.extend(setup_project(i) for i in range(3))
+            await workflow(app)
+            await failures(app)
+        async with serving(writer="fixture-writer") as app:
+            await load_cases(app)
+        async with serving(timeout=0.55) as app:
+            fake.fault = {"path": caps_path, "times": 1, "delay": 1}
+            v = await view(app)
+            await unsuccessful(app, v, "failed", "timeout", 1)
+            client = app[srv._FORGE_KEY].client
+            capabilities = client.prompt_capabilities
+
+            async def near_deadline(token):
+                caps = await capabilities(token)
+                tick[0] += 0.1  # 남은 0.45초로 지침 API를 시작할 수 없다.
+                return caps
+
+            with patch.object(client, "prompt_capabilities", near_deadline):
+                await unsuccessful(app, v, "failed", "timeout", 1)
+        async with serving(connected=False) as app:
+            check((await call(app, "GET", "env"))["caps"]["v2_forge_prompt"] is False, "V2A Forge 없는 서버 env")
+            check(all(r.resource.canonical != bd.API + "/prompt/assist" for r in app.router.routes()), "V2A Forge 없는 서버 라우트")
+
+    logs = io.StringIO()
+    handler = logging.StreamHandler(logs)
+    logger = logging.getLogger(assist.__name__)
+    old_level = logger.level
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    try:
+        with patch.object(srv, "_server_secret", return_value=bytes(32)), patch.dict(os.environ, {"BMK_DP_MOCK_API": "0"}):
+            asyncio.run(run())
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+    check("POST /prompt/assist" in logs.getvalue() and not any(
+        s in logs.getvalue() for s in [*secrets, str(out), instruction, "data:image/", "Apply the requested change"]),
+        "V2A 작성 로그에 지시·본문·토큰·경로·그림 없음")
 
 
 

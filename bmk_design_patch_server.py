@@ -149,6 +149,12 @@ def _validate_config(config):
     except ValueError:
         raise ValueError("trusted_proxies 는 IP 주소·CIDR 목록이어야 합니다") from None
     forge_config = config.forge
+    if config.assist_model is not None:
+        if forge_config is None:
+            raise ValueError("Forge 옵션은 --forge-api 와 함께 써야 합니다")
+        if (not isinstance(config.assist_model, str) or not 1 <= len(config.assist_model) <= 128
+                or any(c.isspace() or unicodedata.category(c).startswith("C") for c in config.assist_model)):
+            raise ValueError("--assist-model 은 공백·제어 문자 없는 1–128자 문자열이어야 합니다")
     if forge_config is not None:
         if not forge_config.media_origins:
             raise ValueError("--forge-api 를 쓰려면 --forge-media-origin 이 하나 이상 필요합니다")
@@ -637,6 +643,7 @@ class ServerConfig:
     login_fail_global: int = 200               # 서버 전체 거절이 넘으면 거절 이력이 있는 주소만 제한
     trusted_proxies: tuple = ()                # 주소·CIDR. 오른쪽부터 신뢰한 프록시를 건너뛴다
     forge: object | None = None                # bmk_design_patch_forge.ForgeConfig — 있으면 실제 검증기·Forge 생성 백엔드(F2), 없으면 F1 그대로(mock)
+    assist_model: str | None = None
 
 
 class DevVerifier:
@@ -817,6 +824,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             result["caps"]["ui_v2"] = await asyncio.to_thread(board.v2_available)
             if accounts is not None:
                 result["backend"] = "mock" if os.environ.get("BMK_DP_MOCK_API", "").strip().lower() in ("1", "true", "yes", "on") else "forge"
+                result["caps"]["v2_forge_prompt"] = result["backend"] == "forge"
                 result["caps"].update(forge_import=bool(forge_routes), forge_save=bool(forge_routes))
                 result.update(token_url="/api/session/token", token_refresh=bool(session and session.get("token_refresh")),
                               parent_origins=list(config.parent_origins),
@@ -1019,6 +1027,12 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
         app[_LOGIN_FAILURES_KEY] = login_failures
         forge_routes = forge.routes(accounts) if accounts is not None else ()
         if accounts is not None:
+            try:
+                from . import bmk_design_patch_assist as assist
+            except ImportError:
+                import bmk_design_patch_assist as assist
+            for method, path, handler in assist.routes(accounts, model=config.assist_model):
+                app.router.add_route(method, path, handler)
             app[_FORGE_KEY] = accounts
             app.router.add_post("/api/session/token", session_token)
         for method, path, handler in forge_routes:
@@ -1136,6 +1150,7 @@ def main(argv=None) -> int:
     parser.add_argument("--cookie-samesite", default="Lax")
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--forge-api")
+    parser.add_argument("--assist-model")
     parser.add_argument("--forge-media-origin", action="append")
     parser.add_argument("--forge-access-key", action="append")
     parser.add_argument("--forge-concurrency", type=int)
@@ -1147,7 +1162,7 @@ def main(argv=None) -> int:
     forge_config = None
     if args.forge_api is None and any(getattr(args, name) is not None for name in (
             "forge_media_origin", "forge_access_key", "forge_concurrency", "forge_autopilot_opt_out",
-            "forge_session_message", "forge_request_message")):
+            "forge_session_message", "forge_request_message", "assist_model")):
         parser.error("Forge 옵션은 --forge-api 와 함께 써야 합니다")
     if args.forge_api is not None:
         try:
@@ -1171,7 +1186,7 @@ def main(argv=None) -> int:
                           parent_origins=tuple(dict.fromkeys(parents)), allowed_hosts=tuple(args.allowed_host),
                           dev_handoff=args.dev_handoff, dev_parent_port=args.dev_parent_port,
                           cookie_samesite=args.cookie_samesite, workers=args.workers, trusted_proxies=tuple(args.trusted_proxy),
-                          forge=forge_config)
+                          forge=forge_config, assist_model=args.assist_model)
     try:
         config = _validate_config(config)
     except ValueError as e:

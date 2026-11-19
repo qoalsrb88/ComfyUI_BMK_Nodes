@@ -398,7 +398,7 @@
         "agent_approve": false,
         "ui_v2": false,
         "v2_spec_edit": true,
-        "v2_forge_prompt": false,
+        "v2_forge_prompt": true,
         "v2_auto_prepare": true,
         "v2_crop_model": false,
         "v2_postprocess": false,
