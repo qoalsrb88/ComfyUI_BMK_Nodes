@@ -62578,6 +62578,29 @@ def ux_v2b_invariant_unit():
         check(dump(store.load_manifest(root)["jobs"]) == dump(m0["jobs"]), "V2BI13 로컬에서 반영하면 작업이 프로젝트 값으로 돌아옴")
         check(asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")) is not None, "V2BI13 그 뒤 Run 은 그대로 돈다(드라이런)")
 
+        # 5차 리뷰: 지금 없는 크롭(지워진 영역)의 항목은 로컬을 막지 않는다 — 서버 화면에서 풀 수 없는 항목 때문에 프로젝트가 갇히지 않게
+        put(root, {"gone_crop_1": {"n": 5}})
+        h, _, report = pre.run(h, **largs)
+        check(dump(store.load_manifest(root)["jobs"]) == dump(m0["jobs"]), "V2BI14 로컬판 — 지금 없는 크롭의 항목만 있으면 평소처럼 반영")
+        check(asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")) is not None, "V2BI14 로컬판 — 그때 Run 도 그대로")
+        # 5차 리뷰: 모델·장 수는 같고 품질(또는 2.6 의 복잡도)만 다른 옛 작업도 「프로젝트 값과 다른 작업」이다
+        put(root, {ids["001_square"]: models.gen_bundle(lname, "max")})  # 프로젝트 품질 high · 패치 max — 모델·장 수는 같다
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
+            sh, _, _ = pre.run(h, **largs)
+        check(any(j["quality"] == "max" for j in store.load_manifest(root)["jobs"]), "V2BI14 준비 — 품질만 다른 패치 작업")
+        put(root, {})
+        expect_raises(lambda: asyncio.run(run_node.run(sh, "", 64, 1, 25, False, False, "")),
+                      "V2BI14 로컬판 Run — 품질만 다른 옛 작업도 멈춤(Prepare 를 먼저)", contains="Prepare")
+        h, _, _ = pre.run(sh, **largs)
+        check(asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")) is not None, "V2BI14 로컬에서 반영한 뒤에는 Run 이 돈다")
+        # 5차 리뷰: 로컬의 전환 미리 보기는 반영할 수 없는 프로젝트의 건수를 보이지 않는다
+        put(root, {ids["002_tall"]: {"n": 5}})
+        lsw = pl.switch_preview(root, store.load_manifest(root), dict(pl.defaults(root), prepare=largs), prepare=dict(largs, quality="low"))
+        check("서버 모드에서만" in str(lsw.get("error")) and lsw.get("uncertain") is True and "need" not in lsw,
+              f"V2BI14 로컬판 — 패치별 설정이 있으면 전환 미리 보기는 사유만: {sorted(lsw)}")
+        check("crop_gen.json 을 치워" not in dp._LOCAL_PATCH_SETTINGS and "풀" in dp._LOCAL_PATCH_SETTINGS,
+              "V2BI14 안내 문구는 파일을 치우라고 하지 않는다(치우면 서버에서 반영한 작업이 그대로 남는다)")
+
 def ux_v2b_flow_unit():
     """UX v2-B 갈래를 이은 흐름(감독관 — 통합 뒤): 라우트로 쓴 패치별 설정 → 「반영 필요」 → Prepare → 목록의 applied · 실행 설정 유도는
     프로젝트 값(명세 ❓6) · 동시 제출 수 · 전환 미리 보기 · 계획의 모델별 묶음이 같은 작업 목록을 본다. --quick 포함."""

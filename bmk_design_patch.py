@@ -1976,7 +1976,7 @@ class BMKDesignPatchPrepare:
             gen_entries = store.crop_gen_entries(root)
         except ValueError as exc:
             raise ValueError(f"{_TAG} {exc}") from exc
-        if gen_entries and not compat.server_mode():
+        if not compat.server_mode() and any(c["id"] in gen_entries for c in m["crops"]):
             # 로컬판(ComfyUI 탭)의 승인 창은 프로젝트 값 한 벌만 보인다 — 패치마다 다른 모델·장 수의 작업이 섞이면 보인 것과 나가는 것이
             # 달라진다. 패치별 설정이 있는 프로젝트(서버 모드에서 만든 폴더를 가져온 것)는 로컬에서 반영하지 않는다(아무것도 쓰기 전)
             raise ValueError(f"{_TAG} {_LOCAL_PATCH_SETTINGS}")
@@ -2741,14 +2741,14 @@ def _cand_grid(root: str, keys: list[str], limit: int = 48) -> torch.Tensor:
     return _to_image(_grid(tiles, min(6, len(tiles))))
 
 
-_LOCAL_PATCH_SETTINGS = ("패치별 생성 설정이 있는 프로젝트는 서버 모드에서만 반영·생성합니다 — 서버 모드에서 패치별 설정을 모두 푼 뒤 가져오거나 "
-                         "프로젝트 폴더의 crop_gen.json 을 치워 주세요")
+_LOCAL_PATCH_SETTINGS = ("패치별 생성 설정이 있는 프로젝트는 서버 모드에서만 반영·생성합니다 — 서버 모드에서 패치별 설정을 모두 풀고 "
+                         "반영한 뒤 가져와 주세요")
 
 
 def _local_patch_guard(root: str, m: dict) -> None:
     """로컬판(ComfyUI 탭) Run 의 앞 검사(UX v2-B). crop_gen.json 이 없는 프로젝트(지금까지의 모든 로컬 프로젝트)와 서버 모드는 아무것도
     하지 않는다. 파일이 있으면(서버 모드에서 만든 프로젝트 폴더를 가져온 것): ① 패치별 설정이 남아 있으면 멈춘다(Prepare 와 같은 사유 —
-    Prepare 를 거치지 않은 큐도 막는다) ② 설정은 모두 풀렸어도 매니페스트의 작업이 마지막 반영의 프로젝트 값(prepare_settings 의 모델·장 수)과
+    Prepare 를 거치지 않은 큐도 막는다) ② 설정은 모두 풀렸어도 매니페스트의 작업이 마지막 반영의 프로젝트 값(prepare_settings 의 모델·품질·장 수·복잡도)과
     다르면 멈춘다 — 서버에서 패치별 값으로 반영한 작업이 남은 채 반영 전인 폴더다. 로컬의 승인 창은 패치마다의 모델·장 수를 보이지 않는다.
     무료 다운로드 복구만 남은 큐도 이 검사에 막힌다(로컬에서 Prepare 를 한 번 돌리면 풀린다)."""
     if compat.server_mode() or not os.path.isfile(os.path.join(root, store.CROP_GEN_NAME)):
@@ -2757,11 +2757,18 @@ def _local_patch_guard(root: str, m: dict) -> None:
         entries = store.crop_gen_entries(root)
     except ValueError as exc:
         raise ValueError(f"{_TAG} {exc}") from exc
-    if entries:
+    if any(isinstance(c, dict) and c.get("id") in entries for c in m.get("crops") or []):  # 지금 없는 크롭(지워진 영역)의 항목은 보지 않는다
         raise ValueError(f"{_TAG} {_LOCAL_PATCH_SETTINGS}")
     ps = m.get("prepare_settings")
-    if isinstance(ps, dict) and ps:
-        odd = [j for j in m.get("jobs") or [] if not isinstance(j, dict) or j.get("model") != ps.get("model") or str(j.get("n")) != str(ps.get("n"))]
+    if isinstance(ps, dict) and ps.get("model") and "n" in ps and "quality" in ps:
+        want = models.effective_gen(ps)  # 마지막 반영의 프로젝트 값으로 만든 작업이 가질 모델·품질·장 수(·복잡도)
+
+        def differs(j) -> bool:
+            if not isinstance(j, dict) or j.get("model") != want["model"] or j.get("quality") != want["quality"] or str(j.get("n")) != str(want["n"]):
+                return True
+            return want["model"] in store.COMPLEXITY_MODELS and "complexity" in ps and j.get("complexity") != ps["complexity"]
+
+        odd = [j for j in m.get("jobs") or [] if differs(j)]
         if odd:
             raise ValueError(f"{_TAG} 프로젝트 값과 다른 모델·장 수의 작업이 {len(odd)}개 남아 있습니다(서버 모드에서 패치별 설정으로 반영한 "
                              "작업) — Prepare(반영)를 먼저 실행하세요")

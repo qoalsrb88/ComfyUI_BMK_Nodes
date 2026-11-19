@@ -981,6 +981,9 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
             target["model"] = target["model"].replace("2.5", "2.6")
         target = validate_section("prepare", target)
         entries = store.crop_gen_entries(root)
+        if os.environ.get("BMK_DP_SERVER_MODE") != "1" and any(c.get("id") in entries for c in m.get("crops") or []):
+            # 로컬판은 패치별 설정이 있는 프로젝트를 반영하지 않는다(Prepare 가 같은 사유로 멈춘다) — 건수를 보이지 않는다
+            return {"prepare": target, "error": "패치별 생성 설정이 있는 프로젝트는 서버 모드에서만 반영·생성합니다", "uncertain": True}
         backend = runner.backend_name(root)
         _src, rec = prepare_record(m)
         target_model = models.get(target["model"])
