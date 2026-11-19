@@ -9,10 +9,12 @@
   max_n       한 요청의 장 수 상한(장마다 따로 부르는 모델은 PROVIDER_CALL_LIMIT 를 넘지 않는다 — 잡 하나가 그만큼의 호출이다)
   qualities   품질 선택지. 비어 있으면 품질을 고르지 않는 모델이고 작업의 quality 자리에는 FIXED_QUALITY 가 들어간다
   fan_out     서버가 장마다 공급자를 따로 부른다(잡 하나 = n 번 호출) — 동시 제출 수를 줄이는 근거
-  prompt_used 서버가 실제 쓰인 프롬프트를 돌려준다(「프롬프트가 서버에서 바뀜」 판정을 이 모델에서만 한다)
+  prompt_used 공급자가 프롬프트를 돌려주는 모델이다. 보낸 글과 다른지는 모든 모델에서 판정하고, 이 값은 표지의 이름만 가른다
+              (이 모델 = 「공급자가 프롬프트를 고쳐 씀」, 그 밖 = 「프롬프트가 서버에서 바뀜」)
   opts        품질 말고 모델에만 있는 옵션의 선택지 {이름: (값…)}. 기본값은 opt_defaults(없으면 첫 값). 작업의 opts 와 생성 조건 키에 들어간다
-  ratios      정해진 가로세로비로만 그리는 모델의 비율 목록("가로:세로"). 크롭의 비율이 이 가운데 하나와 RATIO_TOLERANCE 안에서
-              맞을 때만 생성한다 — 맞은 비율은 작업의 opts["aspect_ratio"] 에 적힌다(없으면 발사하지 않는다)
+  ratios      정해진 가로세로비로만 그리는 모델의 비율 목록("가로:세로"). 크롭의 비율이 이 가운데 하나의 예상 출력 비율
+              (RATIO_SIZES 의 가로/세로)과 RATIO_TOLERANCE 안에서 맞을 때만 생성한다 — 맞은 비율은 작업의
+              opts["aspect_ratio"] 에 적힌다(없으면 발사하지 않는다)
   family      같은 계열의 묶음 이름. 표의 순서가 계열 안의 우선순위다(모델이 서버 목록에서 빠지면 다음 것을 권한다)
 
 이름(표의 키)은 프로젝트 기록에 남는 값이다 — 서버의 id 가 바뀌어도 이름은 그대로 두고 checkpoint 만 고친다.
@@ -58,7 +60,10 @@ def _gpt(name: str, checkpoint: str) -> Model:
 
 
 # 정해진 비율로만 그리는 모델(Gemini 계열)의 비율 목록과 해상도 단계. RATIO_SIZES 는 1K 단계의 예상 출력 크기(서버 모델 목록의
-# 해상도 표) — 2K·4K 는 그 2배·4배다. 실제 화소 수는 공급자가 정하므로 이 값은 작업의 size(예상 크기)와 「비율 다름」 판정에만 쓴다.
+# 해상도 표) — 2K·4K 는 그 2배·4배다. 받을 그림의 비율이 이름의 비율과 조금 다르므로(21:9 는 1584×672 = 2.357) 크롭의 비율은
+# 이름이 아니라 이 표의 가로/세로와 맞춘다(받은 그림을 크롭에 놓을 때 늘어나지 않게).
+# 이 표는 생성 조건 키의 재료다(작업의 size 에 들어간다) — 값을 고치면 이 계열의 모든 키가 바뀌어 같은 요청이 다시 과금 대상이
+# 된다. 실제 출력이 표와 다르다는 것을 알게 되면 이 표를 고치지 말고 판정용 표를 따로 둔다.
 RATIOS = ("1:1", "4:5", "3:4", "2:3", "9:16", "5:4", "4:3", "3:2", "16:9", "21:9")
 RATIO_SIZES = {"1:1": (1024, 1024), "4:5": (928, 1152), "3:4": (896, 1200), "2:3": (848, 1264), "9:16": (768, 1376),
                "5:4": (1152, 928), "4:3": (1200, 896), "3:2": (1264, 848), "16:9": (1376, 768), "21:9": (1584, 672)}
@@ -167,13 +172,15 @@ def opts_problem(name, opts) -> str | None:
 
 
 def _ratio(label: str) -> float:
-    a, b = label.split(":")
-    return int(a) / int(b)
+    """그 비율로 받을 그림의 가로/세로(예상 출력 크기의 비율 — 이름의 비율과 1% 남짓까지 다르다)."""
+    w, h = RATIO_SIZES[label]
+    return w / h
 
 
 def match_ratio(name, w, h) -> str | None:
     """크롭 w×h 의 가로세로비가 그 모델의 비율 목록 가운데 하나와 RATIO_TOLERANCE 안에서 맞으면 그 비율("4:5"), 아니면 None.
-    판정식은 abs((w / h) / (가로 / 세로) - 1) <= RATIO_TOLERANCE — 화면(layout_geom.js)도 같은 식을 쓴다."""
+    판정식은 abs((w / h) / (예상 가로 / 예상 세로) - 1) <= RATIO_TOLERANCE, 예상 가로·세로 = RATIO_SIZES[비율] —
+    화면(layout_geom.js)도 같은 식과 같은 표(env 의 ratio_sizes)를 쓴다."""
     m = get(name)
     if m is None or not m.ratios or type(w) is not int or type(h) is not int or w < 1 or h < 1:
         return None
@@ -367,8 +374,8 @@ def availability(name, catalog) -> tuple[bool, str | None, int | None]:
 
 def describe(name, catalog=None, *, checked: bool = False) -> dict:
     """화면에 주는 모델 한 줄(GET env 의 caps.models 항목). checked = 서버 목록을 대조했는가 — 대조하지 않았으면 available 은 참이고
-    max_inputs 는 표의 값이다. opt_defaults = 옵션의 기본값, ratios = 비율 목록(없으면 []), ratio_tolerance = 비율 맞춤의 허용 오차
-    (비율 목록이 없으면 None), family = 계열 이름,
+    max_inputs 는 표의 값이다. opt_defaults = 옵션의 기본값, ratios = 비율 목록(없으면 []), ratio_sizes = 비율마다 예상 출력 크기
+    [가로, 세로](비율 맞춤의 기준 — 없으면 {}), ratio_tolerance = 비율 맞춤의 허용 오차(비율 목록이 없으면 None), family = 계열 이름,
     fallback = 목록에서 빠진 모델 대신 권할 같은 계열 모델의 이름(없으면 None)."""
     m = MODELS[name]
     ok, why, limit = availability(name, catalog) if checked else (True, None, m.max_inputs)
@@ -376,6 +383,7 @@ def describe(name, catalog=None, *, checked: bool = False) -> dict:
             "qualities": list(m.qualities), "default_quality": m.default_quality if m.qualities else None,
             "opts": {key: list(values) for key, values in sorted(m.opts.items())},
             "opt_defaults": {key: m.opt_defaults.get(key, values[0]) for key, values in sorted(m.opts.items())},
-            "ratios": list(m.ratios), "ratio_tolerance": RATIO_TOLERANCE if m.ratios else None, "family": m.family,
+            "ratios": list(m.ratios), "ratio_sizes": {label: list(RATIO_SIZES[label]) for label in m.ratios},
+            "ratio_tolerance": RATIO_TOLERANCE if m.ratios else None, "family": m.family,
             "fallback": family_fallback(name, catalog) if checked else None,
             "max_inputs": limit if limit is not None else m.max_inputs, "max_n": m.max_n, "fan_out": m.fan_out}
