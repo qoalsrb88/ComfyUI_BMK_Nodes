@@ -614,7 +614,8 @@ INSTRUCTION_MAX = 2000
 BODY_MAX = 4000
 _TARGET_HEADS = ("Target:", "Targets (change only these):")
 _BODY_TOKEN = re.compile(r"@image(\d+)")
-_BODY_PLAIN = re.compile(r"\bImage \d+\b")
+_BODY_MENTION = re.compile(r"(?i)@?\s*\bimages?\s*#?\s*\d+")   # 그림 번호로 읽힐 수 있는 모든 표기 — @image1 꼴만 받는다
+_BODY_PLAIN_FRAME = re.compile(r"\bImage \d+ \(@image\d+\)|(?<!@)\bImage \d+: ")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _ADDRESS = re.compile(r"(?im)\b[a-z][a-z0-9+.-]*://|\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b|[A-Za-z]:[\\/]|\\\\"
                       r"|(?:^|[\s\"'(=\[])(?:\.{1,2}/|~/|/)[A-Za-z0-9_.-]")
@@ -651,8 +652,9 @@ def body_problem(body, image_count: int | None = None) -> str | None:
     reserved = _RESERVED_LINE.search(body)
     if reserved:
         return f"프롬프트 본문의 줄은 「{reserved.group(0).strip()}」로 시작할 수 없습니다(프롬프트의 틀이 쓰는 줄 머리)"
-    if _BODY_PLAIN.search(body):
-        return "프롬프트 본문은 그림을 @image1 꼴로 가리켜야 합니다(Image 1 꼴은 쓰지 않음)"
+    odd = next((m.group(0).strip() for m in _BODY_MENTION.finditer(body) if not _BODY_TOKEN.fullmatch(m.group(0).strip())), None)
+    if odd:
+        return f"프롬프트 본문은 그림을 @image1 꼴로만 가리켜야 합니다(「{odd}」 꼴은 쓰지 않음)"
     numbers = [int(n) for n in _BODY_TOKEN.findall(body)]
     if any(n < 1 for n in numbers):
         return "프롬프트 본문의 @image 번호는 1부터입니다"
@@ -735,16 +737,18 @@ def _file_sha(path: str) -> str:
     try:
         st = os.stat(path)
         key = (os.path.normcase(os.path.abspath(path)), st.st_size, st.st_mtime_ns)
-        if key not in _FILE_SHA:
+        value = _FILE_SHA.get(key)
+        if value is None:
             import hashlib
             digest = hashlib.sha256()
             with open(path, "rb") as f:
                 for chunk in iter(lambda: f.read(1024 * 1024), b""):
                     digest.update(chunk)
-            if len(_FILE_SHA) > 4096:
+            value = digest.hexdigest()
+            if len(_FILE_SHA) > 4096:  # 다른 스레드가 비워도 이 호출은 지역 값(value)을 돌려준다
                 _FILE_SHA.clear()
-            _FILE_SHA[key] = digest.hexdigest()
-        return _FILE_SHA[key]
+            _FILE_SHA[key] = value
+        return value
     except OSError:
         return "missing"
 
@@ -832,12 +836,15 @@ def render_body(spec: dict, body: str) -> dict:
         between += list(t.get("must_not") or [])
     if any(isinstance(x, str) and ("\n" in x or "\r" in x) for x in between):
         raise ValueError("타깃 설명에 줄바꿈이 있어 직접 쓴 프롬프트를 넣을 자리를 정할 수 없습니다 — 타깃 설명을 한 줄로 고쳐 주세요")
-    rendered = render(spec)
+    # 본문은 @imageN 으로만 그림을 가리킨다 — 틀도 같은 표기로 맞춘다(실행 설정의 ref_style 이 plain·both 여도. 본문 경로의 글만 달라진다).
+    rendered = render({**spec, "ref_style": "at"})
     lines = rendered["prompt"].split("\n")
     start = next((i for i, line in enumerate(lines) if line in _TARGET_HEADS), None)
     end = next((i for i, line in enumerate(lines) if start is not None and i > start and line.startswith("Preserve: ")), None)
     if start is None or end is None:
         raise ValueError("프롬프트 틀에서 Target·Preserve 줄을 찾지 못했습니다")
+    if _BODY_PLAIN_FRAME.search("\n".join(lines[:start] + lines[end:])):
+        raise ValueError("프롬프트 틀의 그림 표기가 @image 꼴이 아닙니다")
     text = body.replace("\r\n", "\n").replace("\r", "\n").strip()
     problem = body_problem(text, len(rendered["images"]))
     if problem:

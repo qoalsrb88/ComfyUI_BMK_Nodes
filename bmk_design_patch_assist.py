@@ -141,13 +141,12 @@ def _save(root, view, prompt, disconnected):
     crop_id = view["crop_id"]
 
     def decide(cur):
-        if vlm._spec_seen(vlm._spec_path(root, crop_id)) != view["seen"]:
-            raise vlm.SpecConflict(_STALE)
         crop = board._crop(store.load_manifest(root), crop_id)
         if crop is None or vlm.crop_signature(crop) != view["crop_sig"]:
             raise vlm.SpecConflict(_STALE)
-        # 모델·참조 파일은 스펙 파일을 쓰지 않고도 달라질 수 있다.
-        if specs.spec_view(root, crop_id)["input_hash"] != view["input_hash"]:
+        # 표지(seen)는 스펙 파일 + 레퍼런스 구성이다. 모델은 스펙 파일을 쓰지 않고도 달라질 수 있어 입력 지문도 본다.
+        now = specs.spec_view(root, crop_id)
+        if now["seen"] != view["seen"] or now["input_hash"] != view["input_hash"]:
             raise vlm.SpecConflict(_STALE)
         v2 = view["v2"]
         updated = dprompt.v2_update(cur, purpose=v2["purpose"], user_instruction_ko=v2["user_instruction_ko"],

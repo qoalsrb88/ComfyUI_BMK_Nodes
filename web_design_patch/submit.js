@@ -110,9 +110,10 @@ window.DPSubmit = (() => {
 
   async function plan(root, only) {
     if (!server()) return null;
-    const path = "pipeline/plan", query = { root, only };
+    const path = "pipeline/plan", query = only ? { root, only } : { root };
+    // 계획 잠금은 서버 전체에 하나라 다른 요청과 겹치면 202 busy 다 — 0.5초 간격으로 여섯 번까지 읽고, 끝내 바쁘면 그 본문({busy})을 돌려준다.
     let result = await read(path, query);
-    if (result.status === 202 && result.data?.busy) {
+    for (let i = 0; i < 5 && result.status === 202 && result.data?.busy; i++) {
       await delay(500);
       result = await read(path, query);
     }
@@ -178,24 +179,51 @@ window.DPSubmit = (() => {
     paying = true;
     let summary;
     try {
-      const nameError = unnamed((await read("state", { root })).data, ids);
+      const state = (await read("state", { root })).data;
+      const nameError = unnamed(state, ids);
       if (nameError) return failed("unnamed", nameError);
-      let current = await plan(root, only);
-      if (current?.run?.error || !current?.run) return failed("plan_error", current?.run?.error || "계획을 읽지 못했습니다");
-      if (current.apply_pending?.length) {
+      // 아직 반영 전인 새 크롭이 선택에 있으면 계획 라우트는 그 id 를 모른다 — 먼저 반영한 뒤에 그 크롭까지 넣어 계획을 받는다.
+      const known = new Set((state.crops || []).map((c) => c.id));
+      const fresh = [...ids].some((id) => !known.has(id));
+      const pipe = (await read("pipeline", { root })).data;
+      // 실행 설정이 마지막 반영과 다름(모델·장 수 같은 Prepare 설정, 가져오기 설정) — 계획의 apply_pending 에는 없지만 서버는 생성을 막는다.
+      const drifted = (pipe?.drift || []).some((d) => d.section === "prepare" || d.kind === "import");
+      const notes = (p) => (Array.isArray(p.notes) ? p.notes : []);
+      const trouble = (p) => (!p ? failed("plan_error", "계획을 읽지 못했습니다")
+        : p.busy ? failed("busy", "서버가 계획을 계산하는 중입니다 — 잠시 뒤 다시 눌러 주세요")
+        : !p.run || p.run.error ? failed("plan_error", p.run?.error || "계획을 읽지 못했습니다")
+        : p.run.running ? failed("running", "생성이 실행 중입니다 — 끝난 뒤 다시 눌러 주세요") : null);
+      let current = await plan(root, fresh ? [...ids].filter((id) => known.has(id)).join(",") : only);
+      let bad = trouble(current);
+      if (bad) return bad;
+      if (current.apply_pending?.length || fresh || drifted) {
+        // 그림·지시 편집뿐이면 묻지 않고 반영한다. 실행 설정 쪽 사유(계획의 notes)가 있으면 v1 의 반영 확인처럼 먼저 묻는다 —
+        // 설정이 바뀐 반영은 크롭·작업을 바꿔 다시 과금 대상을 만들 수 있다.
+        if (notes(current).length && !await ask(["무료 반영을 먼저 실행합니다(과금 없음). 실행 설정이 마지막 반영과 다릅니다.",
+          ...notes(current), "계속할까요?"], [], "반영 확인")) {
+          return failed("cancelled", "반영을 취소했습니다");
+        }
         const job = await post({ root, stage: "apply" });
         if (!job.ok) return failed("apply_failed", `${job.reason} · ${job.error}`);
         const result = await wait(root, job.prompt_id);
         if (!result.done || !result.ok) {
+          // 끝을 보지 못한 반영(앞선 실행 뒤에 줄 서 있음 등)은 대기에서 뺀다 — 사용자가 모르는 사이 나중에 돌지 않게. 이미 도는 중이면 서버가 그대로 둔다.
+          if (!result.done) {
+            await request("jobs/queue", {}, { method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ root, delete: [job.prompt_id] }) }).catch(() => null);
+          }
           const detail = result.record?.status?.messages?.find(([kind]) => kind === "execution_error")?.[1]?.exception_message;
-          return failed("apply_failed", detail || `무료 반영을 완료하지 못했습니다 (${result.reason || "작업 실패"})`);
+          return { ...failed("apply_failed", detail || `무료 반영을 완료하지 못했습니다 (${result.reason || "작업 실패"})`), prompt_id: job.prompt_id };
         }
         summary = result.record.apply_summary;
         current = await plan(root, only);
-        if (current?.apply_pending?.length) return { ...failed("apply_needed", "반영이 필요합니다"), pending: current.apply_pending, summary };
+        bad = trouble(current);
+        if (bad) return { ...bad, summary };
+        if (current.apply_pending?.length) return { ...failed("apply_needed", "반영이 필요합니다"), pending: current.apply_pending, summary };
       }
-      const run = current?.run;
-      if (!run || run.error) return { ...failed("plan_error", run?.error || "계획을 읽지 못했습니다"), summary };
+      // 반영으로 풀리지 않는 설정 쪽 사유(확인하지 않은 실행 설정 등)가 남아 있으면 승인받지 않는다(v1 의 승인 보류와 같은 조건).
+      if (notes(current).length) return { ...failed("settings_pending", notes(current).join(" · ")), summary };
+      const run = current.run;
       const hash = run.hash;
       if (typeof hash !== "string" || !hash) return { ...failed("nothing_to_approve", "승인할 것이 없습니다"), summary };
       if (run.backend && run.backend !== backend) return failed("no_backend", "생성 백엔드 설정이 바뀌었습니다 — 계획을 다시 확인해 주세요");
@@ -203,8 +231,8 @@ window.DPSubmit = (() => {
       if (backend === "mock") {
         lines = [`[MOCK] 과금 없음 — 생성 ${run.need}건`, "mock 백엔드 — 승인 코드가 mock 에 묶여 있어 유료 실행을 승인하지 못합니다."];
       } else {
-        // v1은 진행 패널의 GET pipeline 응답을 보관한다. v2는 계획에 준비 설정이 없으면 같은 값을 직접 읽는다.
-        const pr = run.prepare || current.prepare || (await read("pipeline", { root })).data.settings?.prepare;
+        // 계획에 준비 설정이 없으면 처음에 읽은 실행 설정(GET pipeline)의 것을 쓴다(v1 이 진행 패널에 보관하는 값과 같다).
+        const pr = run.prepare || current.prepare || pipe?.settings?.prepare;
         if (!pr) return { ...failed("plan_error", "모델 설정을 읽지 못했습니다"), summary };
         lines = [`Forge 로 생성 ${run.need}건을 요청합니다. 사내 사용량이 잡힙니다.`,
           `모델 ${modelText(pr)}`, `잡 ${run.need}건 · 그림 ${run.need * pr.n}장`];
@@ -214,7 +242,9 @@ window.DPSubmit = (() => {
       const warnings = backend === "forge" && run.pre ? [`다시 생성(사전 승인) ${run.pre}건도 함께 실행(선택과 무관) — 사내 사용량이 잡힙니다.`] : [];
       if (!await ask(lines, warnings)) return { ...failed("cancelled", "승인을 취소했습니다"), summary };
       const latest = await plan(root, only);
-      if (latest?.run?.hash !== hash || latest.run.error || latest.apply_pending?.length || window.DPEnv.backend !== backend
+      bad = trouble(latest);
+      if (bad) return { ...bad, summary };  // 계획을 다시 받지 못함(바쁨·실행 중·오류) — '계획이 바뀜'과 구분해 알린다
+      if (latest.run.hash !== hash || latest.apply_pending?.length || notes(latest).length || window.DPEnv.backend !== backend
           || (latest.run.backend && latest.run.backend !== backend)) {
         return { ...failed("stale", "계획이 바뀌었습니다 — 다시 눌러 주세요"), summary };
       }

@@ -60722,12 +60722,12 @@ const model = catalog.find(m => m.fan_out);
 const prepare = { model: model.name, quality: model.default_quality, n: 3, ...model.opt_defaults };
 const base = { run: { hash, need: 2, pre: 1, backend: "forge", prepare }, apply_pending: [] };
 const state = { crops: [{ id: "a", name: "a_미정", layout_diff: { name: "확정" } },
-                        { id: "ignored", name: "선택밖_미정" }], layout_added: [{ id: "b", name: "추가" }] };
+                        { id: "ignored", name: "선택밖_미정" }, { id: "b", name: "추가" }], layout_added: [{ id: "fresh", name: "새 크롭" }] };
 const summary = { jobs: 3, new_jobs: 2, kept_jobs: 1, gone_jobs: 1, old_cands: 4, no_job: ["c"] };
 const completed = { status: { status_str: "success", completed: true }, outputs: {}, apply_summary: summary };
 const reply = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
 
-function studio({ plans = [base], env = {}, board = state, history = [reply({ job: completed })], submit } = {}) {
+function studio({ plans = [base], env = {}, board = state, history = [reply({ job: completed })], submit, pipe = {} } = {}) {
   const doc = new Doc(), calls = [], actions = [], timers = new Map();
   const location = new URL("https://example.org/bmk/design_patch/board/?ui=v2");
   let now = 0, sequence = 0, keys, lockable = true, reads = 0;
@@ -60751,7 +60751,8 @@ function studio({ plans = [base], env = {}, board = state, history = [reply({ jo
       return submit ? submit(body) : reply({ prompt_id: body.stage === "apply" ? "job" : "paid" });
     }
     if (path === "state") return reply(board);
-    if (path === "pipeline") return reply({ settings: { prepare } });
+    if (path === "pipeline") return reply({ settings: { prepare }, drift: [], ...pipe });
+    if (path === "jobs/queue") { actions.push("unqueue"); return reply({ deleted: body.delete }); }
     if (path === "pipeline/plan") {
       const p = next(plans);
       actions.push("plan"); return p.json ? p : reply(p);
@@ -60857,8 +60858,8 @@ for (const auto of [false, true]) await test(auto ? "자동 반영 후 계획·�
   s.click(true); const r = await result;
   eq(r, auto ? { ok: true, prompt_id: "paid", summary } : { ok: true, prompt_id: "paid" });
   eq(s.actions, [...initial, "approve", "plan", "run"]); eq(s.calls.at(-1).body, { root, stage: "run", approve: hash, only });
-  eq(s.calls.map(c => c.path), ["state", "pipeline/plan", ...(auto ? ["jobs/prompt", "jobs/history/job", "pipeline/plan"] : []),
-    "pipeline", "pipeline/plan", "jobs/prompt"]);
+  eq(s.calls.map(c => c.path), ["state", "pipeline", "pipeline/plan", ...(auto ? ["jobs/prompt", "jobs/history/job", "pipeline/plan"] : []),
+    "pipeline/plan", "jobs/prompt"]);
   for (const c of s.calls) {
     if (c.method === "GET") eq(c.query, c.path === "pipeline/plan" ? { root, only } : { root });
     if (c.body?.stage === "apply") eq(c.body, { root, stage: "apply" });
@@ -60899,13 +60900,81 @@ await test("mock 문구·승인 후 해시", async () => {
   s.click(true); assert((await result).ok); eq(s.actions, ["plan", "approve", "plan", "run"]);
   assert.equal(s.calls.at(-1).body.approve, hash);
 });
-await test("계획 202 한 번만 재시도", async () => {
+await test("계획 202 는 0.5초 간격으로 여섯 번까지", async () => {
   const busy = reply({ busy: true }, 202);
-  for (const last of [base, busy]) {
-    const s = studio({ plans: [busy, last, base] }), result = s.api.plan(root, only);
-    await s.advance(499); assert.equal(s.calls.length, 1);
-    await s.advance(1); eq(await result, last === base ? base : { busy: true }); eq(s.calls.map(c => c.at), [0, 500]);
+  const once = studio({ plans: [busy, base] }), first = once.api.plan(root, only);
+  await once.advance(499); assert.equal(once.calls.length, 1);
+  await once.advance(1); eq(await first, base); eq(once.calls.map(c => c.at), [0, 500]);
+  const stuck = studio({ plans: [busy] }), last = stuck.api.plan(root, only);
+  await stuck.advance(2500); eq(await last, { busy: true }); eq(stuck.calls.map(c => c.at), [0, 500, 1000, 1500, 2000, 2500]);
+  await stuck.advance(5000); assert.equal(stuck.calls.length, 6);
+  const none = studio(); await none.api.plan(root, ""); eq(none.calls[0].query, { root });
+});
+// 리뷰 1차(화면 JS): 계획을 받지 못함(바쁨·실행 중)은 '계획이 바뀜'과 구분, 승인 전에 걸러 낸다
+await test("계획이 끝내 바쁘면 busy(승인 상자 없음)", async () => {
+  const s = studio({ plans: [reply({ busy: true }, 202)] }), result = s.paid();
+  await s.advance(2500); const r = await result;
+  assert.equal(r.reason, "busy"); assert(!s.api.asking()); assert(!s.calls.some(c => c.body));
+});
+await test("실행 중이면 running(승인 상자·반영 없음)", async () => {
+  for (const plans of [[{ ...base, run: { ...base.run, running: true } }], [{ ...pending, run: { ...base.run, running: true } }]]) {
+    const s = studio({ plans }), r = await s.paid();
+    assert.equal(r.reason, "running"); assert(!s.api.asking()); assert(!s.calls.some(c => c.body));
   }
+});
+await test("승인 뒤 계획을 다시 받지 못하면 stale 이 아니라 busy·running", async () => {
+  for (const [second, reason, ms] of [[reply({ busy: true }, 202), "busy", 2500], [{ ...base, run: { ...base.run, running: true } }, "running", 0]]) {
+    const s = studio({ plans: [base, second] }), result = s.paid(); await flush();
+    s.click(true); await s.advance(ms);
+    assert.equal((await result).reason, reason); assert(!s.actions.includes("run"));
+  }
+});
+await test("실행 설정 갈라짐: 확인 상자 뒤에만 자동 반영", async () => {
+  const drift = { drift: [{ section: "prepare", field: "model", kind: "cell" }] };
+  const noted = { ...base, notes: ["Prepare 설정 갈라짐: model — 다시 과금 대상"] };
+  const yes = studio({ plans: [noted, base], pipe: drift }), result = yes.paid(); await flush();
+  eq(yes.elements("P").map(p => p.textContent), ["무료 반영을 먼저 실행합니다(과금 없음). 실행 설정이 마지막 반영과 다릅니다.",
+    "Prepare 설정 갈라짐: model — 다시 과금 대상", "계속할까요?"]);
+  assert.equal(yes.doc.activeElement.attrs["aria-label"], "반영 확인"); assert(!yes.actions.includes("apply"));
+  yes.click(true, false); await flush(); assert(!yes.actions.includes("apply"));
+  yes.click(true); await flush();
+  eq(yes.actions.slice(0, 4), ["plan", "approve", "apply", "plan"]);
+  assert(yes.elements("P").some(p => p.textContent.startsWith("Forge 로 생성 2건")));
+  yes.click(true); assert((await result).ok); assert.equal(yes.actions.at(-1), "run");
+  const no = studio({ plans: [noted, base], pipe: drift }), cancelled = no.paid(); await flush();
+  no.click(false); eq(await cancelled, { ok: false, reason: "cancelled", error: "반영을 취소했습니다" });
+  assert(!no.calls.some(c => c.body));
+  // 갈라짐은 있는데 계획이 사유를 싣지 않으면(파일 쪽 변경과 같이) 묻지 않고 반영
+  const quiet = studio({ plans: [base, base], pipe: drift }), q = quiet.paid(); await flush();
+  eq(quiet.actions.slice(0, 3), ["plan", "apply", "plan"]); quiet.click(false); await q;
+});
+await test("반영으로 풀리지 않는 설정 사유가 남으면 승인받지 않음", async () => {
+  const note = "설정 미확인: run.concurrency — 승인 칸 [지금 값으로 확정]";
+  const s = studio({ plans: [{ ...base, notes: [note] }] }), r = await s.paid();
+  assert.equal(r.reason, "settings_pending"); assert.equal(r.error, note); assert(!s.api.asking()); assert(!s.calls.some(c => c.body));
+  const after = studio({ plans: [pending, { ...base, notes: [note] }] }), done = await after.paid();
+  assert.equal(done.reason, "settings_pending"); eq(done.summary, summary); assert(!after.actions.includes("run"));
+});
+await test("승인 사이 설정 사유가 생기면 stale", async () => {
+  const s = studio({ plans: [base, { ...base, notes: ["설정 미확인: run.x"] }] }), result = s.paid(); await flush();
+  s.click(true); assert.equal((await result).reason, "stale"); assert(!s.actions.includes("run"));
+});
+await test("반영 전 새 크롭을 고르면 먼저 반영하고 그 뒤에 그 크롭까지 계획", async () => {
+  const s = studio({ plans: [base, base] });
+  const result = s.api.submitPaid("run", { root, only: "a,fresh" }); await flush();
+  const plans = s.calls.filter(c => c.path === "pipeline/plan").map(c => c.query);
+  eq(plans, [{ root, only: "a" }, { root, only: "a,fresh" }]); eq(s.actions.slice(0, 3), ["plan", "apply", "plan"]);
+  s.click(true); const r = await result; assert(r.ok); eq(s.calls.at(-1).body, { root, stage: "run", approve: hash, only: "a,fresh" });
+  const lone = studio({ plans: [base, base] }), only_new = lone.api.submitPaid("run", { root, only: "fresh" }); await flush();
+  eq(lone.calls.filter(c => c.path === "pipeline/plan").map(c => c.query), [{ root }, { root, only: "fresh" }]); lone.click(false); await only_new;
+});
+await test("끝을 보지 못한 반영은 대기에서 뺀다", async () => {
+  const s = studio({ plans: [pending], history: [reply({})] }), result = s.paid();
+  await s.advance(600000); const r = await result;
+  assert.equal(r.reason, "apply_failed"); assert.equal(r.prompt_id, "job"); assert(s.actions.includes("unqueue"));
+  eq(s.calls.find(c => c.path === "jobs/queue").body, { root, delete: ["job"] }); assert(!s.actions.includes("run"));
+  const broken = studio({ plans: [pending], history: [reply({ job: { status: { status_str: "error", completed: false, messages: [] } } })] });
+  assert.equal((await broken.paid()).reason, "apply_failed"); assert(!broken.actions.includes("unqueue"));
 });
 const readError = reply({ error: "읽기 실패" }, 503);
 await test("기록 재시도 간격·연속 실패 횟수 초기화", async () => {
@@ -61026,7 +61095,8 @@ def ux_v2a_spec_unit():
             check(caps["v2_spec_edit"] is caps["v2_auto_prepare"] is True, "V2P 서버 기능 플래그")
         v = await view()
         check(set(v) == {"ok", "crop_id", "seen", "crop_sig", "v2", "images", "state", "why", "prompt_en", "input_hash", "model"}
-              and v["ok"] and v["crop_id"] == cid and v["seen"] == vlm._spec_seen(str(path))
+              and v["ok"] and v["crop_id"] == cid
+              and v["seen"] == vlm._spec_seen(str(path)) + "." + P.v2_input_hash({}, "", P.v2_roles(spec, root), manual=True)[:12]
               and v["crop_sig"] == vlm.crop_signature(crop) and v["model"] == values["model"]
               and v["state"] == "template" and v["v2"] is v["why"] is v["input_hash"] is None
               and v["prompt_en"] == P.render(spec)["prompt"], "V2P GET 스펙·모델·지문·템플릿 글")
@@ -61050,7 +61120,7 @@ def ux_v2a_spec_unit():
         for field in ("seen", "crop_sig"):
             result = await call("POST", "spec", tokens(v) | {field: "old", "purpose": "vary"}, status=409)
             check(result.get("reason") == "stale" and path.read_bytes() == original_bytes
-                  and vlm._spec_seen(str(path)) == v["seen"], f"V2P {field} 충돌은 파일 불변")
+                  and v["seen"].startswith(vlm._spec_seen(str(path)) + "."), f"V2P {field} 충돌은 파일 불변")
 
         baseline, report = prepare()
         standard = next(j for j in jobs_for(baseline) if j["variant"] == "V1_standard")
@@ -61141,12 +61211,22 @@ def ux_v2a_spec_unit():
         check(v["state"] == "body" and not jobs_for(compacted) and "올라갈 그림 수가 프롬프트를 쓸 때와 다릅니다" in report
               and not dp.runner.plan_calls(compacted, root, only=cid)["pending"], "V2P 평탄화 뒤 실제 그림 수로 막힘")
         ref_file.write_bytes(ref_bytes)
-        v = await edit(v, raw_prompt_override="", ai_auto=True, user_instruction_ko="", purpose="correct")
+        # 리뷰 1차: 스펙 파일은 그대로여도 연결된 그림이 바뀌면 화면이 보던 판(seen)은 낡은 것 — 그 판으로는 저장하지 않는다
+        before_bytes = path.read_bytes()
+        result = await call("POST", "spec", tokens(v) | {"raw_prompt_override": body}, status=409)
+        check(result.get("reason") == "stale" and path.read_bytes() == before_bytes and (await view())["seen"] != v["seen"],
+              "V2P 레퍼런스 그림이 바뀐 뒤 옛 판으로 저장하면 409(파일 불변)")
+        v = await edit(await view(), raw_prompt_override="", ai_auto=True, user_instruction_ko="", purpose="correct")
         check(v["v2"] is None and path.read_bytes() == original_bytes, "V2P 전체 지우기 후 원본 스펙 바이트 복구")
         empty = await view(other["id"])
+        plain_spec = dict(spec, ref_style="plain")
+        check("Image 1" in P.render(plain_spec)["prompt"] and "@image1" not in P.render(plain_spec)["prompt"]
+              and P.render_body(plain_spec, "Fix it in @image1.")["prompt"] == P.render_body(dict(spec, ref_style="at"), "Fix it in @image1.")["prompt"]
+              and "Image 1" not in P.render_body(dict(spec, ref_style="both"), "Fix it in @image1.")["prompt"].replace("@image1", ""),
+              "V2P 본문 경로의 틀은 설정의 표기와 무관하게 @image 꼴")
         changed = await edit(empty, user_instruction_ko="광택")
         cleared = await edit(changed, user_instruction_ko="")
-        check(empty["seen"] == "null" and cleared["v2"] is None and cleared["seen"] != "null"
+        check(empty["seen"].startswith("null.") and cleared["v2"] is None and not cleared["seen"].startswith("null.")
               and json.loads(path.with_name(other["id"] + ".json").read_bytes()) == {}, "V2P 처음 없던 파일은 빈 객체로 남음")
 
         v = await edit(v, user_instruction_ko="광택", raw_prompt_override=body)
@@ -61158,7 +61238,8 @@ def ux_v2a_spec_unit():
             project_style=None, apply_mode="targets", adopt=False, backend="mock", refs_dir=str(refs), glossary={}, out={}))
         drafted = await view()
         check(merged.changed and drafted["v2"] == v["v2"], "V2P 초안 병합이 _v2 보존")
-        await call("POST", "draft/adopt", tokens(drafted) | {"op": "set", "text": "A: polished panel"})
+        # /spec 의 seen 은 스펙 지문 + 레퍼런스 구성 지문이다 — 대상 이름 편집(/draft/adopt)에는 그 라우트의 표지(스펙 지문)를 쓴다
+        await call("POST", "draft/adopt", tokens(drafted) | {"seen": vlm._spec_seen(str(path)), "op": "set", "text": "A: polished panel"})
         adopted = store.load_spec_override(root, cid)
         check(P.v2_of(adopted) == v["v2"] and adopted["_layer_targets"] == "A: polished panel", "V2P 채택 수정도 _v2 보존")
         await edit(await view(), ai_auto=False)
@@ -61699,6 +61780,9 @@ def ux_v2a_body_unit():
     noted = dp.render_body({**single, "notes": "line one\nPreserve: Leave everything outside the frame"}, "Fix the ornament in @image1.")["prompt"].split("\n")
     check(noted.index("Request:") + 2 == next(i for i, line in enumerate(noted) if line.startswith("Preserve: Leave everything outside the target"))
           and noted[-1] == "Preserve: Leave everything outside the frame", "V2B notes 의 줄바꿈·Preserve 꼴은 경계에 닿지 않음")
+    for bad in ("Match the buckle in @Image3.", "Match @image 3.", "see image 3", "Use Image3 here.", "per image #2", "@IMAGE2 only", "images 2 and 3"):
+        check(dp.body_problem(bad, 2) is not None, f"V2B 그림 번호의 다른 표기 거절: {bad}")
+    check(dp.body_problem("Keep the image sharp; add 3 buttons to @image1 (2 images in).", 2) is None, "V2B 그림 번호가 아닌 image 낱말은 통과")
     check(dp.body_problem("Use @image2 and @image1.", 2) is None and dp.body_problem("Use @image2.", None) is None
           and dp.body_problem("Use @image2.", 1) is not None and dp.body_problem(3) is not None, "V2B body_problem 그림 수 대조")
     check(dp.text_problem("오른쪽 어깨 금장을 @참조1 처럼 1:1 비율로 보정", dp.INSTRUCTION_MAX, "지시문") is None
@@ -73295,6 +73379,15 @@ await scenario("FW7 해시 동기 삭제·쿼리 보존·토큰은 세션만",as
   return sync && post[1].method==="POST" && JSON.stringify(JSON.parse(post[1].body))===JSON.stringify(A.session_post.request)
     && new Headers(post[1].headers).get("X-DesignPatch-Request")==="1" && !JSON.stringify(e.ctx.DPEnv).includes("dev:alice")
     && e.calls.filter(([u])=>String(u).endsWith("/env")).length===1;
+});
+await scenario("V2E 옛 서버의 env(v2 플래그 없음)는 화면을 막지 않고 v2 플래그를 false 로",async()=>{
+  // 화면 파일만 새 판이고 서버(파이썬)가 재시작 전이면 GET env 의 caps 에 v2 키가 없다 — 원래 키만 엄격히 본다
+  const old=clone(A.env_local.response);for(const k of Object.keys(old.caps))if(k==="ui_v2"||k.startsWith("v2_"))delete old.caps[k];
+  const e=await boot({handler:(u,o)=>String(u).endsWith("/env")?response(old):serverHandler(u,o)}),env=e.ctx.DPEnv;
+  const kept=Object.keys(old.caps).every(k=>env.caps[k]===old.caps[k])&&JSON.stringify(Object.keys(env.caps).slice(0,Object.keys(old.caps).length))===JSON.stringify(Object.keys(old.caps));
+  const broken=clone(old);delete broken.caps.sam3;
+  const b=await boot({handler:(u,o)=>String(u).endsWith("/env")?response(broken):serverHandler(u,o)});
+  return e.ready&&env.serverMode===false&&kept&&env.can("ui_v2")===false&&env.caps.v2_spec_edit===false&&env.caps.v2_psd_reimport===false&&!b.ready;
 });
 for(const mode of ["404","local"] ) await scenario("FW8 로컬 판정·caps·fetch 원본 "+mode,async()=>{
   const e=await boot({handler:()=>mode==="404"?response({},404):response(A.env_local.response)});

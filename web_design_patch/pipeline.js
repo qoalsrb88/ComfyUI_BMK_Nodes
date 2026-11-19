@@ -1893,7 +1893,7 @@ window.DPPipeline = (() => {
     }
 
     function forgeAsk(need, warnings = [], lines = null) {
-      if (ask) return Promise.resolve(false);
+      if (ask || !window.DPSubmit) return Promise.resolve(false);
       return window.DPSubmit.ask(lines || [`Forge 로 생성 ${need}건을 요청합니다. 사내 사용량이 잡힙니다.`], warnings);
     }
 
@@ -2062,7 +2062,8 @@ window.DPPipeline = (() => {
       render();
       if (SM()) {
         const body = Object.assign({ root: opts.root, stage }, stage === "reroll" ? {} : { approve: hash, only });
-        const d = await window.DPSubmit.post(body);
+        // 공용 모듈(submit.js)이 실리지 않은 화면에서도 잠금(paying)이 남지 않게 — 결과 모름으로 끝낸다
+        const d = window.DPSubmit ? await window.DPSubmit.post(body) : { ok: false, reason: "unknown", error: "작업 제출 모듈을 읽지 못했습니다 — 화면을 새로 고쳐 주세요" };
         paying = null;
         if (d.reason === "unknown") (asked[stage] = asked[stage] || []).push({ hash, id: `server-${Date.now()}`, lost: true });
         else if (submitted(d)) asked[stage] = [];

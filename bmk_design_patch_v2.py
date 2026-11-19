@@ -31,10 +31,20 @@ def _crop(root, m, crop_id):
 
 
 def _inputs(root, m, crop, ov):
-    model = board._route_settings(root, m)["settings"]["prepare"]["model"]
+    prepare = board._route_settings(root, m)["settings"]["prepare"]
+    model = prepare["model"]
     refs_dir = (m.get("source") or {}).get("refs_dir") or ""
     spec = dprompt.spec_from_manifest(crop, None, refs_dir, store.project_glossary(root, m), ov)
-    return model, spec, dprompt.v2_roles(spec, root), dprompt.render(spec)
+    roles = dprompt.v2_roles(spec, root)  # Prepare 처럼 표기(ref_style)를 채우기 전의 스펙으로
+    if "ref_style" not in (ov or {}):  # Prepare 와 같게: 스펙에 없으면 실행 설정의 표기
+        spec["ref_style"] = prepare["ref_style"]
+    return model, spec, roles, dprompt.render(spec)
+
+
+def _token(vlm, root, crop_id, roles):
+    """화면이 본 판의 표지 = 스펙 파일 지문 + 레퍼런스 구성 지문. 스펙 파일이 그대로여도 연결된 그림이 바뀌면(다른 창의 레퍼런스 편집·
+    반영) 화면이 보던 @imageN 이 다른 그림이 된다 — 그 판에서 쓴 글을 저장하지 않게 표지에 함께 넣는다."""
+    return vlm._spec_seen(vlm._spec_path(root, crop_id)) + "." + dprompt.v2_input_hash({}, "", roles, manual=True)[:12]
 
 
 def spec_view(root: str, crop_id: str) -> dict:
@@ -47,8 +57,8 @@ def spec_view(root: str, crop_id: str) -> dict:
         error = error or vlm._targets_error(ov)
         if error:
             raise board._Reject(422, error)
-        seen = vlm._spec_seen(vlm._spec_path(root, crop_id))
         model, spec, roles, rendered = _inputs(root, m, crop, ov)
+        seen = _token(vlm, root, crop_id, roles)
     v2 = dprompt.v2_of(ov)
     state = dprompt.v2_state(v2, model, roles, len(rendered["images"]))
     prompt = rendered["prompt"]
@@ -107,14 +117,14 @@ def _save(root, data):
     crop_id = data["crop_id"]
 
     def decide(cur):
-        if vlm._spec_seen(vlm._spec_path(root, crop_id)) != data["seen"]:
-            raise vlm.SpecConflict("스펙이 다른 곳에서 바뀌었습니다 — 다시 읽기")
         if vlm.crop_signature(crop) != data["crop_sig"]:
             raise vlm.SpecConflict("크롭이 바뀌었습니다 — 다시 읽기")
         error = vlm._targets_error(cur)
         if error:
             raise board._Reject(422, error)
         model, _, roles, rendered = _inputs(root, m, crop, cur)
+        if _token(vlm, root, crop_id, roles) != data["seen"]:
+            raise vlm.SpecConflict("스펙이나 레퍼런스 연결이 다른 곳에서 바뀌었습니다 — 다시 읽기")
         fields = {key: data[key] for key in _FIELDS if key in data}
         new = dprompt.v2_update(cur, **fields) if fields else cur
         if "raw_prompt_override" in data:
