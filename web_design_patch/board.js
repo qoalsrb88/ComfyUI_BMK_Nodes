@@ -221,6 +221,7 @@
       }
       if (d.unchanged && S) {
         if ("agent_approve" in d) S.agent_approve = d.agent_approve;
+        if ("crop_gen_rev" in d) S.crop_gen_rev = d.crop_gen_rev;
         S.running = d.running;
         S.drain = d.drain;
         S.drafting = d.drafting; // S3: Spec Draft 실행 중(옛 서버 = undefined)

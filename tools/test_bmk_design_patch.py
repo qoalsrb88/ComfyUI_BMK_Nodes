@@ -63028,7 +63028,372 @@ def ux_v2b_plan_unit():
     """UX v2-B 갈래 P — 계획의 모델별 묶음 run.groups(D547) · 승인 상자(D548·D549) · DPSubmit.applyChecked(D561) · v1 표시(D558) ·
     안전망 세마포어(D550). --quick 포함."""
     section("UX v2-B — 계획 묶음 · 승인 상자 · 무료 반영 (ux_v2b_plan_unit)")
-    # (갈래 P 가 채운다)
+    from tempfile import TemporaryDirectory
+    from unittest.mock import patch
+    import bmk_design_patch_board as board
+    import bmk_design_patch_forge_backend as fb
+    import bmk_design_patch_jobs as jobs
+    import bmk_design_patch_models as models
+    import bmk_design_patch_runner as runner
+
+    out = OUT_ROOT / "ux_v2b_plan"
+    out.mkdir(parents=True, exist_ok=True)
+    gpt, latest, nano = "gpt-image-2.5-sunburst", "gpt-image-2.6-flare", "nano-banana-2.1"
+    a, b, c = [store.crop_id_for(name) for name in ("001_A", "002_B", "003_C")]
+    only = ",".join((a, b))
+    run_cfg = {"retry_failed": False, "retry_orphans": False}
+
+    def job(cid, variant, model=gpt, n=1, **fields):
+        result = _pl_job(cid, variant, model=model, quality=models.get(model).default_quality, n=n)
+        result.update(fields)
+        return result
+
+    def banana(variant, tier="1K", level="high", ratio="1:1", n=2):
+        return job(a, variant, nano, n, opts={"image_size": tier, "thinking_level": level, "aspect_ratio": ratio},
+                   size=[v * models.IMAGE_SIZES[tier] for v in models.RATIO_SIZES[ratio]])
+
+    with TemporaryDirectory(dir=out) as tmp, patch.object(board, "server_mode", return_value=True), \
+            patch.object(runner, "forge_enabled", return_value=True):
+        root = _pl_project(tmp, "groups", crops=[
+            {"id": cid, "name": name, "layer_name": name, "rect": [0, 0, 256, 256],
+             "targets": store.new_targets(store.parse_crop_layer_name(name), None)} for cid, name in ((a, "001_A"), (b, "002_B"))])
+        m = store.load_manifest(root)
+
+        def select(rows):
+            m["jobs"] = rows
+            store.save_manifest(root, m)
+            return board._run_sel(root, store.load_manifest(root), run_cfg, only, mock=False)
+
+        first = job(a, "v1", n=2, reps=2)
+        second = job(b, "v2", n=2)
+        single = select([first, second])
+        check(single["groups"] == [{"model": gpt, "quality": "max", "need": 3, "images": 6, "fan_out": False, "crops": 2}],
+              "V2BP 같은 조건의 호출·장 수·고유 크롭")
+        second["n"] = 5
+        mixed_n = select([first, second])
+        check(len(mixed_n["groups"]) == 1 and mixed_n["groups"][0]["images"] == 9, "V2BP 장 수가 달라도 한 묶음")
+        pre, done, blocked = job(a, "reroll"), job(a, "done"), job(b, "blocked", quality="invalid")
+        m["rerolls"] = {pre["cell_key"]: 1}
+        store.write_json_atomic(os.path.join(root, "cands", done["cell_key"], "r0.done.json"), {})
+        plan = select([banana("n1"), banana("n2", ratio="4:5"), first, job(b, "low", latest, complexity="low"),
+                       banana("n3", level="minimal"), job(a, "high", latest, complexity="high"), banana("n4", tier="2K"),
+                       job(b, "quality", quality="low"), pre, done, blocked, job(c, "outside")])
+        groups = plan["groups"]
+        check([g["model"] for g in groups] == [latest, latest, gpt, gpt, nano, nano, nano]
+              and [g["complexity"] for g in groups[:2]] == ["low", "high"]
+              and [g["quality"] for g in groups[2:4]] == ["max", "low"], "V2BP 모델 표·첫 등장 순서·복잡도와 품질")
+        check([(g["opts"], g["need"], g["images"], g["crops"]) for g in groups[4:]] == [
+            ({"image_size": "1K", "thinking_level": "high"}, 2, 4, 1),
+            ({"image_size": "1K", "thinking_level": "minimal"}, 1, 2, 1),
+            ({"image_size": "2K", "thinking_level": "high"}, 1, 2, 1)] and all(g["fan_out"] for g in groups[4:]),
+            "V2BP 비율만 달라진 호출은 같은 묶음·해상도와 추론은 분리")
+        _, _, raw_plan, approval = board._run_plans(root, m, run_cfg, only, mock=False)
+        check(sum(g["need"] for g in groups) == plan["need"] == len(approval["needs_approval"]) == 9
+              and plan["hash"] == approval["pending_hash"] and len(raw_plan["done"]) == len(approval["preapproved"]) == 1
+              and len([e for e in approval["blocked"] if e.get("blocked")]) == plan["filtered"] == 1,
+              "V2BP 승인 해시의 호출만 포함·완료·사전 승인·차단·선택 밖 제외")
+        check(select([pre, done, blocked])["groups"] == [], "V2BP 승인 대상 없음")
+        with patch.object(board, "server_mode", return_value=False), patch.object(board, "_mock_active", return_value=True):
+            select([first])
+            spec = _pl_api()["routes"]["GET /pipeline/plan"]
+            local = board.pipeline_plan(root, only_ids=[a], style=False)["run"]
+            diff = _pl_shape(spec["ok"]["run"], local, spec, "run")
+            check("groups" not in local and not diff, f"V2BP 로컬 선택 계획 응답 정본 {diff}")
+
+        def request_slots(current):
+            # 세마포어를 잡은 직후의 중단 판정에서 끝낸다. 클라이언트·카탈로그·원격 요청은 필요 없다.
+            backend = fb.ForgeBackend({"root": root, "options": {"concurrency": 4}, "account": "test",
+                                       "token_of": lambda: object(), "reject_token": lambda *_: None, "stop": lambda: True})
+            with patch.object(asyncio, "Semaphore", wraps=asyncio.Semaphore) as semaphore:
+                try:
+                    asyncio.run(backend.request(current, [], "test"))
+                except runner._interrupt_types():
+                    pass
+                return semaphore.call_args.args[0]
+
+        small, heavy = job(a, "gpt", n=4), banana("eight", n=8)
+        for rows, expected in (([small, heavy], 1), ([small, first], 4)):
+            store.save_manifest(root, dict(m, jobs=rows))
+            check(request_slots(small) == jobs._forge_concurrency(root, 4) == expected, f"V2BP 첫 GPT 작업의 동시 잡 수 {expected}")
+        check(request_slots(heavy) == 1, "V2BP 매니페스트 밖 현재 작업도 상한에 포함")
+        with patch.object(store, "load_manifest", side_effect=ValueError("읽기 실패")):
+            check(request_slots(heavy) == models.job_slots(nano, 4, 8), "V2BP 매니페스트 읽기 실패 시 현재 작업 기준")
+
+        root = _pl_project(tmp, "flags")
+        def state():
+            return board.build_state(root, since_rev=store.load_manifest(root)["rev"])
+
+        def pipeline():
+            request = types.SimpleNamespace(query={"root": root})
+            with patch.object(board, "_root_param", return_value=root):
+                response = asyncio.run(board.pipeline_handler(request))
+            assert response.status == 200, response.text
+            return json.loads(response.text)
+
+        check(pipeline()["crop_overrides"] == {"model": 0, "n": 0} and board.layout_state(root)["crop_models"] == {}
+              and state()["crop_gen_rev"] == board.build_state(root)["crop_gen_rev"] == 0, "V2BP 파일 없음·전체 및 unchanged state")
+        sig = board.pipeline_plan(root, only_ids=[], style=False)["sig"]
+        check(state()["plan_v"] == sig, "V2BP 계산한 계획의 서명")
+        store.update_crop_gen(root, lambda entries: entries.update({a: models.gen_bundle(gpt)}), expect_rev=0)
+        check(state()["plan_v"] is None and state()["crop_gen_rev"] == 1
+              and board.pipeline_plan(root, only_ids=[], style=False)["sig"] != sig, "V2BP 다른 창의 쓰기로 계획 무효화·새 서명")
+        rows = [_layout_crop(name, [0, 0, 256, 256]) for name in ("001_A", "002_B", "003_C")]
+        store.save_manifest(root, dict(store.load_manifest(root), crops=[dict(row, layer_name=row["name"]) for row in rows[:2]]))
+        store.write_json_atomic(os.path.join(root, store.LAYOUT_NAME), _layout_doc(rows[1:]))
+        gone = store.crop_id_for("004_gone")
+        store.update_crop_gen(root, lambda entries: entries.update({
+            b: {"n": 3}, c: dict(models.gen_bundle(nano), n=8), gone: dict(models.gen_bundle(gpt), n=1)}), expect_rev=1)
+        check(pipeline()["crop_overrides"] == {"model": 2, "n": 2} and board.layout_state(root)["crop_models"] == {a: gpt, c: nano}
+              and state()["crop_gen_rev"] == 2, "V2BP 매니페스트·레이아웃 합집합과 고유 모델·장 수")
+        store.update_crop_gen(root, lambda entries: entries[a].update(quality="invalid"), expect_rev=2)
+        check(board.layout_state(root)["crop_models"] == {c: nano}, "V2BP 읽을 수 없는 모델 묶음은 비율 판정에서 제외")
+        Path(root, store.CROP_GEN_NAME).write_bytes(b"{")
+        counts = pipeline()["crop_overrides"]
+        check(counts["model"] == counts["n"] == 0 and counts["error"] and board.layout_state(root)["crop_models"] == {}
+              and state()["crop_gen_rev"] is None, "V2BP 깨진 파일의 응답")
+        with patch.object(board, "server_mode", return_value=False):
+            check("crop_overrides" not in pipeline() and "crop_models" not in board.layout_state(root) and "crop_gen_rev" not in state(),
+                  "V2BP 로컬 응답에 패치별 설정 키 없음")
+        check(store.CROP_GEN_NAME in board._PROJECT_OLD_TRACES, "V2BP 새 프로젝트가 옛 패치 설정을 물려받지 않음")
+
+    node = shutil.which("node")
+    if not node:
+        skip("V2BP node 없음 — 화면 VM 시험 생략")
+        return
+    web = PKG / "web_design_patch"
+    data = out / "input.json"
+    board_js = (web / "board.js").read_text(encoding="utf-8")
+    poll_source = "\n".join(_layout_js_fn(board_js, name) + "\n}" for name in ("refresh", "pollState"))
+    data.write_text(json.dumps({"api": _pl_api(), "models": [models.describe(name) for name in models.MODELS],
+                                "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"), "poll": poll_source}), encoding="utf-8")
+    polling = r'''
+function poller(S, {pipe = null, editor = null}) {
+  let reply, reads = 0;
+  const board = vm.createContext({ S, pipe, editor, editing: !!editor, refsOn: false, polling: false, pollAgain: false, cycle: null,
+    getState: async force => { reads++; if (force) throw Error("예상 밖 전체 state 조회"); return reply; },
+    renderHeader() {}, setConn(msg) { if (msg) throw Error(msg); } });
+  vm.runInContext(IN.poll, board);
+  return async fields => {
+    const before = reads;
+    reply = { unchanged: true, rev: S.rev, running: S.running, drain: S.drain, plan_v: S.plan_v, pipeline_rev: S.pipeline_rev, ...fields };
+    await board.refresh(false);
+    if (reads !== before + 1) throw Error("폴링 횟수 변경");
+  };
+}
+'''
+    h = _PL_JS_HARNESS
+    sections = (("import fs", "async function run("), ("class El {", "async function mouse("),
+                ("function boardState()", 'await scenario("panel"'), ("function quietPipeline(mod)", 'await scenario("panelDrift"'))
+    ui = "\n".join(h[h.index(start):h.index(end, h.index(start))] for start, end in sections)
+    ui += polling + _PAID_STUDIO_JS_HARNESS.split("// ── J-P3 승인 단추:", 1)[0] + r'''
+import assert from "node:assert/strict";
+const api = ctx.window.DPSubmit, root = KEY, only = "a";
+const gpt = { model: "gpt-image-2.5-sunburst", quality: "max", need: 2, images: 5, fan_out: false };
+const nano = { model: "nano-banana-2.1", quality: "standard", need: 1, images: 3, fan_out: true,
+  opts: { image_size: "2K", thinking_level: "high" } };
+const prepare = { ...gpt, n: 4 }, summary = { new_jobs: 2, old_cands: 1, no_job: [] };
+const gptText = gpt.model + " · 품질 max", nanoText = "나노바나나 2.1 · 해상도 2K · 추론 깊게";
+const header = n => "Forge 로 생성 " + n + "건을 요청합니다. 사내 사용량이 잡힙니다.";
+function env() {
+  ctx.window.DPEnv = { serverMode: true, backend: "forge", caps: { models: IN.models }, can: n => n === "jobs" };
+}
+function setup(groups, { need, problem, pipe, history, post } = {}) {
+  env();
+  const doc = ctx.document = new Doc(), calls = [];
+  El.prototype.remove = function() { this.parent.children = this.parent.children.filter(c => c !== this); };
+  ctx.window.DPDialog = { lock: () => true, unlock() {} };
+  const plan = problem || { run: { hash: "123456789abc", backend: "forge", groups,
+    need: need ?? (groups ? groups.reduce((n, g) => n + g.need, 0) : 2) } };
+  ctx.fetch = async (url, init) => {
+    const path = new URL(url).pathname.split("/design_patch/")[1], body = init.body && JSON.parse(init.body);
+    calls.push({ path, query: Object.fromEntries(url.searchParams), body });
+    const routes = { state: [200, { crops: [{ id: only, name: only }] }],
+      pipeline: pipe || [200, { rev: 3, manifest_rev: 9, settings: { prepare } }],
+      "pipeline/plan": [200, plan], "jobs/prompt": post || [200, { prompt_id: "job" }],
+      "jobs/history/job": history || [200, { job: { status: { status_str: "success" }, apply_summary: summary } }],
+      "jobs/queue": [200, {}] };
+    const [status, data] = routes[path];
+    return { status, ok: status < 400, json: async () => data };
+  };
+  const elements = tag => doc.body.all().filter(e => e.tagName === tag);
+  return { doc, calls, paid: () => api.submitPaid("run", { root, only }), apply: () => api.applyChecked({ root }),
+    lines: () => elements("P").map(p => p.textContent), click: ok => elements("BUTTON")[ok ? 0 : 1].fire("click", { isTrusted: true }) };
+}
+const many = Array.from({length: 7}, (_, i) => ({ ...gpt, need: 1, images: i + 1, quality: "q" + i }));
+const detail = g => g.model + " · 품질 " + g.quality + " — 잡 1건 · 그림 " + g.images + "장";
+for (const [name, groups, expected] of [
+  ["단일·혼합 장 수", [gpt], [header(2), "모델 " + gptText, "잡 2건 · 그림 5장"]],
+  ["단일 장별 호출", [nano], [header(1), "모델 " + nanoText, "잡 1건 · 그림 3장", "이 모델은 장마다 따로 생성합니다"]],
+  ["두 묶음", [gpt, nano], [header(3), gptText + " — 잡 2건 · 그림 5장", nanoText + " — 잡 1건 · 그림 3장 · 장마다 따로 생성",
+    "합계 잡 3건 · 그림 8장"]],
+  ["여섯 묶음", many.slice(0,6), [header(6), ...many.slice(0,6).map(detail), "합계 잡 6건 · 그림 21장"]],
+  ["일곱 묶음", many, [header(7), ...many.slice(0,5).map(detail), "그 밖 2종 — 잡 2건 · 그림 13장", "합계 잡 7건 · 그림 28장"]],
+  ["옛 서버", undefined, [header(2), "모델 " + gptText, "잡 2건 · 그림 8장"]]
+]) await scenario(name, async () => {
+  const s = setup(groups), paid = s.paid(); await sleep(1);
+  const lines = s.lines(); s.click(true); assert((await paid).ok);
+  assert.deepEqual(lines, expected); assert.equal(s.calls.at(-1).body.stage, "run"); return true;
+});
+await scenario("묶음 건수 오류", async () => {
+  for (const groups of [[], [gpt]]) {
+    const s = setup(groups, { need: 3 }), r = await s.paid();
+    assert.equal(r.reason, "plan_error"); assert.equal(r.error, "계획의 모델별 건수를 읽지 못했습니다");
+    assert(!api.asking()); assert(!s.calls.some(c => c.body));
+  }
+  return true;
+});
+await scenario("승인 본문을 만들 수 없는 입력", () => {
+  env();
+  for (const bad of [null, {...gpt, images: 1}, {...gpt, need: "2"}, {...gpt, model: ""}, {...gpt, fan_out: "false"}]) {
+    assert.equal(api.approvalLines({need: 2, groups: [bad]}, prepare), null);
+  }
+  return api.approvalLines({need: 2}, null) === null;
+});
+const fixed = {...gpt, images: 8};
+for (const [name, groups, expected] of [
+  ["동일 장 수", [fixed], [header(2), "모델 " + gptText, "잡 2건 · 그림 8장"]],
+  ["혼합 장 수", [gpt], [header(2), "모델 " + gptText, "잡 2건 · 그림 5장"]],
+  ["두 모델", [gpt,nano], [header(3), gptText + " — 잡 2건 · 그림 5장", nanoText + " — 잡 1건 · 그림 3장 · 장마다 따로 생성",
+    "합계 잡 3건 · 그림 8장"]],
+  ["묶음 합계 불일치", [nano], null], ["단추 건수 불일치", [fixed], null],
+  // 계획에 묶음이 있는데 공용 모듈만 옛 판(화면 파일이 섞임)이면 프로젝트 값으로 지어낸 글(「그림 8장」 — 실제는 5장)을 보이지 않고 막는다
+  ["옛 공용 모듈", [gpt], null]
+]) await scenario("v1 승인 " + name, async () => {
+  env(); ctx.window.DPDialog = {lock: () => true, unlock() {}};
+  const need = expected ? groups.reduce((total,g) => total + g.need, 0) : 2;
+  let run = {groups, need, backend: "forge", pre: 0};
+  const helper = api.approvalLines;
+  const e = await mkStudio({P: p => Object.assign(p.settings.prepare, prepare), plan: p => Object.assign(p.run, run)});
+  try {
+    const button = e.B("생성 승인");
+    assert.equal(button.textContent, "생성 승인 " + need + "건");
+    if (name === "옛 공용 모듈") delete api.approvalLines;
+    if (name === "단추 건수 불일치") {
+      run = {...run, groups: [nano], need: 1}; await e.pipe.recalc();
+      assert.equal(e.B("생성 승인").textContent, "생성 승인 1건");
+    }
+    e.click(button);
+    await until(() => e.box() || e.toast("승인할 건수를 확인하지 못했습니다"));
+    if (expected) {
+      const box = e.box();
+      assert.deepEqual(box.all().filter(n => n.tagName === "P").map(n => n.textContent), expected);
+      e.click(e.B("취소", box));
+    } else {
+      assert(!e.box()); assert(e.toast("승인할 건수를 확인하지 못했습니다 — 계획을 다시 받아 주세요"));
+    }
+    return !e.srv.count("jobs/prompt", "POST") && !e.tab.got.length;
+  } finally { api.approvalLines = helper; e.stop(); }
+});
+for (const server of [true,false]) await scenario("unchanged → pipeline 조회 횟수 " + server, async () => {
+  if (server) env(); else delete ctx.window.DPEnv;
+  const e = await mkStudio({S: st => { st.plan_v = null; if (server) st.crop_gen_rev = 0; }});
+  try {
+    const poll = poller(e.S, {pipe: e.pipe}), before = e.srv.count("pipeline");
+    for (const rev of [1,1,null,null,2]) await poll(server ? {crop_gen_rev: rev} : {});
+    return e.srv.count("pipeline") === before + (server ? 3 : 0) && Object.hasOwn(e.S, "crop_gen_rev") === server;
+  } finally { e.stop(); }
+});
+await scenario("표의 복잡도·옛 이름 판정", async () => {
+  setup(); const row = { ...IN.models[0], name: "other" };
+  ctx.window.DPEnv.caps.models = [row];
+  assert(api.modelText({ model: "other", complexity: "low" }).includes("복잡도 low"));
+  row.name = "gpt-image-2.6-test"; row.complexities = [];
+  assert(!api.modelText({ model: row.name }).includes("복잡도"));
+  delete row.complexities; return api.modelText({ model: row.name }).includes("복잡도 high");
+});
+await scenario("명시적 무료 반영·판·요청 순서", async () => {
+  const s = setup(), r = await s.apply();
+  assert.deepEqual(clone(r), { ok: true, prompt_id: "job", summary });
+  assert.deepEqual(s.calls.map(c => c.path), ["pipeline", "pipeline/plan", "jobs/prompt", "jobs/history/job"]);
+  assert.deepEqual(s.calls[1].query, {root}); assert.deepEqual(s.calls[2].body, {root, stage: "apply", expect: "3:9"});
+  return true;
+});
+await scenario("반영 확인·취소·양방향 잠금", async () => {
+  const s = setup(undefined, { problem: { run: {}, notes: ["변경 사유"] } }), apply = s.apply(); await sleep(1);
+  assert.equal(s.doc.activeElement.attrs["aria-label"], "반영 확인");
+  assert.deepEqual(s.lines(), ["무료 반영을 먼저 실행합니다(과금 없음). 실행 설정이 마지막 반영과 다릅니다.", "변경 사유", "계속할까요?"]);
+  assert.equal((await s.paid()).reason, "busy"); s.click(false); assert.equal((await apply).reason, "cancelled");
+  assert(!s.calls.some(c => c.body));
+  const p = setup([gpt]), paid = p.paid(); await sleep(1);
+  assert.equal((await p.apply()).reason, "busy"); p.click(false); await paid; return true;
+});
+await scenario("판·계획 실패·계산 중·실행 중이면 제출 없음", async () => {
+  for (const [options, reason] of [[{ pipe: [500, {}] }, "plan_error"], [{ pipe: [200, { rev: 1 }] }, "plan_error"],
+    [{ problem: { busy: true } }, "busy"], [{ problem: { run: { error: "오류" } } }, "plan_error"],
+    [{ problem: { run: { running: true } } }, "running"]]) {
+    const s = setup(undefined, options); assert.equal((await s.apply()).reason, reason);
+    assert(!api.asking()); assert(!s.calls.some(c => c.body));
+    if (options.pipe) assert.equal(s.calls.length, 1);
+  }
+  const local = setup(); ctx.window.DPEnv.serverMode = false;
+  return (await local.apply()).reason === "server_only" && !local.calls.length;
+});
+await scenario("반영 거절 사유·기록 실패 대기 삭제", async () => {
+  const refused = setup(undefined, { post: [409, { reason: "stale_settings", error: "설정 변경" }] });
+  assert.deepEqual(clone(await refused.apply()), { ok: false, reason: "apply_failed", error: "stale_settings · 설정 변경" });
+  const s = setup(undefined, { history: [500, {}] }), r = await s.apply();
+  assert.equal(r.reason, "apply_failed"); assert.equal(r.prompt_id, "job");
+  assert.equal(s.calls.at(-1).path, "jobs/queue"); assert.deepEqual(s.calls.at(-1).body, { root, delete: ["job"] }); return true;
+});
+for (const count of [undefined, 0, 2]) await scenario("v1 모델 칸·전환 확인 " + count, async () => {
+  env();
+  const e = await mkStudio({ P: p => { p.settings.prepare.model = gpt.model; if (count !== undefined) p.crop_overrides = { model: count, n: 3 }; } });
+  try {
+    await e.pipe.openSettings();
+    const note = "개는 따로 정한 모델을 씁니다 — 새 화면에서 바꿉니다";
+    assert.deepEqual(e.panel.all().filter(n => n.own.includes(note)).map(n => n.own), count ? ["패치 2" + note] : []);
+    const preview = R["GET /pipeline"].ok.switch;
+    if (count !== undefined) preview.kept_overrides = count;
+    let message;
+    ctx.window.DPDialog = { confirm: text => { message = text; return false; } };
+    e.click(e.B("2.6 으로 전환")); await until(() => message !== undefined);
+    assert(message.includes("다음 [반영] 뒤 생성 승인 필요"));
+    return message.includes("패치 2개는 따로 정한 모델을 유지합니다") === !!count && !message.includes("패치 0개");
+  } finally { delete R["GET /pipeline"].ok.switch.kept_overrides; e.stop(); }
+});
+console.log(JSON.stringify(out)); process.exit(0);
+'''
+    layout = _LAYOUT_EDIT_HARNESS.split("// 배치 3-1(F17):", 1)[0] + polling + r'''
+const gpt = IN.models.find(m => m.name.includes("2.5")), nano = IN.models.find(m => m.name === "nano-banana-2.1");
+for (const base of [gpt, nano]) await scenario("크롭별 비율 판정·넓히기 " + base.name, async () => {
+  ctx.window.DPEnv = { serverMode: true, caps: { models: IN.models } };
+  const a = C1(), b = C2(), other = base === nano ? gpt : nano, canvas = [2000,2000];
+  a.rect = [100,100,915,1100]; b.rect = [120,130,935,1130];
+  const e = await editor([a,b], { crop_models: { [b.id]: other.name }, canvas }, { canvas, crops: [a,b], crop_gen_rev: 0 },
+    { savedModel: () => base });
+  try {
+    for (const [crop, model] of [[a,base],[b,other]]) {
+      await e.pick(crop.name);
+      const row = e.list.all().find(n => n.tagName === "LI" && n.children[0].textContent === crop.name);
+      const btn = e.button(e.panel, "모델 비율로 넓히기");
+      if (!!btn !== (model === nano) || row.textContent.includes("비율 안 맞음") !== !!btn) return false;
+      if (btn) { btn.fire("click"); if (!e.panel.textContent.includes("모델 비율로 넓히기 · 4:5")) return false; }
+    }
+    const st = { rev:1, layout_rev:0, crop_gen_rev:0, plan_v:null, canvas, crops:[a,b] };
+    const poll = poller(st, {editor: e.ed}), before = e.srv.gets.length;
+    e.srv.L.crop_models = {}; await poll({crop_gen_rev:1}); await sleep(30); await poll({crop_gen_rev:1});
+    return e.srv.gets.length === before + 1 && !!e.button(e.panel, "모델 비율로 넓히기") === (base === nano) && !e.button(e.panel, "제안 적용");
+  } finally { e.ed.leave(); }
+});
+await scenario("로컬 unchanged → layout 추가 조회 없음", async () => {
+  delete ctx.window.DPEnv;
+  const st = { rev:1, layout_rev:0, plan_v:null, crops:[] }, e = await editor([C1()], {}, st);
+  try {
+    const before = e.srv.gets.length, poll = poller(st, {editor:e.ed});
+    await poll({}); await poll({});
+    return !Object.hasOwn(st, "crop_gen_rev") && e.srv.gets.length === before;
+  } finally { e.ed.leave(); }
+});
+console.log(JSON.stringify(out)); process.exit(0);
+'''
+    for name, script, args in (("submit_pipeline", ui, [data]), ("layout", layout, [web / "layout_geom.js", web / "layout_edit.js", data])):
+        path = out / (name + ".mjs")
+        path.write_text(script, encoding="utf-8", newline="\n")
+        proc = subprocess.run([node, str(path), *map(str, args)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+        check(proc.returncode == 0 and bool(proc.stdout.strip()), f"V2BP {name} VM 실행 {proc.stderr[-1200:]}")
+        if proc.returncode == 0 and proc.stdout.strip():
+            for case, value in json.loads(proc.stdout.strip().splitlines()[-1]).items():
+                check(value is True, f"V2BP {case}" if value is True else f"V2BP {case}: {value}")
 
 
 #
