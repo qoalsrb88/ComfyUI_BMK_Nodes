@@ -6,7 +6,10 @@
 window.DPEnv = (() => {
   // 로컬판의 기능 표(bmk_design_patch_board.LOCAL_CAPS 와 같음 — GET ../env 가 404 인 옛 로컬 서버도 이 표). 서버 전용 둘은 false
   const LOCAL_CAPS = { jobs: false, export_download: false, sam3: true, local_qwen: true, external: true, open_folder: true,
-    path_input: true, ps_mask: true, agent_approve: true };
+    path_input: true, ps_mask: true, agent_approve: true,
+    // UX v2 기능 플래그(로컬판은 모두 false — 서버 모드의 GET ../env 가 열린 것만 true 로 준다)
+    ui_v2: false, v2_spec_edit: false, v2_forge_prompt: false, v2_auto_prepare: false, v2_crop_model: false, v2_postprocess: false,
+    v2_psd_reimport: false };
   // 해시를 다른 모듈·요청이 보기 전에 지운다. 토큰은 세션 교환 뒤 버린다.
   const hash = new URLSearchParams(location.hash.slice(1));
   let token = hash.get("token"), organization = hash.get("organization_id") || "";

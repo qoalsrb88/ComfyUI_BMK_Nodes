@@ -60186,6 +60186,178 @@ console.log(JSON.stringify(out)); process.exit(0);
                 check(ok is True, f"S7 {name}/{key}: {ok}")
 
 
+
+# ══════════════════════════════════════════════════════════════════════
+# UX v2 Phase V2-A (STUDIO_UX_V2A_SPEC — --only 이름 = 묶음)
+# ══════════════════════════════════════════════════════════════════════
+V2_WEB_FILES = re.compile(r"v2\.(?:html|css)|v2_[a-z0-9_]{1,40}\.js")
+# v2 화면 파일(다른 에이전트 소유)이 지켜야 하는 구조 — 파일이 생기면 자동으로 걸린다(D493).
+V2_FORBIDDEN = (
+    (re.compile(r"\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b"), "사설 IP 꼴"),
+    (re.compile(r"""["'`](?:https?:)?//(?!localhost\b|127\.0\.0\.1\b|www\.w3\.org/)[A-Za-z0-9.-]+\.[A-Za-z]{2,}"""), "코드에 적힌 바깥 주소(주소는 서버 응답으로만 받는다)"),
+    (re.compile(r"<form\b", re.I), "<form>(Forge iframe 은 폼 제출을 막는다)"),
+    (re.compile(r"(?<![\w.$])(?:window\.)?(?:alert|confirm|prompt)\s*\("), "네이티브 대화상자(alert·confirm·prompt)"),
+    (re.compile(r"""(?:src|href)\s*=\s*["'](?:https?:)?//""", re.I), "바깥 주소의 스크립트·글꼴·스타일"),
+    (re.compile(r"""@import\s+(?:url\()?\s*["']?(?:https?:)?//""", re.I), "바깥 주소의 CSS @import"),
+    (re.compile(r"""url\(\s*["']?(?:https?:)?//""", re.I), "바깥 주소의 CSS url()"),
+    (re.compile(r"jobs/prompt"), "유료 라우트 직접 호출(공용 모듈 DPSubmit 만)"),
+)
+
+
+def v2_file_problems(name: str, raw: bytes) -> list[str]:
+    """v2 화면 파일 하나의 구조 위반 목록(빈 목록 = 통과)."""
+    probs = []
+    if b"\r" in raw:
+        probs.append("줄바꿈이 LF 가 아님")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return probs + ["UTF-8 이 아님"]
+    for pattern, what in V2_FORBIDDEN:
+        m = pattern.search(text)
+        if m:
+            probs.append(f"{what}: {text[max(0, m.start() - 20):m.end() + 20]!r}")
+    return probs
+
+
+def ux_v2a_entry_unit():
+    """UX v2-A 진입점(명세 D488–D491·D493·D494) — v2 정적 파일 판정·?ui=v2 분기·기능 플래그·v2 파일 구조 검사. --quick 포함."""
+    section("UX v2-A — 진입점 (ux_v2a_entry_unit)")
+    import asyncio
+    import tempfile
+    from aiohttp.test_utils import TestClient, TestServer
+    import bmk_design_patch_board as bd
+    import bmk_design_patch_server as srv
+
+    web = PKG / "web_design_patch"
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(tempfile.mkdtemp(prefix="ux_v2a_entry_", dir=OUT_ROOT.resolve()))
+
+    # ── 구조 검사 자체(가짜 파일로) + 실제 v2 파일
+    bad = {
+        "적힌 주소": b'const u = "https://studio.internal.example/x";\n',
+        "적힌 주소(프로토콜 없음)": b"const u = '//studio.internal.example/x';\n",
+        "사설 IP": b'fetch("http://10.20.30.40:8789/a");\n',
+        "사설 IP(192)": b'const h = "192.168.0.12";\n',
+        "폼": b'<form action="/x"></form>\n',
+        "alert": b'  alert("x");\n',
+        "window.confirm": b'if (window.confirm("x")) {}\n',
+        "prompt": b'const v = prompt("x");\n',
+        "바깥 스크립트": b'<script src="https://cdn.example/x.js"></script>\n',
+        "바깥 글꼴": b'<link rel="stylesheet" href="//fonts.example/css">\n',
+        "바깥 import": b'@import url("https://fonts.example/css");\n',
+        "바깥 url": b'src: url(https://fonts.example/a.woff2);\n',
+        "유료 라우트": b'fetch(api("jobs/prompt"), {method: "POST"});\n',
+        "CRLF": b'const a = 1;\r\n',
+    }
+    for label, raw in bad.items():
+        check(v2_file_problems("v2_x.js", raw), f"V2E 구조 검사가 잡음: {label}")
+    good = ('const ok = await DPDialog.confirm(["x"]);\nel.prompt("x");\nstore.confirmDelete();\n'
+            '<script src="v2_app.js"></script>\n<link rel="stylesheet" href="v2.css">\nbackground: url(forge-font-0123456789abcdef.woff2);\n'
+            'const r = await DPSubmit.submitPaid("run", {root});\nawait postJson("prompt/assist", payload);\n// 버전 1.72.0 · 비율 10.5 는 주소가 아니다\n'
+            'const API = new URL("../", location.href);\nconst dev = "http://localhost:8790";\nconst SVG_NS = "http://www.w3.org/2000/svg";\n// 설명 글의 https://example.com 은 문자열이 아니다\n').encode()
+    check(v2_file_problems("v2_x.js", good) == [], f"V2E 구조 검사가 정상 코드를 통과시킴: {v2_file_problems('v2_x.js', good)}")
+    present = sorted(f.name for f in web.iterdir() if f.is_file() and f.name.startswith("v2"))
+    check(all(V2_WEB_FILES.fullmatch(name) for name in present), f"V2E web_design_patch 의 v2* 파일 이름 꼴: {present}")
+    for name in present:
+        probs = v2_file_problems(name, (web / name).read_bytes())
+        check(probs == [], f"V2E {name} 구조: {probs}")
+    MEASURED.append(f"UX v2 화면 파일 {len(present)}개 구조 검사")
+
+    # ── 이름 꼴 판정(서버 모드에서만 v2 이름)
+    names_ok = ("v2.html", "v2.css", "v2_app.js", "v2_api.js", "v2_canvas2.js", "v2_a_b.js")
+    names_no = ("v2.js", "v2_.js", "v2_App.js", "v2_app.mjs", "v2_app.js.map", "v2-app.js", "v2.htm", "v2_app.css", "v22.html",
+                "../v2.html", "v2_" + "a" * 41 + ".js", "v2.html ", "V2.html", "x_v2_app.js", "LICENSE-lucide.txt")
+    old_mode = os.environ.get(bd.SERVER_ENV)
+    old_web = bd.WEB_DIR
+    try:
+        bd.set_server_mode(False)
+        check(all(bd.static_type(n) is None for n in names_ok + names_no), "V2E 로컬판은 v2 이름을 받지 않음")
+        check(bd.static_type("board.html") == "text/html" and bd.static_type("board.js") == "text/javascript", "V2E 로컬판 기존 파일 그대로")
+        check(bd.v2_available() is False, "V2E 로컬판 v2_available false")
+        bd.set_server_mode(True)
+        check([bd.static_type(n) for n in names_ok] == ["text/html", "text/css"] + ["text/javascript"] * 4, "V2E 서버 모드 v2 이름 꼴 → content type")
+        check(all(bd.static_type(n) is None for n in names_no), f"V2E 꼴이 아닌 이름 거절: {[n for n in names_no if bd.static_type(n)]}")
+        check(bd.static_type(None) is None and bd.static_type(3) is None, "V2E 문자열 아닌 이름")
+        check(all(not n.startswith("v2") for n in bd._STATIC), "V2E _STATIC 표에는 v2 이름을 적지 않음")
+    finally:
+        bd.set_server_mode(old_mode == "1")
+
+    check(set(bd.V2_CAPS) <= set(bd.LOCAL_CAPS) and all(bd.LOCAL_CAPS[n] is False for n in bd.V2_CAPS), "V2E 로컬 caps 의 v2 플래그는 모두 false")
+    check(list(bd.LOCAL_CAPS)[-len(bd.V2_CAPS):] == list(bd.V2_CAPS), "V2E v2 플래그는 기존 caps 키 뒤에(기존 키 순서 그대로)")
+    env_js = (web / "env.js").read_text(encoding="utf-8")
+    local_js = env_js[env_js.index("const LOCAL_CAPS = {"):env_js.index("};", env_js.index("const LOCAL_CAPS = {"))]
+    check(all(f"{name}: {'true' if value else 'false'}" in local_js for name, value in bd.LOCAL_CAPS.items()),
+          "V2E env.js 의 로컬 기능 표가 서버 표(LOCAL_CAPS)와 같음")
+
+    # ── 서버: ?ui=v2 분기 · caps.ui_v2 · 파일 제공
+    def serve(web_dir):
+        bd.WEB_DIR = str(web_dir)
+        app = srv.make_app(srv.ServerConfig(str(out / "data"), dev_handoff=True))
+        return TestClient(TestServer(app))
+
+    async def run():
+        # ① v2 파일이 없는 화면 폴더(임시 폴더에 v1 파일만)
+        plain = out / "web_plain"
+        plain.mkdir()
+        (plain / "board.html").write_bytes(b"<!doctype html><title>v1</title>\n")
+        async with serve(plain) as client:
+            r = await client.get(bd.API + "/env")
+            caps = (await r.json())["caps"]
+            check(all(caps[n] is False for n in bd.V2_CAPS), f"V2E v2 파일 없음 → v2 플래그 모두 false: {caps}")
+            for url in ("/board/", "/board/?ui=v2", "/board/?ui=v2&root=abc", "/board/?ui=V2", "/board/?ui="):
+                r = await client.get(bd.API + url)
+                check(r.status == 200 and b"<title>v1</title>" in await r.read(), f"V2E v2 파일 없음 → v1 화면: {url}")
+            r = await client.get(bd.API + "/board/v2.html")
+            check(r.status == 404, "V2E 없는 v2.html 은 404")
+            r = await client.get(bd.API + "/board?ui=v2&root=abc", allow_redirects=False)
+            check(r.status == 302 and r.headers["Location"].endswith("/board/?ui=v2&root=abc"), "V2E /board 리다이렉트가 쿼리를 유지")
+        # ② v2 파일이 있는 화면 폴더
+        full = out / "web_v2"
+        full.mkdir()
+        (full / "board.html").write_bytes(b"<!doctype html><title>v1</title>\n")
+        (full / "v2.html").write_bytes(b"<!doctype html><title>v2</title>\n")
+        (full / "v2.css").write_bytes(b"body{}\n")
+        (full / "v2_app.js").write_bytes(b"const a = 1;\n")
+        (full / "v2_secret.txt").write_bytes(b"x\n")
+        (full / "notes.md").write_bytes(b"x\n")
+        async with serve(full) as client:
+            r = await client.get(bd.API + "/env")
+            body = await r.json()
+            check(body["caps"]["ui_v2"] is True, "V2E v2.html 있음 → caps.ui_v2 true")
+            check(all(body["caps"][n] is False for n in ("v2_crop_model", "v2_postprocess", "v2_psd_reimport")), "V2E 아직 없는 기능 플래그는 false")
+            r = await client.get(bd.API + "/board/?ui=v2&root=abc")
+            check(r.status == 200 and b"<title>v2</title>" in await r.read() and r.headers["Content-Type"].startswith("text/html")
+                  and r.headers.get("Cache-Control") == "no-store" and r.headers.get("X-Content-Type-Options") == "nosniff",
+                  "V2E ?ui=v2 → v2.html(캐시 금지·nosniff)")
+            for url in ("/board/", "/board/?root=abc", "/board/?ui=v1", "/board/?ui=V2", "/board/?ui=v2x"):
+                r = await client.get(bd.API + url)
+                check(r.status == 200 and b"<title>v1</title>" in await r.read(), f"V2E ui=v2 가 아니면 v1: {url}")
+            r = await client.get(bd.API + "/board/board.html?ui=v2")
+            check(r.status == 200 and b"<title>v1</title>" in await r.read(), "V2E 파일 이름을 준 요청은 ui 쿼리를 보지 않음")
+            for name, ctype in (("v2.html", "text/html"), ("v2.css", "text/css"), ("v2_app.js", "text/javascript")):
+                r = await client.get(bd.API + "/board/" + name)
+                check(r.status == 200 and r.headers["Content-Type"].startswith(ctype), f"V2E {name} 제공")
+            for name in ("v2_secret.txt", "notes.md", "v2_missing.js", "v2_App.js"):
+                r = await client.get(bd.API + "/board/" + name)
+                check(r.status == 404, f"V2E 꼴이 아니거나 없는 파일 404: {name}")
+            r = await client.get(bd.API + "/board/v2.html")
+            check("frame-ancestors" in r.headers.get("Content-Security-Policy", ""), "V2E v2 화면도 서버 공통 헤더")
+
+    try:
+        asyncio.run(run())
+    finally:
+        bd.WEB_DIR = old_web
+        bd.set_server_mode(old_mode == "1")
+    check(Path(bd.WEB_DIR) == web, "V2E 시험 뒤 화면 폴더 원복")
+    check(os.environ.get(bd.SERVER_ENV) == old_mode, "V2E 시험 뒤 서버 모드 플래그 원복")
+
+    # ── 서버 실행 인자 --web-dir(개발용)
+    src = (PKG / "bmk_design_patch_server.py").read_text(encoding="utf-8")
+    check('parser.add_argument("--web-dir")' in src and "not args.dev_handoff or not os.path.isfile" in src,
+          "V2E --web-dir 는 개발 모드에서만·board.html 이 있는 폴더만")
+
+
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -72370,6 +72542,8 @@ if __name__ == "__main__":
         forge_import1_server_unit()
     if want("forge_import1_js_unit"):
         forge_import1_js_unit()
+    if want("ux_v2a_entry_unit"):
+        ux_v2a_entry_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")

@@ -809,6 +809,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             result = {"server_mode": True, "session": session is not None, "account": account(session),
                     "session_url": "/api/session", "prefs_url": "/api/preferences",
                     "caps": {name: name in ("jobs", "export_download") for name in board.LOCAL_CAPS}, "backend": "mock"}
+            result["caps"]["ui_v2"] = await asyncio.to_thread(board.v2_available)
             if accounts is not None:
                 result["backend"] = "mock" if os.environ.get("BMK_DP_MOCK_API", "").strip().lower() in ("1", "true", "yes", "on") else "forge"
                 result["caps"].update(forge_import=bool(forge_routes), forge_save=bool(forge_routes))
@@ -1136,6 +1137,7 @@ def main(argv=None) -> int:
     parser.add_argument("--forge-autopilot-opt-out")
     parser.add_argument("--forge-session-message")
     parser.add_argument("--forge-request-message")
+    parser.add_argument("--web-dir")
     args = parser.parse_args(argv)
     forge_config = None
     if args.forge_api is None and any(getattr(args, name) is not None for name in (
@@ -1170,6 +1172,16 @@ def main(argv=None) -> int:
     except ValueError as e:
         parser.error(str(e))
     os.environ["BMK_DP_SERVER_MODE"] = "1"  # Design Patch 모듈을 더 import 하기 전에 건다.
+    if args.web_dir is not None:
+        # 개발용: 화면 파일만 다른 작업 폴더(worktree)의 것을 준다 — 서버 코드는 이 폴더의 것 그대로(V2-A D494).
+        web_dir = os.path.realpath(os.path.abspath(args.web_dir))
+        if not args.dev_handoff or not os.path.isfile(os.path.join(web_dir, "board.html")):
+            parser.error("--web-dir 는 --dev-handoff 와 함께, board.html 이 있는 화면 폴더에만 씁니다")
+        try:
+            from . import bmk_design_patch_board as board_module
+        except ImportError:
+            import bmk_design_patch_board as board_module
+        board_module.WEB_DIR = web_dir
 
     async def serve():
         runners = []
