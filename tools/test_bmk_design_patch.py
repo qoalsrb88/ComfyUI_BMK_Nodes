@@ -62107,6 +62107,22 @@ V2B_PINNED = {
     "nano-banana-2": "4a647e0c60da5449dd60b7ab257eced725b14c4030e4a3c3b2ba75982038ffa9",
     "nano-banana-pro": "197ad9230a9f4fe89bd5de6d6a64fa9aa557f6d43e008b84562aa3fe8cdf7176",
 }
+# 같은 프로젝트를 셀당 호출 2 로 두 번 Prepare 한 둘째 결과(이전 작업 이어받기·「기존 N」·예상 후보 수) — 서버 모드 9개 + 로컬판 4개.
+V2B_PINNED_RERUN = {
+    "server:gpt-image-2.6-sunburst": "9fb1a2333b4cb1a99b2473ebe9604ec7b3c2a4fa2b119810dd44e86a09194d6d",
+    "server:gpt-image-2.6-flare": "2f4e7e90d5cc86d2905c9c5818313191175fe7afa51f3601d7f17859e5050fb8",
+    "server:gpt-image-2.5-sunburst": "b8368c4860a6a40e097ceb2f65f97c2a819d348bd54a166d8d6ab05a654d7cd6",
+    "server:gpt-image-2.5-flare": "a8c755423f76e84c8bf36d374b3cbf883eaf04c19967a42690702ca4050ea6e0",
+    "server:seedream-5.5": "3367fc49b1a56cf037eb97788b1af739ad1d367e097121ef29632f0ae2a06504",
+    "server:ideogram-4.5": "d5ae05ee392804bf6808adc3192acf22e6ce815a70022b4e9a8890830c2ffda9",
+    "server:nano-banana-2.1": "34a7a57ec30eebac2ab6aa5b9951b205fe2e14bf9ce847827b3dc2578fe6ea22",
+    "server:nano-banana-2": "838365211f331f10dea2984320730c6010e2c311afcab1daa7c7aa51f828e133",
+    "server:nano-banana-pro": "ff80c75525f4b70f50064cd2e343ee3adc5265b573c051f8389efc1cf207668c",
+    "local:gpt-image-2.6-sunburst": "9fb1a2333b4cb1a99b2473ebe9604ec7b3c2a4fa2b119810dd44e86a09194d6d",
+    "local:gpt-image-2.6-flare": "2f4e7e90d5cc86d2905c9c5818313191175fe7afa51f3601d7f17859e5050fb8",
+    "local:gpt-image-2.5-sunburst": "b8368c4860a6a40e097ceb2f65f97c2a819d348bd54a166d8d6ab05a654d7cd6",
+    "local:gpt-image-2.5-flare": "a8c755423f76e84c8bf36d374b3cbf883eaf04c19967a42690702ca4050ea6e0",
+}
 V2B_RECTS = [("001_square", [0, 0, 256, 256]), ("002_tall", [256, 0, 448, 344]), ("003_wide", [448, 0, 748, 100]),
              ("004_panel", [0, 400, 192, 528])]
 
@@ -62164,13 +62180,13 @@ def _v2b_pack(m, report):
 
 
 @contextlib.contextmanager
-def _v2b_env(dp, out):
-    """서버 모드 · Forge 백엔드 이름 · mock 원장 · 고정 시각 — Prepare 보고의 시간·백엔드 줄이 실행마다 같게."""
+def _v2b_env(dp, out, server=True):
+    """서버 모드(server=False 면 로컬판) · Forge 백엔드 이름 · mock 원장 · 고정 시각 — Prepare 보고의 시간·백엔드 줄이 실행마다 같게."""
     from unittest.mock import patch
     rn = dp.runner
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(dp.folder_paths, "get_output_directory", return_value=str(out / "output")))
-        stack.enter_context(patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1", rn.MOCK_ENV: ""}))
+        stack.enter_context(patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1" if server else "", rn.FORGE_ENV: "1" if server else "", rn.MOCK_ENV: ""}))
         stack.enter_context(patch.object(rn, "mock_enabled", return_value=True))
         stack.enter_context(patch.object(dp.time, "time", return_value=1000.0))
         yield
@@ -62200,8 +62216,23 @@ def ux_v2b_core_unit():
             check(printed[name] == V2B_PINNED.get(name), f"V2BC1 파일 없는 프로젝트의 Prepare 바이트 불변 {name}")
             check(m["prepare_inputs"] == _v2b_old_inputs_fp(root, m), f"V2BC1 파일 없는 프로젝트의 입력 지문 식 불변 {name}")
             check(not Path(root, "crop_gen.json").exists(), f"V2BC1 Prepare 는 패치별 생성 설정 파일을 만들지 않음 {name}")
+    # ── 리뷰 1차(시험 빈틈): 다시 실행(이전 작업 이어받기·보고의 「기존 N」)·셀당 호출 2(예상 후보 수)·로컬판도 e9b16ee 와 바이트가 같다
+    for server in (True, False):
+        with _v2b_env(dp, out, server=server):
+            for name in (models.MODELS if server else models.LOCAL_MODELS):
+                tag = ("server:" if server else "local:") + name
+                h, root, _ids = _v2b_project(dp, out, tag.replace(":", "-"), name)
+                args = _v2b_args(pl, name, calls_per_cell=2)
+                h, _, _ = pre.run(h, **args)
+                h, _, report = pre.run(h, **args)
+                m = store.load_manifest(root)
+                printed[tag] = _v2b_pack(m, report)
+                check(printed[tag] == V2B_PINNED_RERUN.get(tag), f"V2BC1 다시 실행·셀당 호출 2 의 Prepare 바이트 불변 {tag}")
+                check("예상 후보 " + str(len(m["jobs"]) * 2 * 2) + "장" in report and f"(신규 0 · 기존 {len(m['jobs'])})" in report,
+                      f"V2BC1 다시 실행 보고의 예상 후보·기존 수 {tag}")
     if os.environ.get("DP_V2B_PRINT"):
         print(json.dumps(printed, indent=1))
+        return
 
     # ── 모델 표: 복잡도 선택지 = 2.6 계열, 화면용 한 줄의 새 칸(D554)
     check({n for n, m in models.MODELS.items() if m.complexities} == set(store.COMPLEXITY_MODELS)
@@ -62473,6 +62504,133 @@ def ux_v2b_invariant_unit():
         before = Path(root, store.MANIFEST_NAME).read_bytes()
         expect_raises(lambda: pre.run(h, **args), "V2BI9 깨진 패치별 생성 설정 파일이면 반영 실패")
         check(Path(root, store.MANIFEST_NAME).read_bytes() == before, "V2BI9 실패한 반영은 매니페스트를 바꾸지 않음")
+
+        # ── 리뷰 1차: 읽지 못한 항목의 「작업 없음」은 채택 가드 뒤에 — 채택 미반영 크롭이면 입력 지문을 올리지 않는다(「반영 필요」 유지),
+        #    그 크롭의 스펙 JSON 이 깨졌으면 지금처럼 반영 전체가 실패한다(항목 때문에 조용히 건너뛰지 않는다)
+        h, root, ids = _v2b_project(dp, out, "adopt", "gpt-image-2.5-sunburst")
+        h, _, _ = pre.run(h, **args)
+        m0 = store.load_manifest(root)
+        spec_path = Path(root, "specs", ids["001_square"] + ".json")
+        spec_path.write_bytes(json.dumps({"_layer_targets": "A: 금장; B: 리본"}, ensure_ascii=False).encode("utf-8"))
+        crop = next(c for c in m0["crops"] if c["id"] == ids["001_square"])
+        stale = store.adopt_stale(crop, store.load_spec_override(root, crop["id"]))
+        check(bool(stale) and not stale.startswith("채택 확인 못 함"), f"V2BI10 준비 — 채택 미반영 크롭: {stale!r}")
+        h, _, _ = pre.run(h, **args)
+        kept = store.load_manifest(root)["prepare_inputs"]
+        check(kept == m0["prepare_inputs"] != store.prepare_inputs_fp(root, m0), "V2BI10 기준 — 채택 미반영이면 입력 지문을 올리지 않음")
+        put(root, {ids["001_square"]: {"model": "retired-model"}})
+        h, _, report = pre.run(h, **args)
+        m = store.load_manifest(root)
+        check(m["prepare_inputs"] == kept != store.prepare_inputs_fp(root, m),
+              "V2BI10 읽지 못한 항목이 겹쳐도 채택 미반영의 「반영 필요」는 남음(입력 지문을 올리지 않음)")
+        check(not [j for j in m["jobs"] if j["crop_id"] == ids["001_square"]] and "다음 반영 때 적용" in report, "V2BI10 그 크롭은 채택 가드의 작업 없음")
+        spec_path.write_bytes(b"{")
+        expect_raises(lambda: pre.run(h, **args), "V2BI11 스펙 JSON 이 깨진 크롭은 항목을 읽지 못해도 반영 전체 실패(지금 그대로)")
+
+
+def ux_v2b_flow_unit():
+    """UX v2-B 갈래를 이은 흐름(감독관 — 통합 뒤): 라우트로 쓴 패치별 설정 → 「반영 필요」 → Prepare → 목록의 applied · 실행 설정 유도는
+    프로젝트 값(명세 ❓6) · 동시 제출 수 · 전환 미리 보기 · 계획의 모델별 묶음이 같은 작업 목록을 본다. --quick 포함."""
+    section("UX v2-B — 갈래를 이은 흐름 (ux_v2b_flow_unit)")
+    from tempfile import mkdtemp
+
+    dp = _dp_package()
+    bd, pl, rn = dp.board, dp.board.pl, dp.runner
+    models = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_models")
+    cropgen = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_cropgen")
+    jobs_mod = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_jobs")
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="ux_v2b_flow_", dir=OUT_ROOT.resolve()))
+    scope = _fj_scope(out / "home")
+    pre = dp.BMKDesignPatchPrepare()
+    project = "gpt-image-2.6-sunburst"
+
+    def rows_of(_scope):
+        return {name: models.describe(name) for name in models.MODELS}, False
+
+    def view(key, data=None):
+        token = bd.set_scope(scope)
+        try:
+            return cropgen._request(key, rows_of, data)
+        finally:
+            bd.reset_scope(token)
+
+    def by_id(v):
+        return {r["crop_id"]: r for r in v["crops"]}
+
+    with _v2b_env(dp, out):
+        h, root, ids = _v2b_project(dp, scope["input"], "flow", project)
+        a, b, c, d = (ids[name] for name, _ in V2B_RECTS)  # 001 템플릿 · 002 직접 입력 · 003 작업 없음 · 004 AI 작성
+        args = _v2b_args(pl, project)
+        pl.update(root, 0, "prepare", args)
+        key = store.root_key(root)
+        h, _, report = pre.run(h, **args)
+        m0 = store.load_manifest(root)
+        check(_v2b_pack(m0, report) == V2B_PINNED[project], "V2BF1 기준 Prepare(파일 없음) = 불변 다이제스트")
+        first = view(key)
+        check(first["seen"] == 0 and all(r["applied"] and r["gen"] is None for r in first["crops"]),
+              f"V2BF1 반영 직후 모든 패치 applied(작업 없는 패치 포함): {[(r['crop_id'], r['applied']) for r in first['crops']]}")
+        settings = bd._route_settings(root, m0)["settings"]
+        check(bd._apply_pending(root, m0, settings) == [], "V2BF1 반영 직후 「반영 필요」 없음")
+
+        # ── 라우트로 한 판에 셋: 001 → Ideogram 4.5 low · 002 → 나노바나나 2.1 1K · 004 → 장 수 3
+        saved = view(key, {"root": key, "seen": 0, "changes": [
+            {"crop_ids": [a], "patch": {"model_id": "ideogram-4.5", "quality": "low"}},
+            {"crop_ids": [b], "patch": {"model_id": "nano-banana-2.1", "opts": {"image_size": "1K"}}},
+            {"crop_ids": [d], "patch": {"count": 3}}]})
+        rows = by_id(saved)
+        check(saved["seen"] == 1 and saved["changed"] and not rows[a]["applied"] and not rows[b]["applied"] and not rows[d]["applied"]
+              and rows[c]["applied"] is False, f"V2BF2 쓰고 나면 반영 전(applied false): {[(r['crop_id'], r['applied']) for r in saved['crops']]}")
+        check(Path(root, store.MANIFEST_NAME).read_bytes() and store.load_manifest(root)["jobs"] == m0["jobs"], "V2BF2 쓰기는 작업 목록을 건드리지 않음")
+        pending = bd._apply_pending(root, store.load_manifest(root), settings)
+        check(any("Prepare 입력이 바뀜" in p for p in pending), f"V2BF2 패치별 설정을 쓰면 「반영 필요」: {pending}")
+
+        # ── 반영(Prepare) → 목록이 applied, 작업은 패치마다 그 모델
+        h, _, report = pre.run(h, **args)
+        m1 = store.load_manifest(root)
+        after = by_id(view(key))
+        check(all(after[x]["applied"] for x in (a, b, c, d)), f"V2BF3 반영 뒤 applied: {[(k, v['applied']) for k, v in after.items()]}")
+        check(bd._apply_pending(root, m1, settings) == [], "V2BF3 반영 뒤 「반영 필요」 없음")
+        got = {j["crop_id"]: (j["model"], j["quality"], j["n"], (j.get("opts") or {}).get("image_size")) for j in m1["jobs"]}
+        check(got.get(a) == ("ideogram-4.5", "low", 2, None) and got.get(b) == ("nano-banana-2.1", "standard", 2, "1K")
+              and got.get(d) == (project, "high", 3, None) and c not in got, f"V2BF3 작업 = 패치의 효과 값: {got}")
+        check(after[b]["ratio"] == {"ok": True, "matched": "9:16", "nearest": "9:16"} and after[a]["ratio"] is None, "V2BF3 비율 판정은 효과 모델 기준")
+
+        # ── 명세 ❓6: 모델이 섞인 작업 목록이어도 실행 설정의 유도·갈라짐 판정은 프로젝트 값(prepare_settings)을 본다
+        der = pl.derive(root, m1)
+        check(pl.prepare_record(m1)[0] == "prepare_settings" and der["settings"]["prepare"]["model"] == project
+              and der["settings"]["prepare"]["n"] == 2 and der["from"]["prepare.model"] == "manifest" and der["from"]["prepare.n"] == "manifest",
+              f"V2BF4 실행 설정 유도는 프로젝트 값(최다값 길 아님): {der['from'].get('prepare.model')}")
+        check(not [x for x in pl.drift(settings, m1) if x["section"] == "prepare"], "V2BF4 섞인 작업이어도 준비 설정 갈라짐 없음")
+        check(dict(m1["prepare_settings"]) == dict(m0["prepare_settings"]), "V2BF4 prepare_settings 는 프로젝트 값 한 벌 그대로")
+
+        # ── 동시 제출 수: 모든 작업의 최솟값(장마다 따로 부르는 모델의 장 수가 늘면 줄어든다)
+        check(jobs_mod._forge_concurrency(root, 4) == 4, f"V2BF5 나노바나나 2장 → 동시 4 유지: {jobs_mod._forge_concurrency(root, 4)}")
+        view(key, {"root": key, "seen": 1, "changes": [{"crop_ids": [b], "patch": {"count": 8}}]})
+        h, _, _ = pre.run(h, **args)
+        m2 = store.load_manifest(root)
+        check(jobs_mod._forge_concurrency(root, 4) == 1, f"V2BF5 나노바나나 8장 패치 하나 → 실행 전체 동시 1: {jobs_mod._forge_concurrency(root, 4)}")
+
+        # ── 전환 미리 보기: 모두 끝난 프로젝트에서 프로젝트 모델을 바꾸면 따르는 패치만 새 조건
+        for job in m2["jobs"]:
+            for rep in range(job["reps"]):
+                rn._write_json(rn._lpath(root, job["cell_key"], rep, "done"), {"slots": []})
+        target = dict(args, model="gpt-image-2.5-sunburst")
+        sw = pl.switch_preview(root, m2, settings, prepare=target)
+        check(sw.get("exact") is True and sw.get("kept_overrides") == 2 and sw.get("need") == 1,
+              f"V2BF6 전환 미리 보기 — 덮어쓴 둘은 그대로, 따르는 하나만 승인 필요: {dict((k, sw.get(k)) for k in ('exact', 'kept_overrides', 'need', 'error'))}")
+        same = pl.switch_preview(root, m2, settings, prepare=args)
+        check(same.get("exact") is True and same.get("need") == 0 and same.get("kept_overrides") == 2, "V2BF6 같은 설정의 미리 보기 0건")
+
+        # ── 계획의 모델별 묶음(승인 해시를 만드는 목록에서 센다): 끝난 원장을 치우면 셋 다 승인 필요
+        shutil.rmtree(Path(root, "cands"), ignore_errors=True)
+        plan = bd.pipeline_plan(root, only_ids=[a, b, c, d], style=False)
+        groups = plan["run"].get("groups")
+        check(isinstance(groups, list) and [(g["model"], g["need"], g["images"], g["crops"]) for g in groups]
+              == [(project, 1, 3, 1), ("ideogram-4.5", 1, 2, 1), ("nano-banana-2.1", 1, 8, 1)] and sum(g["need"] for g in groups) == plan["run"]["need"] == 3,
+              f"V2BF7 계획의 모델별 묶음(표 순서·건수·장 수 합): {groups}")
+        check(isinstance(groups, list) and len(groups) == 3 and groups[0].get("complexity") == "medium" and groups[1].get("quality") == "low" and groups[2].get("opts") == {"image_size": "1K", "thinking_level": "medium"}
+              and groups[2]["fan_out"] is True and groups[0]["fan_out"] is False, f"V2BF7 묶음의 품질·복잡도·옵션·장마다 따로 표시: {groups}")
 
 
 # ── 아래 묶음들은 갈래가 채운다(갈래마다 자기 묶음 안에서만 — 다른 묶음·위의 감독관 묶음은 고치지 않는다) ───────────────
@@ -75092,6 +75250,8 @@ if __name__ == "__main__":
         ux_v2b_core_unit()
     if want("ux_v2b_invariant_unit"):
         ux_v2b_invariant_unit()
+    if want("ux_v2b_flow_unit"):
+        ux_v2b_flow_unit()
     if want("ux_v2b_gen_unit"):
         ux_v2b_gen_unit()
     if want("ux_v2b_route_unit"):

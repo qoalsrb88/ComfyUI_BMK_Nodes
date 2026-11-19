@@ -842,7 +842,8 @@
      "blocked": [],
      "uncertain": true,
      "backend": "mock",
-     "exact": true
+     "exact": true,
+     "kept_overrides": 0
     }
    },
    "alt": {
@@ -2119,7 +2120,8 @@
     "switch.blocked",
     "switch.backend",
     "switch.error",
-    "switch.exact"
+    "switch.exact",
+    "switch.kept_overrides"
    ],
    "maps": [],
    "any": [

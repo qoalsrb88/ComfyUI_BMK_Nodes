@@ -446,7 +446,8 @@ def _project_fp(root: str) -> str:
     """Project IS_CHANGED. mock 스위치(환경변수·_MOCK_API 파일)도 넣는다 — 켜고 끄면 Draft·Prepare·Run 이 다시 실행돼
     백엔드에 묶인 승인 해시·'mock 초안 교체' 대기·Run 의 초안 대기 경고가 지금 백엔드를 따른다.
     layout.json(Studio 레이아웃 편집, S1)·refs.json(레퍼런스 연결, S2)도 넣는다 — Import 의 IS_CHANGED 는 루트를 모르므로(링크 입력)
-    하류 전체를 여기서 깨운다."""
+    하류 전체를 여기서 깨운다. crop_gen.json(패치별 생성 설정, UX v2-B)도 넣는다 — Prepare 가 읽는 파일이라, 빠지면 그 파일만 바뀐 뒤의
+    반영이 캐시로 건너뛰어져 '반영 필요'가 풀리지 않는다(이 지문은 메모리의 캐시 판정에만 쓰이고 저장되지 않는다)."""
     return "|".join(str(v) for v in (store._file_fp(os.path.join(root, store.MANIFEST_NAME)),
                                      store._file_fp(os.path.join(root, store.LAYOUT_NAME)),
                                      store._file_fp(os.path.join(root, refs.REFS_NAME)),
@@ -455,7 +456,8 @@ def _project_fp(root: str) -> str:
                                      store._spec_files_fp(root),
                                      _vlm_fp(root),
                                      runner.mock_enabled(root),
-                                     store._file_fp(os.path.join(os.path.dirname(os.path.abspath(root)), runner.MOCK_FILE))))
+                                     store._file_fp(os.path.join(os.path.dirname(os.path.abspath(root)), runner.MOCK_FILE)),
+                                     store._file_fp(os.path.join(root, store.CROP_GEN_NAME))))
 
 
 def _rect_iou(a, b) -> float:
@@ -1987,18 +1989,10 @@ class BMKDesignPatchPrepare:
         pbar = comfy.utils.ProgressBar(len(m["crops"]))
         for crop in m["crops"]:
             pbar.update(1)
-            try:
-                eff = models.effective_gen(prepare, gen_entries.get(crop["id"]))
+            try:  # 패치별 생성 설정(UX v2-B) — 읽지 못한 항목의 「작업 없음」은 아래 채택 가드 뒤에서 낸다(스펙 읽기·채택 판정은 지금 순서 그대로)
+                eff, gen_error = models.effective_gen(prepare, gen_entries.get(crop["id"])), None
             except models.GenError as exc:
-                warn_lines.append(f"  {crop['id']} {crop['name']}: 작업 없음 - {exc}")
-                thumb = _fit(_load_rgba(root, crop["source"]), _THUMB)
-                tiles.append(_label_tile([thumb], [_ascii(crop["id"]), "0 jobs: patch settings unreadable"], (255, 140, 120)))
-                continue
-            crop_model, job_quality, crop_n = eff["model"], eff["quality"], eff["n"]
-            if not eff["inherit"]["model"]:
-                model_overrides += 1
-            if eff["clamped"] is not None:
-                warn_lines.append(f"  {crop['id']} {crop['name']}: 장 수 {eff['clamped']} → {crop_n}({models.get(crop_model).label} 의 상한)")
+                eff, gen_error = None, exc
             ov = store.load_spec_override(root, crop["id"])
             spec = dprompt.spec_from_manifest(crop, None, refs_dir, glossary, ov)
             v2 = dprompt.v2_of(ov)
@@ -2027,6 +2021,16 @@ class BMKDesignPatchPrepare:
                     tiles.append(_label_tile([_fit(canvas_rgb, _THUMB)], [_ascii(crop["id"]), "0 jobs: targets out of sync"],
                                              (255, 140, 120)))
                     continue
+            if gen_error is not None:  # 프로젝트 모델로 조용히 만들지 않는다(D537)
+                warn_lines.append(f"  {crop['id']} {crop['name']}: 작업 없음 - {gen_error}")
+                tiles.append(_label_tile([_fit(canvas_rgb, _THUMB)], [_ascii(crop["id"]), "0 jobs: patch settings unreadable"],
+                                         (255, 140, 120)))
+                continue
+            crop_model, job_quality, crop_n = eff["model"], eff["quality"], eff["n"]
+            if not eff["inherit"]["model"]:
+                model_overrides += 1
+            if eff["clamped"] is not None:
+                warn_lines.append(f"  {crop['id']} {crop['name']}: 장 수 {eff['clamped']} → {crop_n}({models.get(crop_model).label} 의 상한)")
             for key in ("guide", "before_paste"):
                 if spec.get(key):
                     p = spec[key] if os.path.isabs(spec[key]) else os.path.join(root, spec[key])
