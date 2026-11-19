@@ -69507,8 +69507,22 @@ def forge_f3_server_unit():
             if not mode:
                 local_derived = derived
             else:
-                check({k: v for k, v in derived.items() if k != "notes"}
-                      == {k: v for k, v in local_derived.items() if k != "notes"}, "F3S2 문구 분기가 유도값·설정 키를 바꾸지 않음")
+                # 서버 모드에만 있는 Prepare 두 칸(해상도·추론 — 2단계 둘째 묶음)을 뺀 나머지가 로컬판과 같다
+                server_only = ("image_size", "thinking_level")
+                names = server_only + tuple("prepare." + k for k in server_only)
+
+                def without(value):
+                    if isinstance(value, dict):
+                        return {k: without(v) for k, v in value.items() if k not in names}
+                    if isinstance(value, (list, tuple)):
+                        return [without(v) for v in value if not (isinstance(v, str) and v in names)]
+                    return value
+
+                check(without({k: v for k, v in derived.items() if k != "notes"})
+                      == without({k: v for k, v in local_derived.items() if k != "notes"}), "F3S2 문구 분기가 유도값·설정 키를 바꾸지 않음")
+                check(not any(name in json.dumps(local_derived, ensure_ascii=False) for name in server_only)
+                      and all(name in json.dumps(derived, ensure_ascii=False) for name in server_only),
+                      "F3S2 해상도·추론 두 칸은 서버 모드의 유도값에만 있다")
             wording(store.adopt_stale(crop, {}), "매니페스트 타깃이 레이어명 + _layer_targets 와 다름 — 다음 큐에서 Import PSD 가 반영", mode)
             parsed = store.parse_crop_layer_name(crop["layer_name"])
             for value, local in ((5, "_layer_targets 는 문자열이어야 합니다: 5"),
