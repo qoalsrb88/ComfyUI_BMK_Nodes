@@ -60717,6 +60717,21 @@ def ux_v2a_body_unit():
                                 None, "", {}, two)["warnings"] == dp.spec_from_manifest({"id": "001_aa", "name": "001_aa", "source": "crops/001.png", "targets": [{"tid": "A", "name_en": "ornament", "mode": "self_restore"}]},
                                 None, "", {}, {k: v for k, v in two.items() if k != "_v2"})["warnings"], "V2B spec_from_manifest 는 _v2 를 조용히 무시(경고 없음)")
 
+    # ── 지침을 받을 checkpoint(D526 — 생성 서버에 2.6 지침 프로필이 없다)
+    import bmk_design_patch_models as mdl
+    forge_prompt = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))["prompt"]
+    profiles = forge_prompt["capabilities"]["response"]["profiles"]
+    check({n: mdl.guidance_checkpoint(n) for n in mdl.MODELS}
+          == {"gpt-image-2.6-sunburst": "gpt_image_25_sunburst", "gpt-image-2.6-flare": "gpt_image_25_flare",
+              "gpt-image-2.5-sunburst": "gpt_image_25_sunburst", "gpt-image-2.5-flare": "gpt_image_25_flare", "seedream-5.5": "seedream_5_5",
+              "ideogram-4.5": "ideogram_4_5", "nano-banana-2.1": "gemini-nano-banana-2.1", "nano-banana-2": "gemini_flash2",
+              "nano-banana-pro": "gemini3"}, "V2B 모델별 지침 checkpoint(2.6 은 2.5 지침으로)")
+    check(all(mdl.guidance_checkpoint(n) in profiles for n in mdl.MODELS) and mdl.guidance_checkpoint("none") is None
+          and mdl.guidance_checkpoint(None) is None, "V2B 모델 표의 모든 모델이 지침 프로필에 닿음(정본 기준)")
+    check(all(m.checkpoint not in mdl.GUIDANCE_CHECKPOINTS.values() or m.checkpoint in profiles for m in mdl.MODELS.values())
+          and [mdl.MODELS[n].checkpoint for n in ("gpt-image-2.6-sunburst", "gpt-image-2.6-flare")] == ["gpt_image_26_sunburst", "gpt_image_26_flare"],
+          "V2B 생성 요청의 checkpoint 는 그대로(지침용 표와 별개)")
+
     # ── 레퍼런스 구성·입력 해시
     roles = dp.v2_roles(multi, str(out))
     sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731

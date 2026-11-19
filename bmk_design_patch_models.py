@@ -98,6 +98,17 @@ LOCAL_MODELS = tuple(name for name, m in MODELS.items() if m.kind == "gpt")   # 
 FORGE_ONLY = tuple(name for name, m in MODELS.items() if m.kind != "gpt")     # 서버 모드에서만 생성하는 모델
 
 
+# 프롬프트 작성 지침(UX v2-A D526): 생성 서버에 그 모델의 지침 프로필이 없으면 같은 계열의 이 checkpoint 로 지침을 받는다.
+# 표에 없는 모델은 자기 checkpoint 그대로. 생성 요청의 checkpoint 와는 무관하다(지침 글을 고르는 데만 쓴다).
+GUIDANCE_CHECKPOINTS = {"gpt_image_26_sunburst": "gpt_image_25_sunburst", "gpt_image_26_flare": "gpt_image_25_flare"}
+
+
+def guidance_checkpoint(name) -> str | None:
+    """프롬프트 작성 지침을 받을 서버 id(모르는 모델 None)."""
+    m = MODELS.get(name) if isinstance(name, str) else None
+    return GUIDANCE_CHECKPOINTS.get(m.checkpoint, m.checkpoint) if m else None
+
+
 def get(name) -> Model | None:
     return MODELS.get(name) if isinstance(name, str) else None
 
