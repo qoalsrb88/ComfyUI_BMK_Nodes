@@ -133,6 +133,11 @@ class FakeForge:
         self._fixture = json.loads((Path(__file__).parent / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
         self.calls = deque(maxlen=_MAX_CALLS)
         self.requests = deque(maxlen=_MAX_CALLS)
+        self.prompt_calls = deque(maxlen=_MAX_CALLS)
+        self.guidance_off = False
+        prompt = self._fixture["prompt"]
+        self._prompt_routes = {prompt[key]["path"]: (prompt[key]["method"],)
+                               for key in ("capabilities", "prepare", "assist", "models")}
         self._retired = set()
         for checkpoint in os.environ.get("BMK_DP_FAKE_RETIRED", "").split(","):
             if checkpoint.strip():
@@ -179,6 +184,106 @@ class FakeForge:
         result["models"] = [row for row in result["models"] if row["checkpoint"] not in self._retired]
         result["count"] = len(result["models"])
         return result
+
+    def _prompt_capabilities(self):
+        spec = self._fixture["prompt"]["capabilities"]
+        if self.guidance_off:
+            return _json(200, spec["response_unavailable"])
+        result = dict(spec["response"])
+        rows = [{"id": key, "description": spec["description_format"].format(id=key)} for key in spec["skill_ids"]]
+        # 실제 서버처럼 checkpoint 가 없는 프로필의 목록도 싣는다(catalogs ⊇ profiles 의 프로필).
+        result["catalogs"] = {profile: rows for profile in (*result["profiles"].values(), "unlisted_profile")}
+        return _json(200, result)
+
+    def _prepare_prompt(self, data, record):
+        checkpoint = data.get("checkpoint")
+        brief = data.get("request_brief")
+        entries = data.get("conversation")
+        count = data.get("image_count", 0)
+        mask = data.get("has_mask", False)
+        selected = data.get("skill_ids")
+        if not isinstance(checkpoint, str) or not checkpoint:
+            raise _Validation("checkpoint")
+        if not isinstance(brief, dict) or not isinstance(brief.get("request"), str) or not 1 <= len(brief["request"]) <= 6000:
+            raise _Validation("request_brief")
+        if not isinstance(entries, list) or not 1 <= len(entries) <= 200:
+            raise _Validation("conversation")
+        for entry in entries:
+            if (not isinstance(entry, dict) or not isinstance(entry.get("entry_id"), str)
+                    or entry.get("role") not in ("user", "question", "assistant")
+                    or not isinstance(entry.get("text"), str) or len(entry["text"]) > 20000):
+                raise _Validation("conversation")
+        if type(count) is not int or not 0 <= count <= 100:
+            raise _Validation("image_count")
+        if type(mask) is not bool:
+            raise _Validation("has_mask")
+        if selected is not None and (not isinstance(selected, list) or len(selected) > 4
+                                     or not all(isinstance(key, str) for key in selected)):
+            raise _Validation("skill_ids")
+
+        spec = self._fixture["prompt"]["prepare"]
+        caps = self._fixture["prompt"]["capabilities"]
+        if sum(len(entry["text"]) for entry in entries) > 64000:
+            return _json(200, dict(spec["failed"], reason="conversation_over_length"))
+        if self.guidance_off:
+            return _json(200, dict(spec["failed"], reason="guidance_unavailable"))
+        if checkpoint not in caps["response"]["profiles"]:
+            return _json(200, spec["unsupported"])
+        if selected is None:
+            selected = ["scoped-component-edit"]
+            record["classified"] = True
+        elif len(set(selected)) != len(selected) or any(key not in caps["skill_ids"] for key in selected):
+            return _json(200, spec["failed"])
+        skills = [{"id": key, "body": f"# {key}\n\n- Guidance for {key}."} for key in selected]
+        guidance = dict(spec["response"]["guidance"], skills=skills, mask="Edit within the mask." if mask else None)
+        return _json(200, dict(spec["response"], profile=caps["response"]["profiles"][checkpoint],
+                               selected_skill_ids=selected, guidance=guidance))
+
+    @staticmethod
+    def _assist_scenario(prompt):
+        markers = re.findall(r"\[\[fake:assist=([^\]]*)\]\]", prompt)
+        if any(value not in ("fail", "notjson", "nokeys", "token9", "plain", "korean", "long") for value in markers):
+            raise _Validation("prompt")
+        return markers[-1] if markers else None
+
+    def _prompt_assist(self, data):
+        spec = self._fixture["prompt"]["assist"]
+        for key in ("mode", "system", "prompt", "model", "image"):
+            if data.get(key) is not None and not isinstance(data[key], str):
+                raise _Validation(key)
+        if data.get("response_format") not in (None, "json_object"):
+            raise _Validation("response_format")
+        if data.get("feature") not in (None, "prompt_studio", "tag_studio"):
+            raise _Validation("feature")
+        prompt = data.get("prompt") or ""
+        scenario = self._assist_scenario(prompt)
+        meta = {"request_id": str(uuid.uuid4()), "processing_time": 0.01}
+        if data.get("mode", "chat") != "chat":
+            return _json(200, dict(spec["response_failed"], **meta, error_message="unsupported mode"))
+        if scenario in ("fail", "notjson"):
+            failed = dict(spec["response_failed"], **meta)
+            if scenario == "fail":
+                failed["error_message"] = "OpenRouter HTTP 503: upstream"
+            return _json(200, failed)
+
+        digest = hashlib.sha256(((data.get("system") or "") + "\n" + prompt).encode("utf-8")).hexdigest()[:8]
+        body = "Apply the requested change to the target in @image1"
+        if "@image2" in prompt:
+            body += ", following the design reference @image2"
+        body += f" (request {digest})."
+        if scenario == "token9":
+            body += " Include @image9."
+        elif scenario == "korean":
+            body = "요청한 수정을 @image1 의 대상에 적용합니다."
+        elif scenario == "long":
+            body = body.ljust(5000, "x")
+        if scenario == "nokeys":
+            text = '{"prompt": "x"}'
+        elif scenario != "plain" and data.get("response_format") == "json_object":
+            text = json.dumps({"body_en": body, "summary_ko": "요청한 수정을 @image1 의 대상에 적용합니다."}, ensure_ascii=False)
+        else:
+            text = body
+        return _json(200, dict(spec["response"], **meta, text=text))
 
     def _model_input(self, name, spec, data, groups):
         """스튜디오의 요청 계약을 검사하되 입력 오류도 접수된 잡의 실패로 돌려준다."""
@@ -684,6 +789,55 @@ class FakeForge:
                 return 200, {"Content-Type": "image/png"}, png
         return _json(404, {"detail": "Not Found"})
 
+    def _authenticated_account(self, authorization):
+        bearer = re.fullmatch(r"Bearer (.+)", authorization, re.I) if isinstance(authorization, str) else None
+        token = _TOKEN.fullmatch(bearer[1]) if bearer else None
+        try:
+            if token and (token[2] is None or int(token[2]) > self._now()):
+                return token[1]
+        except ValueError:
+            pass
+        return None
+
+    @staticmethod
+    def _prompt_log_copy(value):
+        if isinstance(value, list):
+            return [FakeForge._prompt_log_copy(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        saved = {}
+        for key, item in value.items():
+            if key in ("image", "images"):
+                raw = item if isinstance(item, str) else json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+                size = len(raw.encode("utf-8", errors="surrogatepass"))
+                saved[key] = f"<image {size} bytes>"
+            else:
+                saved[key] = FakeForge._prompt_log_copy(item)
+        return saved
+
+    def _record_prompt(self, method, path, headers, body):
+        spec = self._fixture["prompt"]
+        authorization = next((v for k, v in headers.items() if k.lower() == "authorization"), None)
+        data, saved, dropped = None, None, []
+        if method.upper() == "POST" and isinstance(body, bytes) and len(body) <= _BODY_LIMIT:
+            try:
+                parsed = json.loads(body)
+            except (ValueError, UnicodeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                if path == spec["assist"]["path"]:
+                    keys = spec["assist"]["passed_keys"]
+                    dropped = sorted(parsed.keys() - keys)
+                else:
+                    keys = spec["prepare"]["request"]
+                data = {key: parsed[key] for key in keys if key in parsed}
+                saved = self._prompt_log_copy(data)
+        with self._lock:
+            record = {"path": path, "account": self._authenticated_account(authorization),
+                      "body": saved, "dropped": dropped, "classified": False}
+            self.prompt_calls.append(record)
+        return data, record
+
     async def handle(self, method: str, url: str, headers: dict, body: bytes | None = None,
                      timeout: float | None = None) -> tuple[int, dict, bytes]:
         """ForgeClient 의 전송 함수 모양. 모르는 경로는 404 {"detail": "Not Found"}."""
@@ -704,16 +858,20 @@ class FakeForge:
                     fault = dict(fault)
                 else:
                     fault = None
+            prompt_request = None
             if fault:
+                if parsed.path in self._prompt_routes:
+                    # 지연 중 취소되거나 오류 응답으로 끝나도 한 번만 기록한다.
+                    prompt_request = await asyncio.to_thread(self._record_prompt, method, parsed.path, headers, body)
                 await asyncio.sleep(fault.get("delay", 0))
                 if fault.get("status", 200) != 200:
                     return _json(fault["status"], {"detail": "Development fault"})
             # 이미지 작업과 상태 잠금 대기를 모두 이벤트 루프 밖에서 수행한다.
-            return await asyncio.to_thread(self._handle, method, url, headers, body)
+            return await asyncio.to_thread(self._handle, method, url, headers, body, prompt_request)
         except Exception:
             return _json(500, {"detail": "Internal Server Error"})
 
-    def _handle(self, method, url, headers, body):
+    def _handle(self, method, url, headers, body, prompt_request=None):
         try:
             with self._lock:
                 parsed = urlsplit(url)
@@ -725,7 +883,9 @@ class FakeForge:
                           "/api/image/templates": ("GET",),
                           "/api/image/generate": ("POST",), "/api/image/history": ("GET",),
                           "/api/library/assets": ("GET", "POST"), "/api/library/assets/upload-url": ("POST",),
-                          "/api/library/assets/uploads/complete": ("POST",)}
+                          "/api/library/assets/uploads/complete": ("POST",), **self._prompt_routes}
+                if path in self._prompt_routes and prompt_request is None:
+                    prompt_request = self._record_prompt(method, path, headers, body)
                 allowed = routes.get(path)
                 if path.startswith("/api/image/jobs/") or path.startswith("/fake-media/"):
                     allowed = ("GET",)
@@ -743,17 +903,21 @@ class FakeForge:
                     return self._put(path[len("/fake-upload/"):], query, headers, body)
                 if "authorization" not in headers and path == "/auth/me":
                     return _json(200, {"authenticated": False})
-                authorization = headers.get("authorization", "")
-                bearer = re.fullmatch(r"Bearer (.+)", authorization, re.I) if isinstance(authorization, str) else None
-                token = _TOKEN.fullmatch(bearer[1]) if bearer else None
-                if token is None:
+                account = self._authenticated_account(headers.get("authorization"))
+                if account is None:
                     return self._error("invalid_token")
-                try:
-                    if token[2] is not None and int(token[2]) <= self._now():
-                        return self._error("invalid_token")
-                except ValueError:
-                    return self._error("invalid_token")
-                account = token[1]
+                if prompt_request is not None:
+                    prompt = self._fixture["prompt"]
+                    if path == prompt["capabilities"]["path"]:
+                        return self._prompt_capabilities()
+                    if path == prompt["models"]["path"]:
+                        return _json(200, prompt["models"]["response"])
+                    data, record = prompt_request
+                    if data is None:
+                        raise _Validation("body")
+                    if path == prompt["prepare"]["path"]:
+                        return self._prepare_prompt(data, record)
+                    return self._prompt_assist(data)
                 if path == "/auth/me":
                     return _json(200, {"authenticated": True, "user": {"id": "u_" + account,
                                       "email": account + "@example.com", "name": account, "picture": None}})

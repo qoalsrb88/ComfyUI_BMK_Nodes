@@ -60361,6 +60361,242 @@ def ux_v2a_entry_unit():
 def ux_v2a_dev_unit():
     """UX v2-A 가짜 Forge 의 프롬프트 API 흉내 + Forge 호출 창구(명세 §1.1·D511–D512). --quick 포함."""
     section("UX v2-A — 가짜 Forge 프롬프트 API · 호출 창구 (ux_v2a_dev_unit)")
+    import uuid
+    import bmk_design_patch_forge as fg
+    import bmk_design_patch_forge_dev as dev
+
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))
+    spec = fixture["prompt"]
+    caps, prep, assist, models = (spec[key] for key in ("capabilities", "prepare", "assist", "models"))
+    template = prep["request"]
+    account = "test"
+    token = dev.issue_token(account)
+    headers = {"Authorization": "Bearer " + token}
+    fake = dev.FakeForge(clock=lambda: 1700000000.0)
+    config = fg.ForgeConfig("https://example.com")
+    def same_shape(value, sample):
+        if isinstance(sample, dict):
+            return isinstance(value, dict) and value.keys() == sample.keys() and all(
+                same_shape(value[k], sample[k]) for k in sample)
+        if isinstance(sample, list):
+            return isinstance(value, list) and (not sample or all(same_shape(v, sample[0]) for v in value))
+        return type(value) is type(sample)
+
+    async def call(endpoint, data=None, auth=headers):
+        raw = json.dumps(data).encode() if data is not None else None
+        status, _, body = await fake.handle(endpoint["method"], endpoint["path"], auth, raw)
+        return status, json.loads(body)
+
+    async def forge_error(operation, reason, status, kind=None):
+        try:
+            await operation
+        except fg.ForgeError as exc:
+            check((exc.reason, exc.status, exc.kind) == (reason, status, kind), f"V2D 오류 분류 {reason}/{status}/{kind}")
+        else:
+            check(False, f"V2D ForgeError 필요 {reason}/{status}/{kind}")
+
+    async def routes():
+        for endpoint in (caps, prep, assist, models):
+            for auth in ({}, {"Authorization": "Bearer " + dev.issue_token(account, 0, clock=fake._now)}):
+                status, result = await call(endpoint, endpoint.get("request"), auth)
+                check((status, result) == (401, fixture["errors"]["invalid_token"]["response"])
+                      and fake.prompt_calls[-1]["account"] is None, "V2D 인증 없음·만료 " + endpoint["path"])
+        status, catalogs = await call(caps)
+        sample = caps["response"]
+        profiles = sample["profiles"]
+        row_sample = next(iter(sample["catalogs"].values()))
+        check(status == 200 and same_shape(catalogs, dict(sample, catalogs={p: row_sample for p in (*profiles.values(), "unlisted_profile")}))
+              and catalogs["profiles"] == profiles and catalogs["guidance_revision"] == sample["guidance_revision"], "V2D capabilities 모양")
+        check(set(profiles.values()) < set(catalogs["catalogs"]), "V2D capabilities 는 checkpoint 가 없는 프로필의 목록도 실음(실제 서버처럼)")
+        rows = [{"id": key, "description": caps["description_format"].format(id=key)} for key in caps["skill_ids"]]
+        check(len(rows) == 31 and all(catalog == rows for catalog in catalogs["catalogs"].values()), "V2D 프로필별 지침 31개")
+        status, result = await call(models)
+        check(status == 200 and same_shape(result, models["response"]) and result == models["response"], "V2D models 정본")
+        check(fake.prompt_calls[-1] == {"path": models["path"], "account": account, "body": None, "dropped": [], "classified": False},
+              "V2D GET 호출 기록")
+
+        status, result = await call(prep, dict(template, ignored=1))
+        check(status == 200 and same_shape(result, prep["response"]) and result["policy_status"] == {}
+              and result["selected_skill_ids"] == template["skill_ids"] and not fake.prompt_calls[-1]["classified"]
+              and fake.prompt_calls[-1]["body"] == template, "V2D prepare 정본·순서·추가 키 무시")
+        for key in ("rewrite", "global", "model"):
+            check(result["guidance"][key] == prep["response"]["guidance"][key], "V2D 지침 원문 " + key)
+        check(result["guidance"]["skills"] == [{"id": key, "body": f"# {key}\n\n- Guidance for {key}."}
+                                                for key in template["skill_ids"]], "V2D 선택한 지침 본문")
+        entry = template["conversation"][0]
+        invalid = [{k: v for k, v in template.items() if k != missing} for missing in prep["request_rules"]["required"]]
+        for key, values in (
+                ("checkpoint", ("", 1)), ("request_brief", ([], {}, {"request": ""}, {"request": "a" * 6001})),
+                ("conversation", (None, [], [entry] * 201, [None], [{}], [dict(entry, entry_id=1)], [dict(entry, role="system")],
+                                  [dict(entry, text=None)], [dict(entry, text="x" * 20001)])),
+                ("image_count", (True, -1, 101, 0.5)), ("has_mask", (None, 0)),
+                ("skill_ids", ("skill", [3], caps["skill_ids"][:5]))):
+            invalid.extend(dict(template, **{key: value}) for value in values)
+        for data in invalid:
+            before = len(fake.prompt_calls)
+            status, result = await call(prep, data)
+            check(status == 422 and same_shape(result, fixture["errors"]["validation"]["response"])
+                  and len(fake.prompt_calls) == before + 1 and fake.prompt_calls[-1]["body"] == data, "V2D prepare 입력 검사·실패 기록")
+        status, _ = await call(prep, dict(template, conversation=[dict(entry, text={"image": "hidden-picture"})]))
+        check(status == 422 and "hidden-picture" not in str(fake.prompt_calls[-1]), "V2D 중첩 검증 오류 기록에도 그림 원문 없음")
+
+        for selected in ([], list(reversed(caps["skill_ids"][:4]))):
+            boundary = dict(template, skill_ids=selected, has_mask=True, image_count=100, request_brief={"request": "x" * 6000},
+                            conversation=[dict(entry, text="x" * 20000)] * 3 + [dict(entry, role="assistant", text="x" * 4000)]
+                                         + [dict(entry, role="question", text="")] * 196)
+            status, result = await call(prep, boundary)
+            check(status == 200 and result["selected_skill_ids"] == selected and isinstance(result["guidance"]["mask"], str)
+                  and not fake.prompt_calls[-1]["classified"], "V2D 경계 포함·명시한 지침은 분류 0번")
+        for changes, expected in (({"skill_ids": ["unknown"]}, prep["failed"]),
+                                  ({"skill_ids": [caps["skill_ids"][0]] * 2}, prep["failed"]),
+                                  ({"checkpoint": "gpt_image_26_sunburst"}, prep["unsupported"]),
+                                  ({"conversation": [dict(entry, text="x" * 16001)] * 4},
+                                   {"status": "failed", "reason": "conversation_over_length"})):
+            check(await call(prep, dict(template, **changes)) == (200, expected), "V2D prepare " + expected["reason"])
+        defaults = {k: v for k, v in template.items() if k not in ("image_count", "has_mask", "skill_ids")}
+        for data in (defaults, dict(defaults, skill_ids=None)):
+            status, result = await call(prep, data)
+            check(status == 200 and result["selected_skill_ids"] == ["scoped-component-edit"] and result["guidance"]["mask"] is None
+                  and fake.prompt_calls[-1]["classified"], "V2D 지침 생략·null이면 서버 분류")
+        fake.guidance_off = True
+        check(await call(caps) == (200, caps["response_unavailable"]), "V2D 지침 꺼짐 capabilities")
+        check(await call(prep, template) == (200, {"status": "failed", "reason": "guidance_unavailable"}), "V2D 지침 꺼짐 prepare")
+        fake.guidance_off = False
+        for endpoint in (caps, models):
+            fake.fault = {"path": endpoint["path"], "status": 503, "times": 1}
+            check((await call(endpoint))[0] == 503 and (await call(endpoint))[0] == 200, "V2D GET 경로 fault 한 번")
+        fake.fault = None
+
+    async def assist_cases():
+        data = dict(assist["request"], prompt="어깨를 @image2처럼", system="규칙")
+        extra = {"images": ["hidden-picture"], "max_tokens": 10, "idempotency_key": "unused"}
+        status, result = await call(assist, dict(data, **extra))
+        check(status == 200 and same_shape(result, assist["response"]) and uuid.UUID(result["request_id"]).version == 4,
+              "V2D assist 정본·요청 id")
+        record = fake.prompt_calls[-1]
+        check(record["dropped"] == sorted(extra) and record["body"] == dict(data, image=f"<image {len(data['image'].encode())} bytes>")
+              and "hidden-picture" not in str(record), "V2D 통과 키·그림 크기만 기록")
+        status, again = await call(assist, data)
+        digest = hashlib.sha256((data["system"] + "\n" + data["prompt"]).encode()).hexdigest()[:8]
+        expected = f"Apply the requested change to the target in @image1, following the design reference @image2 (request {digest})."
+        check(result["text"] == again["text"] and result["request_id"] != again["request_id"]
+              and json.loads(result["text"]) == {"body_en": expected, "summary_ko": "요청한 수정을 @image1 의 대상에 적용합니다."},
+              "V2D 입력 해시·참조 표기·한국어 요약")
+        for key in ("system", "prompt"):
+            _, changed = await call(assist, dict(data, **{key: "changed"}))
+            check(changed["text"] != result["text"], "V2D 입력별 응답 " + key)
+        check((await call(assist, {k: v for k, v in data.items() if k != "response_format"}))[1]["text"] == expected,
+              "V2D response_format 생략은 평문")
+        _, default_chat = await call(assist, {})
+        check(default_chat["success"] is True and "@image2" not in default_chat["text"], "V2D 기본 chat·참조 없음")
+        for key, value in (("response_format", "text"), ("feature", "other"), ("mode", 1), ("system", False),
+                           ("prompt", []), ("model", {}), ("image", ["hidden-picture"]), ("prompt", "[[fake:assist=other]]")):
+            status, result = await call(assist, dict(data, **{key: value}))
+            check(status == 422 and same_shape(result, fixture["errors"]["validation"]["response"])
+                  and "hidden-picture" not in str(fake.prompt_calls[-1]), "V2D assist 입력 검사 " + key)
+        status, other = await call(assist, dict(data, mode="other"))
+        check(status == 200 and same_shape(other, assist["response_failed"]) and not other["success"]
+              and other["error_message"] == "unsupported mode", "V2D 지원하지 않는 mode")
+        for marker in ("fail", "notjson", "nokeys", "token9", "plain", "korean", "long"):
+            status, result = await call(assist, dict(data, prompt=f"[[fake:assist={marker}]]"))
+            if marker in ("fail", "notjson"):
+                error = "OpenRouter HTTP 503: upstream" if marker == "fail" else assist["response_failed"]["error_message"]
+                ok = same_shape(result, assist["response_failed"]) and not result["success"] and result["error_message"] == error
+            elif marker == "plain":
+                ok = result["success"] and result["text"].startswith("Apply ")
+            elif marker == "nokeys":
+                ok = result["success"] and json.loads(result["text"]) == {"prompt": "x"}
+            else:
+                body = json.loads(result["text"])["body_en"]
+                ok = result["success"] and {"token9": "@image9" in body, "korean": bool(re.search("[가-힣]", body)),
+                                            "long": len(body) == 5000}[marker]
+            check(status == 200 and ok, "V2D assist 시나리오 " + marker)
+
+    async def client_cases():
+        async def transport(method, url, auth, raw, timeout):
+            if url.endswith(prep["path"]):
+                check(json.loads(raw).keys() == template.keys(), "V2D prepare 전송 본문의 전체 키")
+            return await fake.handle(method, url, auth, raw, timeout)
+
+        client = fg.ForgeClient(config, transport=transport)
+        args = {"checkpoint": template["checkpoint"], "request": template["request_brief"]["request"],
+                "image_count": template["image_count"], "skill_ids": template["skill_ids"]}
+        small = {"system": "규칙", "prompt": "편집"}
+        available = await client.prompt_capabilities(token)
+        check(available == {"available": True, "reason": None, "guidance_revision": caps["response"]["guidance_revision"],
+                            "profiles": caps["response"]["profiles"],
+                            "skills": {p: caps["skill_ids"] for p in (*caps["response"]["profiles"].values(), "unlisted_profile")}},
+              "V2D 창구 capabilities 프로필별 id(목록이 프로필보다 많아도 정상 모양)")
+        result = await client.prepare_prompt(token, **args)
+        guidance = dict(prep["response"]["guidance"], skills=[{"id": key, "body": f"# {key}\n\n- Guidance for {key}."}
+                                                            for key in args["skill_ids"]])
+        check(result == {"status": "prepared", "profile": prep["response"]["profile"], "skill_ids": args["skill_ids"],
+                         "guidance_revision": prep["response"]["guidance_revision"], "guidance": guidance}
+              and fake.prompt_calls[-1]["body"] == template, "V2D 창구 prepare 응답·요청 정본")
+        check((await client.prepare_prompt(token, **dict(args, skill_ids=[])))["skill_ids"] == []
+              and fake.prompt_calls[-1]["body"]["skill_ids"] == [] and not fake.prompt_calls[-1]["classified"], "V2D 창구 빈 목록 전송")
+        check(await client.prepare_prompt(token, **dict(args, checkpoint="gpt_image_26_sunburst")) == prep["unsupported"],
+              "V2D 창구 unsupported")
+        fake.guidance_off = True
+        check(await client.prompt_capabilities(token) == {"available": False, "reason": "guidance_unavailable",
+              "guidance_revision": None, "profiles": {}, "skills": {}}, "V2D 창구 지침 없음")
+        check(await client.prepare_prompt(token, **args) == {"status": "failed", "reason": "guidance_unavailable"}, "V2D 창구 failed")
+        fake.guidance_off = False
+        before = len(fake.calls)
+        try:
+            await client.prepare_prompt(token, **dict(args, skill_ids=caps["skill_ids"][:5]))
+        except ValueError:
+            check(len(fake.calls) == before, "V2D skill_ids 5개는 요청 0번")
+        else:
+            check(False, "V2D skill_ids 5개 ValueError 필요")
+        large = "data:image/jpeg;base64," + "a" * (2 * 1024 * 1024)
+        for optional in ({}, {"model": "demo"}, {"image": large}, {"model": "demo", "image": large}):
+            result = await client.prompt_assist(token, **small, **optional)
+            record = fake.prompt_calls[-1]
+            sent = dict(small, mode="chat", response_format="json_object", **optional)
+            if "image" in sent:
+                sent["image"] = f"<image {len(large)} bytes>"
+            check(same_shape(result, {"ok": True, "text": "", "seconds": 0.0}) and result["ok"] and result["seconds"] == 0.01
+                  and json.loads(result["text"])["body_en"].startswith("Apply ") and record["body"] == sent and not record["dropped"],
+                  "V2D 창구 assist 요청·선택 인자·2 MiB 그림")
+        for endpoint, method, kwargs in ((prep, client.prepare_prompt, args), (assist, client.prompt_assist, small)):
+            fake.fault = {"path": endpoint["path"], "delay": 0.3, "times": 1}
+            before = len(fake.prompt_calls)
+            await forge_error(method(token, **kwargs, timeout=0.05), "unreachable", None, "timeout")
+            check(len(fake.prompt_calls) == before + 1 and fake.fault["times"] == 0, "V2D 호출별 시간 제한·호출 기록")
+        for status, reason, kind in ((500, "server", "status"), (429, "invalid", None), (401, "unauthorized", None),
+                                     (403, "forbidden", None), (404, "invalid", None)):
+            fake.fault = {"path": assist["path"], "status": status, "times": 2}
+            before = len(fake.calls)
+            await forge_error(client.prompt_assist(token, **small), reason, status, kind)
+            check(len(fake.calls) == before + 1 and fake.fault["times"] == 1, f"V2D {status} 재시도 없음")
+        fake.fault = None
+
+        def responding(value):
+            async def transport(*_):
+                return 200, {}, json.dumps(value).encode()
+            return fg.ForgeClient(config, transport=transport)
+
+        for message in (token + " " + "a" * 250, "https://example.com/path " + token):
+            result = await responding(dict(assist["response_failed"], error_message=message)).prompt_assist(token, **small)
+            check(set(result) == {"ok", "error"} and result["ok"] is False and 0 < len(result["error"]) <= 200
+                  and token not in result["error"] and "example.com" not in result["error"], "V2D 실패 문구 토큰·주소 제거 및 길이 상한")
+        check(await client.prompt_assist(token, system="", prompt="[[fake:assist=fail]]")
+              == {"ok": False, "error": "OpenRouter HTTP 503: upstream"}, "V2D 안전한 실패 문구 보존")
+        for value in ([], dict(caps["response"], skills_available=1), dict(caps["response"], catalogs={"x": [123]})):
+            await forge_error(responding(value).prompt_capabilities(token), "unreachable", 200, "format")
+        for value in ({"status": "failed"}, dict(prep["response"], selected_skill_ids="bad"),
+                      dict(prep["response"], guidance=dict(guidance, skills=[{"id": "x", "body": 1}]))):
+            await forge_error(responding(value).prepare_prompt(token, **args), "unreachable", 200, "format")
+        check(await responding({"success": True, "text": "ok", "processing_time": None}).prompt_assist(token, **small)
+              == {"ok": True, "text": "ok", "seconds": None}, "V2D assist 측정 시간 없음")
+        for value in ({"success": 1, "text": ""}, {"success": True, "text": None}, {"success": False, "error_message": 7},
+                      {"success": True, "text": "", "processing_time": 10 ** 400}):
+            await forge_error(responding(value).prompt_assist(token, **small), "unreachable", 200, "format")
+
+    asyncio.run(routes())
+    asyncio.run(assist_cases())
+    asyncio.run(client_cases())
 
 
 def ux_v2a_submit_unit():
