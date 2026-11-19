@@ -289,7 +289,7 @@ _STATIC = {"board.html": "text/html", "board.js": "text/javascript", "viewer.js"
            "layout_geom.js": "text/javascript", "rows.js": "text/javascript", "layout_edit.js": "text/javascript", "ref_edit.js": "text/javascript",
            "checklist.js": "text/javascript", "pipeline.js": "text/javascript", "mask_edit.js": "text/javascript", "board.css": "text/css",
            "env.js": "text/javascript", "dialog.js": "text/javascript",
-           "forge_import.js": "text/javascript", "forge-theme.css": "text/css", "forge-fonts.css": "text/css"}  # env·dialog = Forge 이식 F1 공용 객체(DPEnv·DPDialog)
+           "forge_import.js": "text/javascript", "submit.js": "text/javascript", "forge-theme.css": "text/css", "forge-fonts.css": "text/css"}  # env·dialog = Forge 이식 F1 공용 객체(DPEnv·DPDialog)
 
 _STATIC.update({name: "font/woff2" for name in os.listdir(WEB_DIR)
                 if re.fullmatch(r"forge-font-[0-9a-f]{16}\.woff2", name)})
