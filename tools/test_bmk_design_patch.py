@@ -62538,59 +62538,45 @@ def ux_v2b_invariant_unit():
         spec_path.write_bytes(b"{")
         expect_raises(lambda: pre.run(h, **args), "V2BI11 스펙 JSON 이 깨진 크롭은 항목을 읽지 못해도 반영 전체 실패(지금 그대로)")
 
-    # ── 재리뷰: 로컬판(ComfyUI 탭)은 패치별 설정이 있는 패치의 작업을 만들지 않는다 — 로컬의 승인 창은 프로젝트 값 한 벌만 보이므로
-    #    다른 모델·장 수의 작업이 섞이면 보인 것과 나가는 것이 달라진다. 따르는 패치의 작업은 파일이 없을 때와 바이트가 같다.
+    # ── 로컬판(ComfyUI 탭)의 규칙(재리뷰 2–4차): 패치별 생성 설정이 있는 프로젝트는 로컬에서 반영도 생성도 하지 않는다 — 로컬의 승인 창은
+    #    프로젝트 값 한 벌(Studio)·건수와 예상 금액(탭)만 보이고 패치마다의 모델·장 수를 보이지 않는다. 설정이 없으면(파일 없음·빈 crops) 그대로다.
+    import asyncio
+    from unittest.mock import patch
+    run_node = dp.BMKDesignPatchRun()
     with _v2b_env(dp, out, server=False):
         lname = "gpt-image-2.5-sunburst"
         largs = _v2b_args(pl, lname)
         h, root, ids = _v2b_project(dp, out, "local-entries", lname)
         h, _, report0 = pre.run(h, **largs)
         m0 = store.load_manifest(root)
-        put(root, {ids["001_square"]: models.gen_bundle("gpt-image-2.5-flare"), ids["002_tall"]: {"n": 5}})
+        check(asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")) is not None, "V2BI12 준비 — 파일 없는 로컬 프로젝트의 Run(드라이런)")
+        for label, entries in (("모델 묶음", {ids["001_square"]: models.gen_bundle("gpt-image-2.5-flare")}), ("장 수", {ids["002_tall"]: {"n": 5}})):
+            put(root, entries)
+            before = Path(root, store.MANIFEST_NAME).read_bytes()
+            expect_raises(lambda: pre.run(h, **largs), f"V2BI12 로컬판 — 패치별 설정({label})이 있으면 반영 실패", contains="서버 모드에서만")
+            check(Path(root, store.MANIFEST_NAME).read_bytes() == before, f"V2BI12 로컬판 — 실패한 반영은 매니페스트를 바꾸지 않음({label})")
+            expect_raises(lambda: asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")),
+                          f"V2BI12 로컬판 — 패치별 설정({label})이 있으면 Run 도 멈춤(반영을 거치지 않은 큐 포함)", contains="서버 모드에서만")
+        put(root, {})  # 설정을 모두 풂(빈 crops 파일은 남는다)
         h, _, report = pre.run(h, **largs)
         m = store.load_manifest(root)
-        left = {j["crop_id"] for j in m["jobs"]}
-        check(left == {ids["004_panel"]} and all(j["model"] == lname and j["n"] == largs["n"] for j in m["jobs"]),
-              f"V2BI12 로컬판 — 패치별 설정이 있는 패치는 작업 없음(모델 묶음·장 수 모두): {sorted(left)}")
-        check(sum(1 for line in report.splitlines() if "작업 없음" in line and "서버 모드에서만" in line
-                  and (ids["001_square"] in line or ids["002_tall"] in line)) == 2 and "패치별 모델" not in report,
-              "V2BI12 로컬판 — 반영 보고에 사유(서버 모드에서만) · 「패치별 모델」 줄 없음")
-        check(dump([j for j in m["jobs"] if j["crop_id"] == ids["004_panel"]]) == dump([j for j in m0["jobs"] if j["crop_id"] == ids["004_panel"]])
-              and dump(m["prepare_settings"]) == dump(m0["prepare_settings"]), "V2BI12 로컬판 — 따르는 패치의 작업·기록은 바이트 그대로")
-        # 3차 리뷰: 로컬에서 만들지 않은 패치가 있으면 입력 지문을 올리지 않는다 — 같은 폴더를 서버 모드로 열면 「반영 필요」로 보여야 한다
-        check(m["prepare_inputs"] == m0["prepare_inputs"] != store.prepare_inputs_fp(root, m),
-              "V2BI12 로컬판 — 만들지 않은 패치가 있으면 입력 지문을 올리지 않음(서버에서 반영 필요)")
-        # 3차 리뷰: 서버에서 반영해 둔 작업(패치별 모델·장 수)이 매니페스트에 남은 폴더를 로컬로 가져와 Prepare 없이 Run 하면 멈춘다 —
-        # 로컬의 승인 창은 건수·예상 금액만 보이고 모델·장 수를 보이지 않는다
-        import asyncio
-        from unittest.mock import patch
-        run_node = dp.BMKDesignPatchRun()
+        check(dump(m["jobs"]) == dump(m0["jobs"]) and dump(m["prepare_settings"]) == dump(m0["prepare_settings"]) and "패치별 모델" not in report,
+              "V2BI12 로컬판 — 설정을 모두 풀면(빈 crops) 반영 결과가 처음과 같음")
+        check(asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")) is not None, "V2BI12 로컬판 — 설정을 모두 풀면 Run 이 그대로 돈다(드라이런)")
+
+        # 서버에서 반영해 둔 패치별 작업이 매니페스트에 남은 채 설정만 풀린 폴더(반영 전) — 로컬에서 Prepare 없이 Run 하면 멈춘다
+        put(root, {ids["001_square"]: models.gen_bundle("gpt-image-2.5-flare"), ids["002_tall"]: {"n": 5}})
         with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
             sh, _, _ = pre.run(h, **largs)  # 서버 모드의 반영 — 패치별 작업이 매니페스트에 들어간다
         server_jobs = store.load_manifest(root)["jobs"]
-        check({j["crop_id"] for j in server_jobs} == {ids["001_square"], ids["002_tall"], ids["004_panel"]}
-              and any(j["model"] == "gpt-image-2.5-flare" for j in server_jobs) and any(j["n"] == 5 for j in server_jobs),
+        check(any(j["model"] == "gpt-image-2.5-flare" for j in server_jobs) and any(j["n"] == 5 for j in server_jobs),
               "V2BI13 준비 — 서버 모드로 반영한 패치별 작업")
+        put(root, {})  # 서버에서 설정을 풀었지만 아직 반영하지 않음 → 작업은 옛 값 그대로
         expect_raises(lambda: asyncio.run(run_node.run(sh, "", 64, 1, 25, False, False, "")),
-                      "V2BI13 로컬판 Run — 패치별 설정으로 만든 작업이 남아 있으면 멈춤(Prepare 를 먼저)", contains="Prepare")
-        # 3차 리뷰: 로컬의 전환 미리 보기도 다음 로컬 Prepare 가 만들지 않을 패치의 작업을 세지 않는다
-        lsettings = dict(pl.defaults(root), prepare=largs)
-        for job in server_jobs:
-            for rep in range(job["reps"]):
-                dp.runner._write_json(dp.runner._lpath(root, job["cell_key"], rep, "done"), {"slots": []})
-        ltarget = dict(largs, quality="low")  # 모델은 그대로(004 의 AI 작성본이 낡지 않게) — 품질만 바꾼다
-        lsw = pl.switch_preview(root, store.load_manifest(root), lsettings, prepare=ltarget)
-        lh2, _, _ = pre.run(sh, **ltarget)
-        lreal = dp.runner.split_approval(dp.runner.plan_calls(store.load_manifest(root), root), "", backend=dp.runner.backend_name(root))
-        check(lsw.get("exact") is True and lsw.get("need") == len(lreal["needs_approval"]) == 1,
-              f"V2BI13 로컬 전환 미리 보기 = 실제 로컬 반영의 승인 필요 건수: {lsw.get('need')} vs {len(lreal['needs_approval'])}")
-        out_run = asyncio.run(run_node.run(lh2, "", 64, 1, 25, False, False, ""))
-        check(out_run is not None, "V2BI13 로컬에서 반영한 뒤에는 Run 이 그대로 돈다(드라이런)")
-        put(root, {})
-        h, _, _ = pre.run(lh2, **largs)
-        check(dump([{k: v for k, v in j.items()} for j in store.load_manifest(root)["jobs"]]) == dump(m0["jobs"]),
-              "V2BI12 로컬판 — 설정을 풀면 작업 목록이 처음과 같음")
-
+                      "V2BI13 로컬판 Run — 프로젝트 값과 다른 작업이 남아 있으면 멈춤(Prepare 를 먼저)", contains="Prepare")
+        h, _, _ = pre.run(sh, **largs)
+        check(dump(store.load_manifest(root)["jobs"]) == dump(m0["jobs"]), "V2BI13 로컬에서 반영하면 작업이 프로젝트 값으로 돌아옴")
+        check(asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")) is not None, "V2BI13 그 뒤 Run 은 그대로 돈다(드라이런)")
 
 def ux_v2b_flow_unit():
     """UX v2-B 갈래를 이은 흐름(감독관 — 통합 뒤): 라우트로 쓴 패치별 설정 → 「반영 필요」 → Prepare → 목록의 applied · 실행 설정 유도는

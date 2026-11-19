@@ -1976,12 +1976,15 @@ class BMKDesignPatchPrepare:
             gen_entries = store.crop_gen_entries(root)
         except ValueError as exc:
             raise ValueError(f"{_TAG} {exc}") from exc
+        if gen_entries and not compat.server_mode():
+            # 로컬판(ComfyUI 탭)의 승인 창은 프로젝트 값 한 벌만 보인다 — 패치마다 다른 모델·장 수의 작업이 섞이면 보인 것과 나가는 것이
+            # 달라진다. 패치별 설정이 있는 프로젝트(서버 모드에서 만든 폴더를 가져온 것)는 로컬에서 반영하지 않는다(아무것도 쓰기 전)
+            raise ValueError(f"{_TAG} {_LOCAL_PATCH_SETTINGS}")
         refs_dir = (m.get("source") or {}).get("refs_dir") or ""
         glossary = _glossary(root, m)
         old_jobs = {j["cell_key"]: j for j in m["jobs"]}
         jobs, tiles, warn_lines, dup_lines = [], [], [], []
         body_crops = blocked_crops = model_overrides = 0
-        local_skipped = False  # 로컬판이라 만들지 않은 패치(패치별 생성 설정)가 있음 → 입력 지문을 올리지 않는다(서버에서 '반영 필요'로 남게)
         adopt_pending = False  # 채택 가드가 'Import 가 반영할 차이'로 건너뛴 크롭이 있음 → 입력 지문을 올리지 않는다
         if not m["crops"]:  # 빈 시작(D6): 예외 대신 경고
             warn_lines.append("  크롭 없음 — 작업 없음(Studio 레이아웃 편집에서 크롭을 그린 뒤 다시 큐)")
@@ -1994,12 +1997,6 @@ class BMKDesignPatchPrepare:
                 eff, gen_error = models.effective_gen(prepare, gen_entries.get(crop["id"])), None
             except models.GenError as exc:
                 eff, gen_error = None, exc
-            gen_tile = "0 jobs: patch settings unreadable"
-            if gen_error is None and crop["id"] in gen_entries and not compat.server_mode():
-                gen_tile, local_skipped = "0 jobs: server-only patch settings", True
-                # 로컬판(ComfyUI 탭)의 승인 창은 프로젝트 값 한 벌(모델·장 수)만 보인다 — 패치별 설정이 있는 패치를 만들면 보인 것과 다른
-                # 모델·장 수로 나간다. 그 패치는 만들지 않는다(서버에서 만든 프로젝트 폴더를 로컬로 가져온 경우 — 설정을 고르는 화면은 서버 모드에만 있다)
-                gen_error = "패치별 생성 설정이 있는 패치는 서버 모드에서만 생성합니다"
             ov = store.load_spec_override(root, crop["id"])
             spec = dprompt.spec_from_manifest(crop, None, refs_dir, glossary, ov)
             v2 = dprompt.v2_of(ov)
@@ -2030,7 +2027,8 @@ class BMKDesignPatchPrepare:
                     continue
             if gen_error is not None:  # 프로젝트 모델로 조용히 만들지 않는다(D537)
                 warn_lines.append(f"  {crop['id']} {crop['name']}: 작업 없음 - {gen_error}")
-                tiles.append(_label_tile([_fit(canvas_rgb, _THUMB)], [_ascii(crop["id"]), gen_tile], (255, 140, 120)))
+                tiles.append(_label_tile([_fit(canvas_rgb, _THUMB)], [_ascii(crop["id"]), "0 jobs: patch settings unreadable"],
+                                         (255, 140, 120)))
                 continue
             crop_model, job_quality, crop_n = eff["model"], eff["quality"], eff["n"]
             if not eff["inherit"]["model"]:
@@ -2149,9 +2147,7 @@ class BMKDesignPatchPrepare:
                                  "n": int(n), "ref_style": ref_style, "calls_per_cell": int(calls_per_cell), "complexity": complexity}
         if model_opts is not None:
             m["prepare_settings"].update(model_opts)
-        # 채택 미반영 크롭이 있으면 열 때 값 그대로(없으면 키 없음) — Studio '반영 필요'가 다음 반영까지 남게. 로컬판이라 만들지 않은 패치가
-        # 있을 때도 같다(그 폴더를 서버 모드로 열면 반영해야 그 패치의 작업이 생긴다)
-        if not adopt_pending and not local_skipped:
+        if not adopt_pending:  # 채택 미반영 크롭이 있으면 열 때 값 그대로(없으면 키 없음) — Studio '반영 필요'가 다음 반영까지 남게
             m["prepare_inputs"] = inputs_fp
         # 배치 10 D161 공용 자리(몸통 = 갈래 B): 잠금 안 병합 결과에서 jobs 밖(·reset) 생성 조건의 다시 생성 대기를 원장 쓴 몫까지 내림
         # — 노드가 연 뒤 보드가 옛 셀에 더한 몫까지, 키가 되돌아와도 안 살아나게
@@ -2745,21 +2741,30 @@ def _cand_grid(root: str, keys: list[str], limit: int = 48) -> torch.Tensor:
     return _to_image(_grid(tiles, min(6, len(tiles))))
 
 
-def _local_patch_jobs_guard(root: str, m: dict) -> None:
-    """로컬판(ComfyUI 탭) Run 의 앞 검사(UX v2-B): 패치별 생성 설정(crop_gen.json)이 있는 패치의 작업이 매니페스트에 남아 있으면 멈춘다.
-    서버에서 반영한 프로젝트 폴더를 로컬로 가져와 Prepare 없이 Run 하는 길이다 — 로컬의 승인 창은 건수·예상 금액만(Studio 는 프로젝트
-    모델 한 줄) 보이고 패치마다의 모델·장 수를 보이지 않는다. 로컬 Prepare 는 그런 패치의 작업을 만들지 않으므로 Prepare 를 거친 큐는
-    닿지 않는다. 파일이 없는 프로젝트(지금까지의 모든 로컬 프로젝트)와 서버 모드는 아무것도 하지 않는다."""
+_LOCAL_PATCH_SETTINGS = ("패치별 생성 설정이 있는 프로젝트는 서버 모드에서만 반영·생성합니다 — 서버 모드에서 패치별 설정을 모두 푼 뒤 가져오거나 "
+                         "프로젝트 폴더의 crop_gen.json 을 치워 주세요")
+
+
+def _local_patch_guard(root: str, m: dict) -> None:
+    """로컬판(ComfyUI 탭) Run 의 앞 검사(UX v2-B). crop_gen.json 이 없는 프로젝트(지금까지의 모든 로컬 프로젝트)와 서버 모드는 아무것도
+    하지 않는다. 파일이 있으면(서버 모드에서 만든 프로젝트 폴더를 가져온 것): ① 패치별 설정이 남아 있으면 멈춘다(Prepare 와 같은 사유 —
+    Prepare 를 거치지 않은 큐도 막는다) ② 설정은 모두 풀렸어도 매니페스트의 작업이 마지막 반영의 프로젝트 값(prepare_settings 의 모델·장 수)과
+    다르면 멈춘다 — 서버에서 패치별 값으로 반영한 작업이 남은 채 반영 전인 폴더다. 로컬의 승인 창은 패치마다의 모델·장 수를 보이지 않는다.
+    무료 다운로드 복구만 남은 큐도 이 검사에 막힌다(로컬에서 Prepare 를 한 번 돌리면 풀린다)."""
     if compat.server_mode() or not os.path.isfile(os.path.join(root, store.CROP_GEN_NAME)):
         return
     try:
         entries = store.crop_gen_entries(root)
     except ValueError as exc:
         raise ValueError(f"{_TAG} {exc}") from exc
-    hit = sorted({str(j.get("crop_id")) for j in m.get("jobs") or [] if isinstance(j, dict) and j.get("crop_id") in entries})
-    if hit:
-        raise ValueError(f"{_TAG} 패치별 생성 설정으로 만든 작업이 {len(hit)}개 패치에 남아 있습니다 — 로컬에서는 그 패치를 생성하지 "
-                         "않습니다. Prepare(반영)를 먼저 실행하세요(서버 모드에서 만든 프로젝트)")
+    if entries:
+        raise ValueError(f"{_TAG} {_LOCAL_PATCH_SETTINGS}")
+    ps = m.get("prepare_settings")
+    if isinstance(ps, dict) and ps:
+        odd = [j for j in m.get("jobs") or [] if not isinstance(j, dict) or j.get("model") != ps.get("model") or str(j.get("n")) != str(ps.get("n"))]
+        if odd:
+            raise ValueError(f"{_TAG} 프로젝트 값과 다른 모델·장 수의 작업이 {len(odd)}개 남아 있습니다(서버 모드에서 패치별 설정으로 반영한 "
+                             "작업) — Prepare(반영)를 먼저 실행하세요")
 
 
 class BMKDesignPatchRun:
@@ -2813,7 +2818,7 @@ class BMKDesignPatchRun:
         t0 = time.time()
         # 첫 줄부터 await: 이후 예외는 ComfyUI 의 대기 노드 경로로 보고되어 입력값(hidden 토큰)이 기록되지 않는다
         root, _m = await asyncio.to_thread(_open, project)
-        await asyncio.to_thread(_local_patch_jobs_guard, root, _m)
+        await asyncio.to_thread(_local_patch_guard, root, _m)
         key = _board_key(root)
         opts = {"retry_failed": bool(retry_failed), "retry_orphans": bool(retry_orphans), "only": str(only or "")}
         approve = str(approve or "").strip()
