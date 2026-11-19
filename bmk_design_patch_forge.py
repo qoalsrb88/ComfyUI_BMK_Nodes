@@ -248,17 +248,18 @@ class ForgeClient:
     def __init__(self, config: ForgeConfig, transport: Transport | None = None):
         self.config, self._transport = config, transport
 
-    async def _exchange(self, method, url, headers, body, limit, call="?"):
+    async def _exchange(self, method, url, headers, body, limit, call="?", timeout: float | None = None):
         reason = None
         failure_status = None
         kind = exc_name = errno = None
         started = time.monotonic()
+        if timeout is None:
+            timeout = self.config.timeout
         try:
             if self._transport is None:
-                result = await _http(method, url, headers, body, self.config.timeout, limit)
+                result = await _http(method, url, headers, body, timeout, limit)
             else:
-                result = await asyncio.wait_for(self._transport(method, url, headers, body, self.config.timeout),
-                                                timeout=self.config.timeout)
+                result = await asyncio.wait_for(self._transport(method, url, headers, body, timeout), timeout=timeout)
             status, response_headers, raw = result
             if type(status) is not int or not isinstance(response_headers, dict) or not isinstance(raw, bytes):
                 reason, kind = "unreachable", "format"
@@ -308,7 +309,7 @@ class ForgeClient:
                 pass
         raise ForgeError(reason, status, detail, kind=kind) from None
 
-    async def _json(self, method, path, token, body=None, call=None, quiet=()):
+    async def _json(self, method, path, token, body=None, call=None, quiet=(), timeout: float | None = None):
         call = call or method + " " + path
         started = time.monotonic()
         headers = {"Authorization": "Bearer " + token}
@@ -317,7 +318,7 @@ class ForgeClient:
             headers["Content-Type"] = "application/json"
             encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
         url = str(URL(self.config.api).with_path(path))
-        status, raw = await self._exchange(method, url, headers, encoded, JSON_LIMIT, call)
+        status, raw = await self._exchange(method, url, headers, encoded, JSON_LIMIT, call, timeout)
         self._status(status, raw, token, call, started, quiet)
         data = None
         try:
@@ -331,6 +332,97 @@ class ForgeClient:
 
     def __repr__(self) -> str:  # 설정의 주소를 싣지 않는다
         return "ForgeClient()"
+
+    async def _prompt_json(self, method, path, token, body=None, timeout=None):
+        try:
+            return await self._json(method, path, token, body, timeout=timeout)
+        except ForgeError as error:
+            # 프롬프트 API에서는 인증·권한을 뺀 4xx가 모두 입력 거절이다.
+            if error.reason not in ("not_found", "unreachable") or error.status is None or not 400 <= error.status < 500:
+                raise
+            status = error.status
+        raise ForgeError("invalid", status) from None
+
+    async def prompt_capabilities(self, token: str) -> dict:
+        """GET /api/image/assistant/prompt-capabilities → {"available": bool, "reason": str | None, "guidance_revision": str | None,
+        "profiles": {checkpoint: 프로필}, "skills": {프로필: [id…]}}. 서버는 checkpoint 가 없는 프로필의 목록도 싣는다(catalogs ⊇ 프로필).
+        지침을 못 쓰는 상태(available false)면 목록이 비어 있어도 정상 모양이다. LLM 호출 없음."""
+        path = "/api/image/assistant/prompt-capabilities"
+        data = await self._prompt_json("GET", path, token)
+        available, revision, reason = data.get("skills_available"), data.get("guidance_revision"), data.get("reason")
+        profiles, catalogs = data.get("profiles"), data.get("catalogs")
+        if (type(available) is not bool or "guidance_revision" not in data
+                or not (isinstance(revision, str) or (not available and revision is None))
+                or not (isinstance(reason, str) or (available and reason is None))
+                or not isinstance(profiles, dict) or not all(isinstance(profile, str) for profile in profiles.values())
+                or not isinstance(catalogs, dict) or (available and not set(profiles.values()) <= set(catalogs))):
+            raise _failure(path, "format", status=200)
+        skills = {}
+        for profile, rows in catalogs.items():
+            if (not isinstance(rows, list) or any(not isinstance(row, dict) or not isinstance(row.get("id"), str)
+                                                   or not isinstance(row.get("description"), str) for row in rows)):
+                raise _failure(path, "format", status=200)
+            skills[profile] = [row["id"] for row in rows]
+        return {"available": available, "reason": reason, "guidance_revision": revision, "profiles": profiles, "skills": skills}
+
+    async def prepare_prompt(self, token: str, *, checkpoint: str, request: str, image_count: int, skill_ids: list[str],
+                             timeout: float | None = None) -> dict:
+        """POST /api/image/assistant/prepare-prompt — skill_ids 를 늘 싣는다(빈 목록도 — 서버의 분류용 LLM 을 부르지 않게). 4개를 넘으면
+        보내지 않고 ValueError. → {"status": "prepared", "profile", "skill_ids", "guidance_revision", "guidance": {"rewrite", "global",
+        "model", "skills": [{"id", "body"}…], "mask"}} | {"status": "unsupported" | "failed", "reason"}. 재시도 없음."""
+        if not isinstance(skill_ids, list) or len(skill_ids) > 4 or not all(isinstance(key, str) for key in skill_ids):
+            raise ValueError("skill_ids에는 문자열을 4개까지 지정할 수 있습니다.")
+        path = "/api/image/assistant/prepare-prompt"
+        body = {"checkpoint": checkpoint, "task_type": "image", "request_brief": {"request": request},
+                "conversation": [{"entry_id": "dp-1", "role": "user", "text": request}],
+                "image_count": image_count, "has_mask": False, "skill_ids": skill_ids}
+        data = await self._prompt_json("POST", path, token, body, timeout)
+        status = data.get("status")
+        if status in ("unsupported", "failed") and isinstance(data.get("reason"), str):
+            return {"status": status, "reason": data["reason"]}
+        guidance = data.get("guidance")
+        selected = data.get("selected_skill_ids")
+        if (status != "prepared" or not isinstance(data.get("profile"), str) or not isinstance(data.get("guidance_revision"), str)
+                or not isinstance(selected, list) or not all(isinstance(key, str) for key in selected)
+                or not isinstance(data.get("policy_status"), dict) or not isinstance(guidance, dict)
+                or not all(isinstance(guidance.get(key), str) for key in ("rewrite", "global", "model"))
+                or "mask" not in guidance or (guidance["mask"] is not None and not isinstance(guidance["mask"], str))
+                or not isinstance(guidance.get("skills"), list)
+                or any(not isinstance(row, dict) or not isinstance(row.get("id"), str)
+                       or not isinstance(row.get("body"), str) for row in guidance["skills"])):
+            raise _failure(path, "format", status=200)
+        return {"status": status, "profile": data["profile"], "skill_ids": selected, "guidance_revision": data["guidance_revision"],
+                "guidance": {key: guidance[key] for key in ("rewrite", "global", "model", "skills", "mask")}}
+
+    async def prompt_assist(self, token: str, *, system: str, prompt: str, image: str | None = None, model: str | None = None,
+                            timeout: float | None = None) -> dict:
+        """POST /api/image/prompt/assist(mode chat · response_format json_object — image·model 은 값이 있을 때만, feature 는 보내지 않음)
+        → {"ok": True, "text": str, "seconds": float | None} | {"ok": False, "error": 가린 글 200자까지}. 서버는 실패도 HTTP 200 으로 준다.
+        재시도 없음."""
+        path = "/api/image/prompt/assist"
+        body = {"mode": "chat", "system": system, "prompt": prompt, "response_format": "json_object"}
+        if image is not None:
+            body["image"] = image
+        if model is not None:
+            body["model"] = model
+        data = await self._prompt_json("POST", path, token, body, timeout)
+        success, text = data.get("success"), data.get("text")
+        if success is False and (text is None or isinstance(text, str)) and isinstance(data.get("error_message"), str):
+            message = data["error_message"]
+            for private in (token, image):
+                if private:
+                    message = message.replace(private, "")
+            return {"ok": False, "error": (_safe_detail(message) or "프롬프트 작성에 실패했습니다.")[:200]}
+        seconds = data.get("processing_time")
+        if success is True and isinstance(text, str):
+            if seconds is None:
+                return {"ok": True, "text": text, "seconds": None}
+            try:
+                if type(seconds) in (int, float) and math.isfinite(seconds):
+                    return {"ok": True, "text": text, "seconds": float(seconds)}
+            except OverflowError:
+                pass
+        raise _failure(path, "format", status=200)
 
     async def me(self, token: str) -> dict:
         """GET /auth/me → {"id", "email", "name"}. 401·authenticated 가 참이 아님 → ForgeError("unauthorized")."""
