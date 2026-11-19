@@ -316,6 +316,25 @@ window.DPLayoutEdit = (() => {
     let pendingPanel = false; // 입력 중이라 미룬 패널 다시 그리기(폴링·저장 응답)
     let refsAt = { name: null, id: null, refs: undefined, timer: null }; // 바꾸는 중인 이름의 레퍼런스(GET layout/refs)
     let nameShow = null; // 지금 패널 이름 칸의 다시 표시(레퍼런스 응답이 오면 부름)
+    let ratioModelKey = null;
+
+    function ratioModel() {
+      const model = SM() && opts.savedModel?.();
+      return model?.ratios?.length ? model : null;
+    }
+
+    function ratioWrong(c) {
+      const model = ratioModel(), rect = rectOf(c);
+      return !!model && !G.ratioMatch(rect[2] - rect[0], rect[3] - rect[1], model.ratios, model.ratio_tolerance);
+    }
+
+    function modelChanged() {
+      const model = ratioModel(), key = JSON.stringify(model ? [model.name, model.ratios, model.ratio_tolerance] : null);
+      if (key === ratioModelKey) return;
+      ratioModelKey = key;
+      if (proposal?.ratioModel && proposal.ratioModel !== key) proposal = null;
+      if (on) renderKeepTyping();
+    }
 
     function el(tag, cls, text) {
       const e = document.createElement(tag);
@@ -1266,6 +1285,8 @@ window.DPLayoutEdit = (() => {
     async function applyProposal() {
       const p = proposal;
       if (!p) return;
+      modelChanged();
+      if (proposal !== p) return;
       if (p.grow && (p.since !== S.remote || !S.crop(p.id) || !sameRect(S.crop(p.id).rect, p.base))) {
         proposal = null;
         opts.toast("크롭이 바뀌어 제안을 버렸습니다 — 다시 제안", "warn");
@@ -1281,7 +1302,10 @@ window.DPLayoutEdit = (() => {
       if (p.grow && !await askFree("크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n"
         + modeText("[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, 실행(G)에서 생성을 승인할 때만 유료(평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n",
           "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, ⑤ 생성에서 승인할 때만 유료.\n")
-        + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).", () => S.remote === remote && selected === JSON.stringify([sel, [...(multi || [])].sort()]) && proposal === p)) return;
+        + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).", () => {
+          modelChanged();
+          return S.remote === remote && selected === JSON.stringify([sel, [...(multi || [])].sort()]) && proposal === p;
+        })) return;
       proposal = null;
       await flushNudge();
       if (p.boxes) await S.idle(); // 상자 삭제·실행 취소가 저장 중이면 끝난 값을 비교한다.
@@ -1296,6 +1320,21 @@ window.DPLayoutEdit = (() => {
         return;
       }
       sendRect(c, p.rect, p.since, p.base);
+    }
+
+    function proposeRatio() {
+      const c = S.crop(sel), model = ratioModel();
+      if (!c || !model || !editable() || S.err || S.stale || S.busy || drag || nudge || lockedNow(c.id) || !ratioWrong(c)) return;
+      const fit = G.ratioFitRect(c.rect, S.L.canvas, model.ratios, model.ratio_tolerance);
+      if (!fit) {
+        opts.toast("캔버스 안에서 이 모델의 비율로 넓힐 수 없습니다", "warn");
+        return;
+      }
+      if (badRect(fit.rect)) return;
+      modelChanged();
+      proposal = { id: c.id, rect: fit.rect, base: c.rect.slice(), since: S.remote, grow: true,
+        ratioModel: ratioModelKey, note: `모델 비율로 넓히기 · ${fit.ratio}` };
+      render();
     }
 
     function armBox(tid) {
@@ -1633,6 +1672,7 @@ window.DPLayoutEdit = (() => {
           ch.append(x);
         }
         if (split.has(c.psd_name || c.name)) ch.append(chip("PSD 와 다름", "b-bad"));
+        if (ratioWrong(c)) ch.append(chip("비율 안 맞음", "b-wait"));
         for (const [lv, cls] of [["error", "b-bad"], ["warn", "b-wait"]]) {
           const rows = (c.checks || []).filter((x) => x.level === lv);
           if (rows.length) {
@@ -1910,6 +1950,11 @@ window.DPLayoutEdit = (() => {
       if (proposal && proposal.id === c.id) row("제안", `${proposal.note ? proposal.note + " · " : ""}[${proposal.rect.join(", ")}] ${sizeText(proposal.rect)} — Enter 적용 · Esc 취소`, "warn");
       const b = el("div", "lp-btns");
       b.append(button("상자에 크롭 맞추기", "부품 상자 합집합 ÷ 0.7 → 128 배수 → 비 ≤ 3 → 캔버스 안(미리보기, Enter 적용)", propose));
+      if (ratioModel()) {
+        const fit = button("모델 비율로 넓히기", "가까운 모델 비율로 크롭을 넓히는 제안 — 확인 뒤 저장", proposeRatio);
+        fit.disabled = !ratioWrong(c) || !editable() || !!S.err || S.stale || S.busy || !!drag || !!nudge;
+        b.append(fit);
+      }
       if (proposal && proposal.id === c.id) b.append(button("제안 적용", "Enter", applyProposal, "primary"));
       const pn = c.psd_name || c.name;
       const part = partial();
@@ -2090,6 +2135,7 @@ window.DPLayoutEdit = (() => {
     function stateChanged(st) {
       // 레이아웃 쓰기는 매니페스트 rev 를 올리지 않는다 — 다시 받을지는 reloadKind(레이아웃 판은 지금 가진 판·지난 state 와 비교)
       state = st;
+      modelChanged();
       const prevLr = seenLr;
       const prevRf = seenRf;
       seenLr = st.layout_rev;
@@ -2103,7 +2149,7 @@ window.DPLayoutEdit = (() => {
 
     // 진행(G) 반영 칸 [되돌리기]가 쓴 판 — 다른 창의 쓰기로 보지 않아 실행 취소 기록을 남긴다(지운 크롭을 같은 ID 로 되살리는 길은 Ctrl+Z 뿐).
     // 그 사이 다른 창이 썼으면(from ≠ ownRev) 다음 읽기가 기록을 비운다
-    return { enter, leave, onKey, stateChanged, ownWrite: S.ownWrite, proposeGrow, lockExternal, removeExternal,
+    return { enter, leave, onKey, stateChanged, ownWrite: S.ownWrite, proposeGrow, lockExternal, removeExternal, modelChanged,
       layerCrops: () => S.L && S.L.crops.map((c) => Object.assign({}, c, { rect: rectOf(c) })),
       flush: async () => { await flushNudge(); await S.idle(); } };
   }

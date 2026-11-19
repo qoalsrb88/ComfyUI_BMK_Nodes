@@ -30,8 +30,12 @@ window.DPPipeline = (() => {
 
   function modelText(p) {
     const m = modelInfo(p.model);
+    const opts = p.opts || p;
+    const thinking = { minimal: "간단히", medium: "보통", high: "깊게" };
     return `${modelLabel(p.model)}` + (m && !m.qualities.length ? "" : ` · 품질 ${p.quality}`)
-      + (/^gpt-image-2\.6-/.test(p.model) ? ` · 복잡도 ${p.complexity || "high"}` : "");
+      + (/^gpt-image-2\.6-/.test(p.model) ? ` · 복잡도 ${p.complexity || "high"}` : "")
+      + (m?.opts?.image_size?.includes(opts.image_size) ? ` · 해상도 ${opts.image_size}` : "")
+      + (m?.opts?.thinking_level?.includes(opts.thinking_level) ? ` · 추론 ${thinking[opts.thinking_level]}` : "");
   }
 
   function modelSettings(values) {
@@ -40,6 +44,10 @@ window.DPPipeline = (() => {
     const next = { ...values };
     if (m.qualities.length && !m.qualities.includes(next.quality)) next.quality = m.default_quality;
     if (Number(next.n) > m.max_n) next.n = m.max_n;
+    for (const key of ["image_size", "thinking_level"]) {
+      const choices = m.opts?.[key];
+      if (choices?.length && !choices.includes(next[key])) next[key] = m.opt_defaults?.[key];
+    }
     return next;
   }
 
@@ -2412,7 +2420,7 @@ window.DPPipeline = (() => {
 
     function progressPrepare(plan, P0) {
       if (!modelCatalog() || !P0 || (P0.drift || []).some((d) => d.section === "prepare"
-          && ["model", "quality", "complexity"].includes(d.field))) return null;
+          && ["model", "quality", "complexity", "image_size", "thinking_level"].includes(d.field))) return null;
       const planned = plan?.run?.prepare, derived = P0.derived;
       const recorded = planned || derived?.settings?.prepare;
       if (!recorded || !recorded.model) return null;
@@ -2422,12 +2430,21 @@ window.DPPipeline = (() => {
       // 유도값 중 기본값은 실행 기록이 아니다. 저장값과도 대조해 저장 직후의 낡은 갈라짐 응답을 보완한다.
       if (!planned && keys.some((key) => !["manifest", "jobs"].includes(derived?.from?.[`prepare.${key}`]))) return null;
       if (keys.some((key) => recorded[key] == null || !same(recorded[key], P0.settings?.prepare?.[key]))) return null;
+      const saved = modelSettings(P0.settings?.prepare || {});
+      for (const key of ["image_size", "thinking_level"]) {
+        if (!model?.opts?.[key]?.length) continue;
+        const value = recorded.opts?.[key] ?? recorded[key];
+        if (value != null && (!same(value, saved[key])
+            || (!planned && !["manifest", "jobs"].includes(derived?.from?.[`prepare.${key}`])))) return null;
+      }
       return recorded;
     }
 
     function prepareChanged(base, values) {
       return ["model", "quality", "size_rule", "variants", "ref_style", "complexity"].some((k) =>
-        (k !== "complexity" || /^gpt-image-2\.6-/.test(values.model)) && !same(base[k], values[k]));
+        (k !== "complexity" || /^gpt-image-2\.6-/.test(values.model)) && !same(base[k], values[k]))
+        || ["image_size", "thinking_level"].some((k) => !same(base[k], values[k]) && modelInfo(values.model)?.opts?.[k]?.length
+          && !same(modelSettings(base)[k], modelSettings(values)[k]));
     }
 
     function prepareText(preview) {
@@ -3479,7 +3496,11 @@ window.DPPipeline = (() => {
           btns(box, el("span", "", `모델 ${modelLabel(base.model)} — `), sw);
           if (!P0.saved || P0.error || need.length) line(box, "먼저 ① 준비 설정 확인", "dim");
         }
-        for (const [k, spec] of Object.entries(ws)) if (!hiddenPath(sec, k)) box.append(field(sec, k, spec, base[k], need.includes(`${sec}.${k}`)));
+        const model = sec === "prepare" && modelInfo((form.prepare || {}).model || base.model);
+        for (const [k, spec] of Object.entries(ws)) {
+          if (sec === "prepare" && ["image_size", "thinking_level"].includes(k) && !model?.opts?.[k]?.length) continue;
+          if (!hiddenPath(sec, k)) box.append(field(sec, k, spec, base[k], need.includes(`${sec}.${k}`)));
+        }
         const sb = button(need.length ? "확인·저장" : "저장", need.length ? `확인 필요: ${need.join(", ")} — 이 값으로 저장하면 확인됨` : "이 절을 저장",
           () => saveSection(sec), need.length ? "primary" : "");
         sb.disabled = PS.busy;
@@ -3506,10 +3527,12 @@ window.DPPipeline = (() => {
       if (models && k === "model") spec = { ...spec, choices: models.map((m) => m.name) };
       if (model && k === "quality") spec = { ...spec, choices: model.qualities, readonly: !model.qualities.length || spec.readonly };
       if (model && k === "n") spec = { ...spec, max: model.max_n };
+      if (model?.opts?.[k]?.length && ["image_size", "thinking_level"].includes(k)) spec = { ...spec, choices: model.opts[k] };
       const r = el("div", "lp-row pp-field" + (sub ? " pp-sub" : "") + (models && k === "model" ? " pp-model" : "") + (confirm ? " bad" : moved ? " warn" : ""));
       const from = PS.P.derived.from[`${sec}.${k}`];
       const lab = el("span", "k", (sub ? "출력 하위 폴더" : k) + (confirm ? " (확인 필요)" : ""));
       if (models && (k === "model" || k === "quality")) lab.textContent = (k === "model" ? "모델" : "품질") + (confirm ? " (확인 필요)" : "");
+      if (models && ["image_size", "thinking_level"].includes(k)) lab.textContent = (k === "image_size" ? "해상도" : "추론") + (confirm ? " (확인 필요)" : "");
       if (from) lab.title = `처음 값 출처: ${from}`;
       if (sub) lab.title = modeText(`Export 노드 subfolder${from ? ` · 처음 값 출처: ${from}` : ""}`, `출력 하위 폴더${from ? ` · 처음 값 출처: ${from}` : ""}`);
       const cur0 = prepare ? prepare[k] : mine ? form[sec][k] : value;
@@ -3538,7 +3561,8 @@ window.DPPipeline = (() => {
           .filter((c) => can("local_qwen") || sec !== "draft" || k !== "vlm" || !String(c).startsWith("local_qwen/"));
         for (const c of choices) {
           const m = models && k === "model" ? modelInfo(c) : null;
-          const o = el("option", "", m ? m.label : model && k === "quality" && !model.qualities.length ? "사용 안 함" : c);
+          const o = el("option", "", m ? m.label : model && k === "quality" && !model.qualities.length ? "사용 안 함"
+            : models && k === "thinking_level" ? ({ minimal: "간단히", medium: "보통", high: "깊게" }[c] || c) : c);
           o.value = c;
           if (m && m.available === false) { o.disabled = true; o.title = m.why || ""; }
           inp.append(o);
@@ -3577,6 +3601,13 @@ window.DPPipeline = (() => {
         }
         for (const [why, labels] of reasons) r.append(el("span", "warn pp-hint", `${labels.join(" · ")}: ${why}`));
         if (model && model.available === false) inp.title = model.why || "";
+        const saved = modelInfo((PS.P.settings || PS.P.derived.settings).prepare.model);
+        const fallback = saved?.available === false && modelInfo(saved.fallback);
+        if (fallback) {
+          const sw = button(`${fallback.label} 로 전환`, "모델 선택을 바꿉니다 — [저장]에서 확인한 뒤 저장", () => set(fallback.name));
+          sw.disabled = !!spec.readonly || fallback.available === false || prepare.model === fallback.name;
+          r.append(sw);
+        }
       }
       if (model && k === "quality" && !model.qualities.length) {
         r.classList.add("pp-complexity-unused");
@@ -3971,6 +4002,7 @@ window.DPPipeline = (() => {
     // board.js tabWay·R 확인 문구(유료 탭 길을 쓰나·지금은 예약만인가·그 길의 부수 효과 줄), setMaskLeft = 적용 안 한 마스크 편집(★ 점검 줄)
     return { stateChanged, enter, leave, select, queue: boardQueue, applyWarn, recalc: planNow, openSettings, reroll, tabChanged: render, paidWhy, paidLock, agentOn, agentConfirm,
       side: SIDE, setMaskLeft, exportNow, exportWhy, exportLocked, openFolder, exportAvailable, steps, canLeave, showTab, goSection, tab: () => activeTab,
+      savedModel: () => PS.P?.saved && !PS.P.error ? modelInfo(PS.P.settings?.prepare?.model) : null,
       freePending: () => PS.plan && !PS.planErr && !planStale() && !PS.plan.run.error ? Math.max(0, PS.plan.run.free || 0) : 0 };
   }
 

@@ -1346,11 +1346,16 @@
   }
 
   function candidateModel(c) {
-    if (!SM() || !c || !c.model) return "";
+    if (!SM() || !c) return "";
+    const name = c.model || c.origin_info?.model;
+    if (!name) return "";
     const models = window.DPEnv.caps && window.DPEnv.caps.models;
     if (!Array.isArray(models)) return "";
-    const model = models.find((m) => m.name === c.model);
-    return (model && model.label || c.model) + (c.quality && !(model && !model.qualities.length) ? ` · 품질 ${c.quality}` : "");
+    const model = models.find((m) => m.name === name), opts = c.opts || c.origin_info?.opts || {};
+    const thinking = { minimal: "간단히", medium: "보통", high: "깊게" };
+    return (model && model.label || name) + (c.quality && !(model && !model.qualities.length) ? ` · 품질 ${c.quality}` : "")
+      + (model?.opts?.image_size?.includes(opts.image_size) ? ` · 해상도 ${opts.image_size}` : "")
+      + (model?.opts?.thinking_level?.includes(opts.thinking_level) ? ` · 추론 ${thinking[opts.thinking_level]}` : "");
   }
 
   function row(parent, key, text, cls = "") {
@@ -1416,6 +1421,24 @@
       + (ranText(c) ? ` · ${ranText(c)} 완료` : ""));
     const model = candidateModel(c);
     if (model) row(d, "모델", model).title = model;
+    if (SM() && (c.prompt_rewritten === true || typeof c.prompt_used === "string" && c.prompt_used.length)) {
+      const r = row(d, "프롬프트", c.prompt_rewritten === true ? "공급자가 프롬프트를 고쳐 씀" : "프롬프트가 서버에서 바뀜");
+      r.classList.add("dp-prompt-detail");
+      if (typeof c.prompt_used === "string" && c.prompt_used.length) {
+        const text = el("pre", "pp-prompt dp-server-prompt", c.prompt_used);
+        text.hidden = true;
+        text.tabIndex = 0;
+        const b = el("button", "inline", "서버가 쓴 프롬프트 보기");
+        b.type = "button";
+        b.setAttribute("aria-expanded", "false");
+        b.addEventListener("click", () => {
+          text.hidden = !text.hidden;
+          b.setAttribute("aria-expanded", String(!text.hidden));
+        });
+        r.append(b);
+        d.append(text);
+      }
+    }
     tookRow(d, crop, c);
     if (c.joint && c.joint.first && c.joint.first !== t.tid) {
       const r = row(d, "공동", `${c.joint.tids.join("·")} 를 한 번에 고친 결과 — ★ 는 ${c.joint.first} 에만 `, "warn");
@@ -2290,7 +2313,8 @@
       // psdPartial = 서버가 S1-a(PSD 기준점을 고른 이름만 갱신)인가 — S3 서버(state 에 pipeline_rev)와 함께 들어옴. 재시작 전 옛 서버는 take·ack 가
       // 기준점을 통째로 바꿔 나머지 갈라짐 경고도 꺼진다(편집기가 옛 문구로)
       editor = window.DPLayoutEdit.create({ list: $("layout-list"), panel: $("layout-panel"), head: $("layout-head") },
-        { apiUrl, root: ROOT, viewer, toast, queue: applyFree, applyWarn, psdPartial: () => !!S && "pipeline_rev" in S, exit: () => setEditing(false) });
+        { apiUrl, root: ROOT, viewer, toast, queue: applyFree, applyWarn, psdPartial: () => !!S && "pipeline_rev" in S,
+          savedModel: () => pipe?.savedModel?.(), exit: () => setEditing(false) });
     }
     if (window.DPRefEdit) {
       const sheetViewer = window.DPViewer.create($("ref-viewer"), { apiUrl });
@@ -2321,7 +2345,7 @@
           if (mode === "refs" && refsOn && cropId) refEd.select(cropId);
         },
         refresh: () => refresh(true),
-        stepsChanged: () => { renderMode(); renderHeader(); },
+        stepsChanged: () => { renderMode(); renderHeader(); editor?.modelChanged?.(); },
         maskPending: () => maskEd && maskEd.pending(),
         editPending: () => !!S && window.DPPipeline.layoutLines(S).length > 0,
         select: (id) => {
