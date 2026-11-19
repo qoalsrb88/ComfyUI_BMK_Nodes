@@ -403,7 +403,7 @@ window.DPV2Inspector = (() => {
         if (!p.meta.specLoaded && Api.can("v2_spec_edit")) {
           await Store.loadSpec(p.id, true);
         }
-        if (p.meta.dirtySpec || !p.meta.seen || p.meta.seen === "null") {
+        if (Api.can("v2_spec_edit") && (p.meta.dirtySpec || !p.meta.seen || p.meta.seen === "null")) {
           await Store.savePatchSpec(p);
         }
         const res = await Api.assistPrompt(Store.state.root, {
@@ -589,7 +589,11 @@ window.DPV2Inspector = (() => {
       type: "button", className: "btn-secondary-sm full-w", text: "이 패치 지시문 저장",
       onClick: async () => {
         try {
-          await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
+          const res = await Store.savePatchSpec(p, { includeRaw: p.meta.rawDirty });
+          if (res && res.unsupported) {
+            Store.toast(res.reason || "지시문 저장은 아직 연결되지 않았습니다.", "warn");
+            return;
+          }
           Store.toast("지시문을 저장했습니다.", "ok");
           await Store.refreshAll(true);
         } catch (err) {

@@ -214,30 +214,26 @@ window.DPV2Api = (() => {
   }
 
   async function saveSpec(root, body) {
-    if (can("v2_spec_edit")) {
-      // §3.3: 허용 키 외의 키는 400 이므로 계약 키만 정확히 전송
-      const payload = {
-        root,
-        crop_id: body.crop_id,
-        seen: body.seen ?? "null",
-        crop_sig: body.crop_sig ?? "",
+    if (!can("v2_spec_edit")) {
+      // 계약 §7.2 B2 · Sync #C01: v1 /draft/adopt 폴백 금지(v1 대상 문구·생성 조건 키 보호)
+      return {
+        ok: false,
+        unsupported: true,
+        reason: "지시문 저장은 아직 연결되지 않았습니다.",
       };
-      if ("purpose" in body && body.purpose !== undefined) payload.purpose = body.purpose;
-      if ("user_instruction_ko" in body && body.user_instruction_ko !== undefined) payload.user_instruction_ko = body.user_instruction_ko;
-      if ("ai_auto" in body && body.ai_auto !== undefined) payload.ai_auto = !!body.ai_auto;
-      if ("raw_prompt_override" in body && body.raw_prompt_override !== undefined) payload.raw_prompt_override = body.raw_prompt_override;
-      return postJson("spec", payload);
     }
-    // 백엔드 V2-A 병합 전 폴백: draft/adopt (op: "set")로 대상 문구만 저장 시도
-    const dv = await getDraft(root, body.crop_id);
-    return adoptDraft(root, {
+    // §3.3: 허용 키 외의 키는 400 이므로 계약 키만 정확히 전송
+    const payload = {
+      root,
       crop_id: body.crop_id,
-      op: "set",
-      text: body.user_instruction_ko || "",
-      seen: dv.seen,
-      crop_sig: dv.crop_sig,
-      preview: false,
-    });
+      seen: body.seen ?? "null",
+      crop_sig: body.crop_sig ?? "",
+    };
+    if ("purpose" in body && body.purpose !== undefined) payload.purpose = body.purpose;
+    if ("user_instruction_ko" in body && body.user_instruction_ko !== undefined) payload.user_instruction_ko = body.user_instruction_ko;
+    if ("ai_auto" in body && body.ai_auto !== undefined) payload.ai_auto = !!body.ai_auto;
+    if ("raw_prompt_override" in body && body.raw_prompt_override !== undefined) payload.raw_prompt_override = body.raw_prompt_override;
+    return postJson("spec", payload);
   }
 
   async function assistPrompt(root, body) {

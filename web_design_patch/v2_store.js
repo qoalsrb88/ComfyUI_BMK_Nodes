@@ -240,8 +240,11 @@ window.DPV2Store = (() => {
 
   async function savePatchSpec(patch, opts = {}) {
     if (!state.root || !patch) return null;
+    if (!Api.can("v2_spec_edit")) {
+      return { ok: false, unsupported: true, reason: "지시문 저장은 아직 연결되지 않았습니다." };
+    }
     const m = patch.meta;
-    if (Api.can("v2_spec_edit") && !m.specLoaded) {
+    if (!m.specLoaded) {
       await loadSpec(patch.id, true);
     }
     const payload = {
@@ -256,11 +259,8 @@ window.DPV2Store = (() => {
       payload.raw_prompt_override = m.body_en || "";
     }
     const res = await Api.saveSpec(state.root, payload);
-    if (res && Api.can("v2_spec_edit")) {
+    if (res && !res.unsupported) {
       applySpecResponse(patch.id, res);
-    } else {
-      m.dirtySpec = false;
-      m.rawDirty = false;
     }
     emit("selection");
     return res;
