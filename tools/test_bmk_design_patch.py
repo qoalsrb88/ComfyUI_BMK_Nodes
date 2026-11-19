@@ -49970,7 +49970,7 @@ def forge_f2_session_unit():
         async with serving(http, forge=False) as (app, call):
             response, value = await call(bd.API + "/env")
             legacy = {"server_mode": True, "session": False, "account": None, "session_url": "/api/session", "prefs_url": "/api/preferences",
-                      "caps": {name: name in ("jobs", "export_download") for name in bd.LOCAL_CAPS}, "backend": "mock"}
+                      "caps": {name: name in srv.SERVER_CAPS for name in bd.LOCAL_CAPS}, "backend": "mock"}
             check(value == legacy and responses[-1].startswith(json.dumps(legacy)), "F2S Forge 없는 env 기존 바이트")
             response, _ = await call("/api/session/token", "POST", {})
             check(response.status == 404, "F2S Forge 없는 갱신 라우트 404")
@@ -60307,7 +60307,9 @@ def ux_v2a_entry_unit():
         async with serve(plain) as client:
             r = await client.get(bd.API + "/env")
             caps = (await r.json())["caps"]
-            check(all(caps[n] is False for n in bd.V2_CAPS), f"V2E v2 파일 없음 → v2 플래그 모두 false: {caps}")
+            check({n: caps[n] for n in bd.V2_CAPS} == {n: n in ("v2_spec_edit", "v2_auto_prepare") for n in bd.V2_CAPS},
+                  f"V2E v2 파일 없음 → ui_v2 false · 지시문 저장·자동 반영만 true: {caps}")
+            check(srv.SERVER_CAPS == ("jobs", "export_download", "v2_spec_edit", "v2_auto_prepare"), "V2E 서버 모드에서 늘 열린 기능")
             for url in ("/board/", "/board/?ui=v2", "/board/?ui=v2&root=abc", "/board/?ui=V2", "/board/?ui="):
                 r = await client.get(bd.API + url)
                 check(r.status == 200 and b"<title>v1</title>" in await r.read(), f"V2E v2 파일 없음 → v1 화면: {url}")
@@ -60328,7 +60330,9 @@ def ux_v2a_entry_unit():
             r = await client.get(bd.API + "/env")
             body = await r.json()
             check(body["caps"]["ui_v2"] is True, "V2E v2.html 있음 → caps.ui_v2 true")
-            check(all(body["caps"][n] is False for n in ("v2_crop_model", "v2_postprocess", "v2_psd_reimport")), "V2E 아직 없는 기능 플래그는 false")
+            check(all(body["caps"][n] is False for n in ("v2_crop_model", "v2_postprocess", "v2_psd_reimport", "v2_forge_prompt")),
+                  "V2E 아직 없는 기능·Forge 연결 없는 서버의 프롬프트 작성 플래그는 false")
+            check(body["caps"]["v2_spec_edit"] is True and body["caps"]["v2_auto_prepare"] is True, "V2E 서버 모드는 지시문 저장·자동 반영이 늘 true")
             r = await client.get(bd.API + "/board/?ui=v2&root=abc")
             check(r.status == 200 and b"<title>v2</title>" in await r.read() and r.headers["Content-Type"].startswith("text/html")
                   and r.headers.get("Cache-Control") == "no-store" and r.headers.get("X-Content-Type-Options") == "nosniff",
@@ -60923,6 +60927,249 @@ console.log(JSON.stringify(results));
 def ux_v2a_spec_unit():
     """UX v2-A 지시문 저장 GET·POST /spec + 본문 경로의 프롬프트·생성 조건 키(명세 D495–D509). --quick 포함."""
     section("UX v2-A — 지시문 저장 · 프롬프트 재료 (ux_v2a_spec_unit)")
+    from datetime import datetime
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, patch
+    from aiohttp.test_utils import make_mocked_request
+
+    dp = _dp_package()
+    bd, vlm, pl = dp.board, dp.dvlm, dp.board.pl
+    srv = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_server")
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="v2_spec_", dir=OUT_ROOT.resolve()))
+    scope = _fj_scope(out / "home")
+
+    async def exercise(app):
+        h, root = _fx_project(dp, scope["input"], "patches",
+                              [("001_panel | A: panel", [0, 0, 64, 64]), ("002_ring | A: ring", [64, 0, 128, 64])],
+                              texture(64, 128, 7))
+        m = store.load_manifest(root)
+        crop, other = m["crops"]
+        cid, key = crop["id"], store.root_key(root)
+        path = Path(root, "specs", cid + ".json")
+        refs = Path(root, "refs")
+        refs.mkdir(exist_ok=True)
+        for name, level in (("guide.png", 32), ("before.png", 96), ("ref.png", 160)):
+            Image.new("RGB", (32, 32), (level, 0, 0)).save(refs / name)
+        m["source"] = dict(m.get("source") or {}, refs_dir=str(refs))
+        store.save_manifest(root, m)
+        original = {"guide": "refs/guide.png", "before_paste": "refs/before.png", "notes": "Warm light.",
+                    "targets": [{"id": "A", "mode": "paste_harmonize", "refs": ["ref.png"],
+                                 "guide_color": "red", "detail": "gold ring; fine rim"}]}
+        store.write_json_atomic(str(path), original)
+        original_bytes = path.read_bytes()
+        values = dict(pl.defaults(root)["prepare"], variants="V1,V4", n=2, calls_per_cell=2, complexity="medium")
+        pl.update(root, 0, "prepare", values)
+        spec = P.spec_from_manifest(crop, None, str(refs), {}, original)
+        pre = dp.BMKDesignPatchPrepare()
+
+        def prepare():
+            _, _, report = pre.run(h, **values)
+            return store.load_manifest(root), report
+
+        async def call(method, name, data=None, *, query=None, status=200, account=scope):
+            url = bd.API + "/" + name + "?" + urllib.parse.urlencode({"root": key, **(query or {})})
+            request = make_mocked_request(method, url, headers={"Content-Type": "application/json"}, app=app)
+            request.read = AsyncMock(return_value=json.dumps(data).encode())
+            if account is not None:
+                request["bmk_dp_session"] = {"name": "test", "tag": "test", "scope": account}
+            token = bd.set_scope(account)
+            try:
+                route = await app.router.resolve(request)
+                response = await route.handler(request)
+                result = json.loads(response.body)
+                check(response.status == status, f"V2P {method} /{name} {response.status} (기대 {status}): {result.get('error')}")
+                return result
+            finally:
+                bd.reset_scope(token)
+
+        async def view(which=cid, **kw):
+            return await call("GET", "spec", query={"crop_id": which}, **kw)
+
+        def tokens(v):
+            return {k: v[k] for k in ("crop_id", "seen", "crop_sig")} | {"root": key}
+
+        async def edit(v, **changes):
+            return await call("POST", "spec", tokens(v) | changes)
+
+        def expected_key(job, template, variant):
+            return store.cell_key(values["model"], job["quality"], job["size"], job["background"], job["prompt"],
+                                  [i["sha"] for i in job["inputs"]], template, variant,
+                                  complexity=values["complexity"], opts=job.get("opts"))
+
+        def jobs_for(manifest, which=cid):
+            return [j for j in manifest["jobs"] if j["crop_id"] == which]
+
+        def packed(jobs):
+            return json.dumps(jobs, ensure_ascii=False).encode("utf-8")
+
+        check(all(path != bd.API + "/spec" for _, path, _ in bd._ROUTES), "V2P 로컬 보드 라우트에 /spec 없음")
+        for account in (None, scope):
+            caps = (await call("GET", "env", account=account))["caps"]
+            check(caps["v2_spec_edit"] is caps["v2_auto_prepare"] is True, "V2P 서버 기능 플래그")
+        v = await view()
+        check(set(v) == {"ok", "crop_id", "seen", "crop_sig", "v2", "images", "state", "why", "prompt_en", "input_hash", "model"}
+              and v["ok"] and v["crop_id"] == cid and v["seen"] == vlm._spec_seen(str(path))
+              and v["crop_sig"] == vlm.crop_signature(crop) and v["model"] == values["model"]
+              and v["state"] == "template" and v["v2"] is v["why"] is v["input_hash"] is None
+              and v["prompt_en"] == P.render(spec)["prompt"], "V2P GET 스펙·모델·지문·템플릿 글")
+        expected_images = [("canvas", crop["name"]), ("guide", "guide.png"), ("before_paste", "before.png"), ("ref", "ref.png")]
+        check(v["images"] == [{"token": f"@image{i}", "role": role, "label": label}
+                              for i, (role, label) in enumerate(expected_images, 1)]
+              and root not in str(v) and "refs/" not in str(v), "V2P 그림 순서·번호·역할·파일 이름")
+        await view(account=None, status=401)
+        await view(account=_fj_scope(out / "another"), status=404)
+        await call("POST", "spec", tokens(v) | {"purpose": "vary"}, account=None, status=401)
+        await call("POST", "spec", tokens(v) | {"purpose": "vary"}, account=_fj_scope(out / "another"), status=404)
+        await view("missing", status=404)
+        for field in tokens(v):
+            await call("POST", "spec", {k: val for k, val in tokens(v).items() if k != field}, status=400)
+        for field, bad in (("purpose", "unknown"), ("ai_auto", 0), ("user_instruction_ko", None),
+                           ("user_instruction_ko", "x" * (P.INSTRUCTION_MAX + 1)), ("raw_prompt_override", []),
+                           ("raw_prompt_override", "use @image9"), ("other_field", True)):
+            result = await call("POST", "spec", tokens(v) | {field: bad}, status=400)
+            if field == "other_field":
+                check(field in result["error"], "V2P 모르는 키 이름")
+        for field in ("seen", "crop_sig"):
+            result = await call("POST", "spec", tokens(v) | {field: "old", "purpose": "vary"}, status=409)
+            check(result.get("reason") == "stale" and path.read_bytes() == original_bytes
+                  and vlm._spec_seen(str(path)) == v["seen"], f"V2P {field} 충돌은 파일 불변")
+
+        baseline, report = prepare()
+        standard = next(j for j in jobs_for(baseline) if j["variant"] == "V1_standard")
+        check(standard["cell_key"] == expected_key(standard, P.TEMPLATE_VERSION, "V1_standard")
+              and len(jobs_for(baseline)) == 2 and "본문 경로" not in report, "V2P 기존 V1 키와 V1·V4 작업")
+        v = await edit(v, ai_auto=False, purpose="correct")
+        m, report = prepare()
+        check(v["state"] == "template" and packed(m["jobs"]) == packed(baseline["jobs"])
+              and "본문 경로" not in report, "V2P 기본 경로 jobs JSON 바이트 불변")
+        body = "Polish the edge in @image1.\nNotes: Match @image4."
+        v = await edit(v, purpose="detail", user_instruction_ko="  테두리 광택  ", raw_prompt_override="  " + body.replace("\n", "\r\n"))
+        record = v["v2"]["prompt"]
+        roles = P.v2_roles(spec, root)
+        check(v["state"] == "body" and v["v2"]["user_instruction_ko"] == "테두리 광택" and not v["v2"]["ai_auto"]
+              and record == {"source": "manual", "body_en": body, "summary_ko": "", "written_at": record["written_at"],
+                             "input_hash": P.v2_input_hash(v["v2"], v["model"], roles, manual=True)}
+              and datetime.fromisoformat(record["written_at"]).utcoffset() is not None and "." not in record["written_at"],
+              "V2P 직접 입력 글 정리·출처·입력 지문·시간대")
+        check((await edit(v, raw_prompt_override=body))["seen"] == v["seen"], "V2P 같은 본문 재저장은 쓰지 않음")
+        check(m["prepare_inputs"] != store.prepare_inputs_fp(root, m), "V2P 저장 뒤 반영 필요")
+        m, report = prepare()
+        job, = jobs_for(m)
+        check(job["prompt"] == v["prompt_en"] == P.render_body(spec, body)["prompt"] and job["variant"] == "B1_body"
+              and job["template_version"] == "dp-body/1" and job["cell_key"] == expected_key(job, "dp-body/1", "B1_body")
+              and all(job.get(k) == standard.get(k) for k in ("tid", "inputs", "size", "n", "reps", "opts", "complexity"))
+              and packed(jobs_for(m, other["id"])) == packed(jobs_for(baseline, other["id"]))
+              and "본문 경로(직접 쓴 프롬프트) 1개 크롭 · 프롬프트 미준비 작업 없음 0개" in report, "V2P 본문 단일 작업·키·다른 크롭 불변")
+        pipe = await call("GET", "pipeline")
+        plan = await call("GET", "pipeline/plan", query={"only": cid})
+        check(not any(d["field"] == "variants" for d in pipe["drift"])
+              and not any("갈라짐" in note and "variants" in note for note in plan["notes"])
+              and plan["run"]["need"] == values["calls_per_cell"], "V2P 혼합 작업 설정·계획·변형 갈라짐 없음")
+        with patch.object(dp.runner, "plan_calls", wraps=dp.runner.plan_calls) as plans:
+            preview = pl.switch_preview(root, m, pipe["settings"], prepare=values)
+            check(preview.get("exact") is True and plans.called and
+                  [j["cell_key"] for j in plans.call_args.args[0]["jobs"]] == [j["cell_key"] for j in m["jobs"]],
+                  "V2P 전환 미리보기에서 본문·템플릿 작업 키 재현")
+        old = dict(m)
+        old.pop("prepare_settings")
+        check(pl.derive(root, old)["settings"]["prepare"]["variants"] == "V1,V4", "V2P 옛 작업 변형 유도에서 본문 제외")
+        row, = (await call("GET", "prompt", query={"crop": cid}))["jobs"]
+        check(row["template_version"] == "dp-body/1" and row["prompt"] == job["prompt"] and
+              all(fragment in row["prompt_ko"] for fragment in ("입력 이미지", "캔버스:", "요청:\n「Polish the edge in @image1.」",
+                                                                "「Notes: Match @image4.」", "보존:", "메모: 「Warm light.」")),
+              "V2P 기록 글의 틀 풀이·본문 원문 인용")
+        v = await edit(v, ai_auto=True)
+        assist = dict(record, source="assist", input_hash=v["input_hash"])
+
+        def put_prompt(prompt):
+            ov = store.load_spec_override(root, cid)
+            store.write_json_atomic(str(path), P.v2_update(ov, prompt=prompt))
+
+        put_prompt(assist)
+        check(jobs_for(prepare()[0])[0]["cell_key"] == job["cell_key"], "V2P 같은 본문의 출처만 바뀌면 같은 키")
+        v = await edit(await view(), raw_prompt_override=body + "!")
+        check(jobs_for(prepare()[0])[0]["cell_key"] != job["cell_key"], "V2P 본문 한 글자가 키를 바꿈")
+
+        async def blocked(v, why):
+            m, report = prepare()
+            planned = dp.runner.plan_calls(m, root)["pending"]
+            check(v["state"] == "blocked" and v["prompt_en"] == "" and why in v["why"]
+                  and f"{cid} {crop['name']}: 작업 없음 - {v['why']}" in report and "프롬프트 미준비 작업 없음 1개" in report
+                  and not jobs_for(m) and planned and all(row["crop_id"] != cid for row in planned)
+                  and m["prepare_inputs"] == store.prepare_inputs_fp(root, m), f"V2P 막힘·호출 0건·입력 지문: {why}")
+
+        await blocked(await edit(v, raw_prompt_override=None), "없습니다")
+        put_prompt(assist)
+        v = await edit(await view(), user_instruction_ko="다른 지시")
+        check(v["v2"]["prompt"] == assist, "V2P 오래된 작성본 보존")
+        await blocked(v, "낡았습니다")
+        await blocked(await edit(v, ai_auto=False), "꺼져")
+        put_prompt(dict(record, body_en="Use @image9."))
+        await blocked(await view(), "@image9")
+        store.write_json_atomic(str(path), dict(original, _v2=[]))
+        v = await view()
+        check(v["v2"] is None, "V2P 잘못된 _v2 응답")
+        await blocked(v, "_v2")
+        v = await edit(v, raw_prompt_override=body)
+        check(jobs_for(prepare()[0])[0]["cell_key"] == job["cell_key"], "V2P 막힘을 고친 뒤 작업 복구")
+        with patch.object(dp.dprompt, "render_body", side_effect=ValueError("프롬프트 틀 오류")):
+            await blocked(await view(), "프롬프트 틀 오류")
+        # 원본 경로는 둘이지만 평탄화하면 하나가 되는 그림. 편집 미리보기의 @image4는 Prepare에서 사라진다.
+        ref_file = refs / "ref.png"
+        ref_bytes = ref_file.read_bytes()
+        ref_file.write_bytes((refs / "before.png").read_bytes())
+        v = await edit(await view(), raw_prompt_override=body)
+        compacted, report = prepare()
+        check(v["state"] == "body" and not jobs_for(compacted) and "없는 그림(@image4)" in report
+              and not dp.runner.plan_calls(compacted, root, only=cid)["pending"], "V2P 평탄화 뒤 실제 그림 수로 막힘")
+        ref_file.write_bytes(ref_bytes)
+        v = await edit(v, raw_prompt_override="", ai_auto=True, user_instruction_ko="", purpose="correct")
+        check(v["v2"] is None and path.read_bytes() == original_bytes, "V2P 전체 지우기 후 원본 스펙 바이트 복구")
+        empty = await view(other["id"])
+        changed = await edit(empty, user_instruction_ko="광택")
+        cleared = await edit(changed, user_instruction_ko="")
+        check(empty["seen"] == "null" and cleared["v2"] is None and cleared["seen"] != "null"
+              and json.loads(path.with_name(other["id"] + ".json").read_bytes()) == {}, "V2P 처음 없던 파일은 빈 객체로 남음")
+
+        v = await edit(v, user_instruction_ko="광택", raw_prompt_override=body)
+        ctx = vlm.build_crop_ctx(root, m, crop, refs_dir=str(refs), glossary={}, backend="mock", memo={})
+        req = vlm.build_request(ctx, backend="mock", model="mock", effort=None, image_detail=None, draft_round=0, model_dir="")
+        parsed, repairs = vlm.extract_json(vlm._mock_text(req, []))
+        merged, _ = vlm.write_spec(root, cid, lambda cur: vlm.merge_crop(
+            cur, "fill", ctx=ctx, req=req, crop=crop, done={"parsed": parsed, "repairs": repairs}, prov=_vprov(req, backend="vlm_mock"),
+            project_style=None, apply_mode="targets", adopt=False, backend="mock", refs_dir=str(refs), glossary={}, out={}))
+        drafted = await view()
+        check(merged.changed and drafted["v2"] == v["v2"], "V2P 초안 병합이 _v2 보존")
+        await call("POST", "draft/adopt", tokens(drafted) | {"op": "set", "text": "A: polished panel"})
+        adopted = store.load_spec_override(root, cid)
+        check(P.v2_of(adopted) == v["v2"] and adopted["_layer_targets"] == "A: polished panel", "V2P 채택 수정도 _v2 보존")
+        await edit(await view(), ai_auto=False)
+        after = store.load_spec_override(root, cid)
+        check(all(after[k] == adopted[k] for k in ("_draft", "_layer_targets", "targets")), "V2P 편집이 채택·초안·타깃 보존")
+        path.write_bytes(b"{")
+        await view(status=422)
+        await call("POST", "spec", tokens(v), status=422)
+        check(path.read_bytes() == b"{", "V2P 손상된 JSON 보존")
+        store.write_json_atomic(str(path), original)
+        revision = bd.layout_start(root)["rev"]
+        new = bd.layout_crop(root, revision, "add", {"name": "003_new", "rect": [0, 0, 64, 64]})["crop"]["id"]
+        check((await view(new, status=409)).get("reason") == "apply_needed", "V2P 레이아웃에만 있는 크롭")
+        Path(root, pl.PIPELINE_NAME).write_bytes(b"{")
+        check((await view(status=409)).get("reason") == "pipeline_broken", "V2P 깨진 실행 설정")
+
+    async def run():
+        app = srv.make_app(srv.ServerConfig(str(out / "data"), dev_handoff=True), jobs_module=_fs_jobs())
+        app.freeze()
+        token = bd.set_scope(scope)
+        try:
+            await exercise(app)
+        finally:
+            bd.reset_scope(token)
+            await app.cleanup()
+
+    with patch.object(srv, "_server_secret", return_value=bytes(32)):
+        asyncio.run(run())
 
 
 def ux_v2a_assist_unit():

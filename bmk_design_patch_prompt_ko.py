@@ -1,4 +1,4 @@
-"""dp-prompt/1 기록 원문의 고정 문장만 풀이한다. 재렌더·번역 호출·파일 쓰기는 없다.
+"""dp-prompt/1·dp-body/1 기록 원문의 고정 문장만 풀이한다. 재렌더·번역 호출·파일 쓰기는 없다.
 
 현재 스펙으로 과거 프롬프트를 재구성하지 않는다. 알려진 문장 틀에 맞지 않는 줄과
 사용자가 채운 자유 문장은 「」 안에 원문을 남긴다. 줄 순서는 영문과 같다.
@@ -131,11 +131,21 @@ def _target(line, tids, labels):
 
 def explain(prompt: str, template_version: str, tids=(), labels=None) -> str:
     """기록된 prompt 의 줄 구조를 유지한 한국어 풀이. 모르는 버전은 원문만 인용."""
-    if template_version != "dp-prompt/1":
+    if template_version not in ("dp-prompt/1", "dp-body/1"):
         return _q(prompt)
     labels = labels or {}
     out = []
-    for line in prompt.split("\n"):
+    lines = prompt.split("\n")
+    start = end = -1
+    if template_version == "dp-body/1" and "Request:" in lines:
+        start = lines.index("Request:")
+        # 본문에도 Notes:·Preserve: 같은 줄을 직접 쓸 수 있다. 렌더러의 마지막 보존 줄까지 원문을 인용한다.
+        end = next((i for i in range(len(lines) - 1, start, -1)
+                    if lines[i].startswith("Preserve: Leave everything outside the ")), len(lines))
+    for i, line in enumerate(lines):
+        if start <= i < end:
+            out.append("요청:" if i == start else _q(line))
+            continue
         ko = {"Input images, in upload order:": "입력 이미지 — 업로드 순서:", "": "",
               "Target:": "타깃:", "Targets (change only these):": "타깃 — 아래 대상만 변경:"}.get(line)
         if ko is None and line.startswith("Notes: "):

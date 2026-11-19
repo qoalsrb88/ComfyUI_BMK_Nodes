@@ -48,6 +48,9 @@ if __package__ in (None, ""):
 
 logger = logging.getLogger(__name__)
 COOKIE = "bmk_dp_session"
+# 서버 모드에서 늘 열려 있는 기능(GET /env 의 caps — 나머지는 false 에서 시작해 조건이 맞을 때만 켠다).
+# v2_spec_edit 는 서버 모드에서 꺼지지 않는다: 새 화면이 지시문을 저장할 길이 /spec 하나뿐이게.
+SERVER_CAPS = ("jobs", "export_download", "v2_spec_edit", "v2_auto_prepare")
 _PREF_KEY = re.compile(r"bmk-dp-[\w:.-]{1,80}")
 _SESSION_KEY = web.AppKey("bmk_dp_sessions", object)
 _RUNNER_KEY = web.AppKey("bmk_dp_runner", object)
@@ -665,9 +668,11 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
         try:
             from . import bmk_design_patch_board as board
             from . import bmk_design_patch_store as store
+            from . import bmk_design_patch_v2 as v2
         except ImportError:
             import bmk_design_patch_board as board
             import bmk_design_patch_store as store
+            import bmk_design_patch_v2 as v2
         try:
             from . import bmk_design_patch_forge as forge
         except ImportError:
@@ -808,7 +813,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             session = request.get("bmk_dp_session")
             result = {"server_mode": True, "session": session is not None, "account": account(session),
                     "session_url": "/api/session", "prefs_url": "/api/preferences",
-                    "caps": {name: name in ("jobs", "export_download") for name in board.LOCAL_CAPS}, "backend": "mock"}
+                    "caps": {name: name in SERVER_CAPS for name in board.LOCAL_CAPS}, "backend": "mock"}
             result["caps"]["ui_v2"] = await asyncio.to_thread(board.v2_available)
             if accounts is not None:
                 result["backend"] = "mock" if os.environ.get("BMK_DP_MOCK_API", "").strip().lower() in ("1", "true", "yes", "on") else "forge"
@@ -1022,7 +1027,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
         routes = web.RouteTableDef()
         board.register_routes(routes, base_dir=None)
         app.add_routes(routes)
-        for method, path, handler in jobs_module.routes(runner):
+        for method, path, handler in (*jobs_module.routes(runner), *v2.routes()):
             app.router.add_route(method, path, handler)
         app.add_routes([web.get("/", index), web.get("/api/session", session_get), web.post("/api/session", session_post),
                         web.post("/api/session/logout", logout), web.get("/api/preferences", preferences),
