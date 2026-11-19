@@ -34,7 +34,11 @@ def _crop(root, m, crop_id):
 
 def _inputs(root, m, crop, ov):
     prepare = board._route_settings(root, m)["settings"]["prepare"]
-    model = prepare["model"]
+    models = board.pl._models()
+    try:
+        model = models.effective_gen(prepare, store.crop_gen_entries(root).get(crop["id"]))["model"]
+    except ValueError as exc:
+        raise board._Reject(422, str(exc)) from exc
     refs_dir = (m.get("source") or {}).get("refs_dir") or ""
     spec = dprompt.spec_from_manifest(crop, None, refs_dir, store.project_glossary(root, m), ov)
     roles = dprompt.v2_roles(spec, root)  # Prepare 처럼 표기(ref_style)를 채우기 전의 스펙으로

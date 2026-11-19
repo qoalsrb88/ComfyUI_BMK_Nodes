@@ -444,6 +444,15 @@ class ForgeBackend:
                 or not isinstance(self._ctx.get("account"), str) or not self._ctx["account"].strip()):
             raise runner.CallError("Forge 연결 설정을 확인해 주세요.", phase="blocked", retryable=False, maybe_billed=False)
 
+    def _job_slots(self, job: dict) -> int:
+        concurrency = self._ctx["options"]["concurrency"]
+        slots = models.job_slots(job["model"], concurrency, job["n"])
+        try:
+            jobs = runner.store.load_manifest(self._root).get("jobs", [])
+            return min([concurrency, slots] + [models.job_slots(j["model"], concurrency, j["n"]) for j in jobs])
+        except (OSError, ValueError, TypeError, KeyError):
+            return 1  # 뒤 작업의 모델·장 수를 확인할 수 없으므로 한 잡씩 실행한다.
+
     async def request(self, job: dict, input_paths: list[str], call_id: str) -> dict:
         """→ {"data": [{"url": "forge-job:<job_id>/<slot>", "b64": None}…], "credits": None, "usage": None, "ctx": {…}}."""
         phase, sent = "blocked", False
@@ -460,7 +469,7 @@ class ForgeBackend:
             if self._ctx["token_of"]() is None:
                 raise runner.CallError("Forge 로그인 정보를 다시 받아야 합니다.", status=401, maybe_billed=False)
             if self._semaphore is None:
-                self._semaphore = asyncio.Semaphore(models.job_slots(job["model"], self._ctx["options"]["concurrency"], job["n"]))
+                self._semaphore = asyncio.Semaphore(self._job_slots(job))
             async with self._semaphore:
                 self._stop()
                 self._check_overload()

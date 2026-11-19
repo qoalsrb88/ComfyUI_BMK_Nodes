@@ -53,7 +53,10 @@ S3 Studio 파이프라인 (명세 STUDIO_S3_SPEC.md §2.2·§2.4 — 노드에�
 - merge_adopted(crop, parsed, ov) / new_targets(parsed, old_crop) / adopt_stale(crop, ov)
                                              Import 의 채택 병합·매니페스트 타깃 만들기, Prepare 채택 가드(Import 가 만들 타깃 ≠ 매니페스트)
 - project_glossary(root, m)                  프로젝트 glossary.json + Import 의 glossary_path(source.glossary) 용어집
-- prepare_inputs_fp(root, m)                 Prepare 입력 지문(스펙·참조 파일·specs/·refs.json·layout.json·용어집·refs_dir·source.layout.rev)
+- prepare_inputs_fp(root, m)                 Prepare 입력 지문(스펙·참조 파일·specs/·refs.json·layout.json·용어집·refs_dir·source.layout.rev
+                                             + crop_gen.json 이 있을 때만 그 지문 — UX v2-B)
+- load_crop_gen / crop_gen_entries / update_crop_gen  <root>/crop_gen.json(패치별 생성 설정 — UX v2-B) 읽기·낙관적 동시성 쓰기.
+                                             파일의 틀만 본다(항목 값 검사·효과 값은 bmk_design_patch_models)
 - 보조: _file_fp / _dir_fp / _spec_files_fp  노드 Project 지문·Import IS_CHANGED 와 같은 파일·폴더 지문(없으면 None)
 - 보조: _spec_paths(root, refs_dir)          스펙이 가리키는 파일 경로(_spec_files_fp 의 스펙 쪽 — 보드 계획 서명이 기억해 stat 만)
 다듬기 배치 3b (_proto/STUDIO_POLISH_PLAN_2610.md §11)
@@ -2358,4 +2361,75 @@ def prepare_inputs_fp(root: str, m: dict) -> str:
     rows = [_spec_files_fp(root, m), _dir_fp(os.path.join(root, "specs")), _file_fp(os.path.join(root, _REFS_FILE)),
             _file_fp(os.path.join(root, LAYOUT_NAME)), _file_fp(os.path.join(root, "glossary.json")),
             [gloss, _file_fp(gloss)], [refs_dir, _dir_fp(refs_dir)], lay.get("rev")]
+    # 패치별 생성 설정(UX v2-B D532)은 「파일이 있을 때만」 재료에 더한다 — 파일이 없는 프로젝트의 지문은 이 줄이 생기기 전과
+    # 바이트가 같다(모든 프로젝트가 한 번 '반영 필요'가 되지 않게). 줄을 늘 넣거나 None 을 넣지 말 것.
+    gen = _file_fp(os.path.join(root, CROP_GEN_NAME))
+    if gen is not None:
+        rows.append([CROP_GEN_NAME, gen])
     return hashlib.sha256(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# UX v2-B 패치별 생성 설정 — crop_gen.json (STUDIO_UX_V2B_SPEC §3.1)
+# ══════════════════════════════════════════════════════════════════════
+# {"schema": CROP_GEN_SCHEMA, "rev": <0 이상 정수>, "crops": {"<crop_id>": {"model"?, "quality"?, "opts"?, "complexity"?, "n"?}}}
+# 항목이 없는 크롭 = 프로젝트 값을 따른다. 파일이 없으면 모든 크롭이 따른다(rev 0) — Prepare 가 만든 결과는 이 파일이 생기기 전과
+# 바이트가 같다. 항목 안의 값 검사·효과 값 계산은 bmk_design_patch_models(gen_entry_problem·effective_gen)가 한다 —
+# 이 모듈은 파일의 틀(스키마·rev·crops 가 객체·항목이 객체)만 본다.
+CROP_GEN_NAME = "crop_gen.json"
+CROP_GEN_SCHEMA = "bmk.design_patch.crop_gen/1"
+
+
+def _check_crop_gen(doc: Any) -> dict:
+    if (not isinstance(doc, dict) or doc.get("schema") != CROP_GEN_SCHEMA or type(doc.get("rev")) is not int or doc["rev"] < 0
+            or not isinstance(doc.get("crops"), dict) or set(doc) != {"schema", "rev", "crops"}
+            or any(not isinstance(k, str) or not _LAYOUT_ID_RE.fullmatch(k) or not isinstance(v, dict) for k, v in doc["crops"].items())):
+        raise ValueError(f"패치별 생성 설정 파일({CROP_GEN_NAME})의 형식이 잘못되었습니다")
+    return doc
+
+
+def load_crop_gen(root: str) -> dict:
+    """<root>/crop_gen.json → {"schema", "rev", "crops"}. 파일이 없으면 {"schema", "rev": 0, "crops": {}}(쓰지 않는다).
+    JSON 이 아니거나 틀이 다르면 ValueError(쓰는 쪽: Prepare = 반영 실패, 라우트 = 422 — 내용을 고치지 않는다).
+    매니페스트와 같은 잠금 안에서 읽는다(Windows os.replace 경합)."""
+    path = os.path.join(root, CROP_GEN_NAME)
+    with manifest_lock(root):
+        if not os.path.isfile(path):
+            return {"schema": CROP_GEN_SCHEMA, "rev": 0, "crops": {}}
+        return _check_crop_gen(_read_json(path, "패치별 생성 설정"))
+
+
+def crop_gen_entries(root: str) -> dict:
+    """{crop_id: 항목} — load_crop_gen(root)["crops"]. 파일이 없으면 {}."""
+    return load_crop_gen(root)["crops"]
+
+
+def update_crop_gen(root: str, mutate: Callable[[dict], Any], *, expect_rev: int | None) -> tuple[Any, int, bool]:
+    """패치별 생성 설정 쓰기(낙관적 동시성 — 일괄 변경이 한 번의 원자적 쓰기, D539·D541): manifest_lock → 디스크 최신본(없으면
+    rev 0·빈 crops) → expect_rev 가 지금 rev 와 다르면 CropGenConflict(None = 보지 않음) → mutate(crops)(제자리 수정 — 항목 dict 를
+    넣고 빼기만) → 바뀌었으면 rev + 1 로 원자 저장. 반환 (mutate 반환값, rev, 바뀌었나). mutate 가 예외를 내면 아무것도 쓰지 않는다
+    (전부 되거나 전부 안 됨). 쓴 뒤의 내용이 쓰기 전과 같으면 쓰지 않고 rev 도 그대로다. crops 가 비어도 파일과 rev 는 남긴다 —
+    다만 파일이 없던 프로젝트에 빈 crops 를 새로 쓰지는 않는다(바뀐 것이 없다). 깨진 파일이면 ValueError(덮어쓰지 않는다).
+    mutate 안에서 update_manifest·update_layout 을 부르지 말 것."""
+    path = os.path.join(root, CROP_GEN_NAME)
+    with manifest_lock(root):
+        doc = load_crop_gen(root)
+        rev = doc["rev"]
+        if expect_rev is not None and expect_rev != rev:
+            raise CropGenConflict(f"패치별 생성 설정이 다른 창에서 바뀌었습니다(rev {expect_rev} → {rev})")
+        # 「바뀌었나」는 JSON 글로 본다(키 순서는 무시) — 파이썬의 == 는 True == 1 · 2.0 == 2 라, 손으로 고친 값을 바로잡는 쓰기를 놓친다
+        def text(value):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+        before = text(_jsonable(doc["crops"]))
+        result = mutate(doc["crops"])
+        after = _jsonable(doc["crops"])
+        if text(after) == before:
+            return result, rev, False
+        rev += 1
+        write_json_atomic(path, _check_crop_gen({"schema": CROP_GEN_SCHEMA, "rev": rev, "crops": after}))
+    return result, rev, True
+
+
+class CropGenConflict(ValueError):
+    """update_crop_gen: expect_rev 가 지금 rev 와 다르다(다른 창이 먼저 씀)."""

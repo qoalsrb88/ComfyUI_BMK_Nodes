@@ -297,6 +297,7 @@ window.DPLayoutEdit = (() => {
     let seen = null; // /layout 을 마지막으로 맞춘 매니페스트 rev(null = 처음·읽기 실패 뒤 — 다음 state 에서 다시 받음)
     let seenLr = null; // 직전 state 의 layout_rev(reloadKind — 이 창의 쓰기 직후에 오는 낡은 state 를 거름)
     let seenRf = null; // 직전 state 의 [refs_rev, refs_files_v] — S2 연결·바깥 파일 변경은 두 판을 그대로 두지만 크롭 행의 레퍼런스 줄을 바꿈
+    let seenCropGen; // 패치 설정만 바뀌어도 /layout 의 crop_models 를 다시 받는다.
     let sel = null; // 선택 크롭 id
     let multi = null; // 복수 선택(F18 — Shift/Ctrl+클릭) 크롭 id 둘 이상 — 있으면 sel = null(잠금·지우기만, 이동은 하나씩)
     let actErr = null; // act 의 마지막 실패 문구 — 여러 크롭 쓰기의 멈춤 알림에 붙임(토스트 칸은 하나라 뒤 알림이 앞 오류를 덮음)
@@ -318,24 +319,34 @@ window.DPLayoutEdit = (() => {
     let nameShow = null; // 지금 패널 이름 칸의 다시 표시(레퍼런스 응답이 오면 부름)
     let ratioModelKey = null;
 
-    function ratioModel() {
-      const model = SM() && opts.savedModel?.();
+    function cropRatioModel(c) {
+      if (!SM()) return null;
+      const name = c && S.L?.crop_models?.[c.id];
+      const model = name ? window.DPEnv.caps?.models?.find(m => m.name === name) : opts.savedModel?.();
       return model?.ratios?.length && model.ratios.every((label) => {
         const size = model.ratio_sizes?.[label];
         return Array.isArray(size) && size.length === 2 && size.every((v) => Number.isInteger(v) && v > 0);
       }) ? model : null;
     }
 
+    function ratioModel() {
+      return cropRatioModel(S.crop(sel));
+    }
+
     function ratioWrong(c) {
-      const model = ratioModel(), rect = rectOf(c);
+      const model = cropRatioModel(c), rect = rectOf(c);
       return !!model && !G.ratioMatch(rect[2] - rect[0], rect[3] - rect[1], model.ratios, model.ratio_tolerance, model.ratio_sizes);
     }
 
+    function ratioKey(model) {
+      return JSON.stringify(model && [model.name, model.ratios, model.ratio_tolerance, model.ratio_sizes]);
+    }
+
     function modelChanged() {
-      const model = ratioModel(), key = JSON.stringify(model ? [model.name, model.ratios, model.ratio_tolerance, model.ratio_sizes] : null);
+      const selected = ratioKey(ratioModel()), key = ratioKey(cropRatioModel(null)) + "|" + selected;
       if (key === ratioModelKey) return;
       ratioModelKey = key;
-      if (proposal?.ratioModel && proposal.ratioModel !== key) proposal = null;
+      if (proposal?.ratioModel && proposal.ratioModel !== selected) proposal = null;
       if (on) renderKeepTyping();
     }
 
@@ -1336,7 +1347,7 @@ window.DPLayoutEdit = (() => {
       if (sameRect(c.rect, fit.rect) || badRect(fit.rect)) return;
       modelChanged();
       proposal = { id: c.id, rect: fit.rect, base: c.rect.slice(), since: S.remote, grow: true,
-        ratioModel: ratioModelKey, note: `모델 비율로 넓히기 · ${fit.ratio}` };
+        ratioModel: ratioKey(model), note: `모델 비율로 넓히기 · ${fit.ratio}` };
       render();
     }
 
@@ -2115,6 +2126,7 @@ window.DPLayoutEdit = (() => {
       seen = S.err ? null : rev;
       showNotice();
       syncSel(false);
+      if (proposal?.ratioModel) modelChanged();
       if (soft) renderKeepTyping();
       else render();
     }
@@ -2123,6 +2135,7 @@ window.DPLayoutEdit = (() => {
       on = true;
       state = st;
       seenRf = [st.refs_rev, st.refs_files_v];
+      seenCropGen = st.crop_gen_rev;
       viewer.setEditor({ pointerdown, pointermove, pointerup, cancel, draw });
       syncSel(false);
       render();
@@ -2145,9 +2158,11 @@ window.DPLayoutEdit = (() => {
       seenLr = st.layout_rev;
       seenRf = [st.refs_rev, st.refs_files_v];
       if (!on || S.busy) return;
+      const modelEdit = seenCropGen !== st.crop_gen_rev;
+      seenCropGen = st.crop_gen_rev;
       // 레퍼런스 연결(refs_rev)·refs_dir 파일(refs_files_v)만 바뀜 = 매니페스트 rev 만 바뀐 것처럼 입력을 지키며 다시 받음(codex10)
       const kind = reloadKind(seen, S.L ? S.L.rev : null, st, prevLr)
-        || (prevRf && (prevRf[0] !== seenRf[0] || prevRf[1] !== seenRf[1]) ? "manifest" : null);
+        || (modelEdit || (prevRf && (prevRf[0] !== seenRf[0] || prevRf[1] !== seenRf[1])) ? "manifest" : null);
       if (kind) reload(kind === "manifest");
     }
 

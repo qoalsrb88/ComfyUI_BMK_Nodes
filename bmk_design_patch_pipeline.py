@@ -874,6 +874,18 @@ def prepare_record(m: dict) -> tuple[str | None, dict]:
     return ("jobs" if rec else None), rec
 
 
+def _sized_patch_jobs(m: dict, rec: dict) -> bool:
+    """모델을 따로 정한 패치(UX v2-B)의 작업 가운데 크기 규칙을 쓰는 것이 있는가 — 작업의 모델이 마지막 반영의 프로젝트 모델과 다르고
+    비율 목록 모델이 아닌 것. 프로젝트 모델이 비율 목록 모델이면 크기 규칙은 갈라짐이 아니지만(쓰지 않는다), 그런 패치가 있으면 크기 규칙이
+    그 패치의 요청 크기·생성 조건을 바꾼다. 패치별 설정이 없는 프로젝트는 모든 작업이 프로젝트 모델이라 늘 False(지금 판정 그대로)."""
+    project = rec.get("model")
+    for job in _jobs_of(m):
+        model = _models().get(job.get("model"))
+        if job.get("model") != project and model is not None and not model.ratios:
+            return True
+    return False
+
+
 def drift(settings: dict, m: dict) -> list[dict]:
     """설정과 매니페스트의 갈라짐 [{"section", "field", "manifest", "settings", "kind"}].
     import = 매니페스트 source 와 그대로 비교(Import 캐시 판정과 같게 대소문자 구분, Import 기록이 없으면 비교 안 함),
@@ -903,7 +915,7 @@ def drift(settings: dict, m: dict) -> list[dict]:
             continue
         if key == "quality" and recorded_model is not None and not recorded_model.qualities:
             continue
-        if key == "size_rule" and target_model is not None and target_model.ratios:
+        if key == "size_rule" and target_model is not None and target_model.ratios and not _sized_patch_jobs(m, rec):
             continue
         mv, sv = rec[key], pre.get(key)
         if key in _PREPARE_OPTS:
@@ -968,6 +980,10 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
         if prepare is None and target["model"] in ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare"):
             target["model"] = target["model"].replace("2.5", "2.6")
         target = validate_section("prepare", target)
+        entries = store.crop_gen_entries(root)
+        if os.environ.get("BMK_DP_SERVER_MODE") != "1" and any(c.get("id") in entries for c in m.get("crops") or []):
+            # 로컬판은 패치별 설정이 있는 프로젝트를 반영하지 않는다(Prepare 가 같은 사유로 멈춘다) — 건수를 보이지 않는다
+            return {"prepare": target, "error": "패치별 생성 설정이 있는 프로젝트는 서버 모드에서만 반영·생성합니다", "uncertain": True}
         backend = runner.backend_name(root)
         _src, rec = prepare_record(m)
         target_model = models.get(target["model"])
@@ -980,38 +996,56 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
                     "uncertain": True, "backend": backend}
         mm = copy.deepcopy(m)
         old_jobs = {j["cell_key"]: j for j in m.get("jobs") or []}
+        size_rule_changed = target["size_rule"] != rec.get("size_rule", before["size_rule"])
+        # 모델을 따로 정한 패치의 수 — 작업이 없는 패치(프롬프트 미준비 등)도 센다(v1 의 「패치 k개는 따로 정한 모델을 씁니다」와 같은 기준:
+        # 지금 매니페스트·레이아웃에 있는 크롭의 읽을 수 있는 모델 묶음)
+        try:
+            lay = store.load_layout(root)
+        except ValueError:
+            lay = None
+        live = {c.get("id") for c in m.get("crops") or []} | {c.get("id") for c in (lay or {}).get("crops") or []}
+        kept_overrides = {cid for cid, entry in entries.items()
+                          if cid in live and "model" in entry and models.gen_entry_problem(entry) is None}
         reset = set()
+        preview_jobs = []
         for job in mm.get("jobs") or []:
+            crop_id = job.get("crop_id")
+            try:
+                eff = models.effective_gen(target, entries.get(crop_id))
+            except models.GenError:
+                continue
             if not all(k in job for k in ("prompt", "template_version", "variant", "size")):
                 return {"prepare": target, "error": "작업에 생성 조건 기록이 부족합니다 — 먼저 Prepare 를 반영하세요", "uncertain": True}
-            if models.is_forge_only(job.get("model")) or models.is_forge_only(target["model"]):
+            forge_only = models.is_forge_only(eff["model"])
+            if models.is_forge_only(job.get("model")) or forge_only or size_rule_changed:
                 info = job.get("size_info")
                 src = info.get("src") if isinstance(info, dict) else None
                 if not isinstance(src, (list, tuple)) or len(src) != 2 or any(type(v) is not int or v < 1 for v in src):
                     return {"prepare": target, "error": "작업에 생성 조건 기록이 부족합니다 — 먼저 Prepare 를 반영하세요", "uncertain": True}
-                if models.is_forge_only(target["model"]):
-                    W, H, info = models.output_size(target["model"], *src, target["size_rule"], opts=target)
+                if forge_only:
+                    W, H, info = models.output_size(eff["model"], *src, target["size_rule"], opts=eff["opts"])
                 else:
                     W, H, info = store.gpt_output_size(*src, target["size_rule"])
                 job.update(size=[W, H], size_info=info)
-            job.update(model=target["model"], quality=models.job_quality(target["model"], target["quality"]),
-                       n=target["n"], reps=target["calls_per_cell"])
+            job.update(model=eff["model"], quality=eff["quality"], n=eff["n"], reps=target["calls_per_cell"])
             if job["model"] in store.COMPLEXITY_MODELS:
-                job["complexity"] = target["complexity"]
+                job["complexity"] = eff["complexity"]
             else:
                 job.pop("complexity", None)
-            opts = models.job_opts(job["model"], target, src=(job.get("size_info") or {}).get("src"))
+            opts = models.job_opts(job["model"], eff["opts"], src=(job.get("size_info") or {}).get("src"))
             if opts:
                 job["opts"] = opts
             else:
                 job.pop("opts", None)
             ck = store.cell_key(job["model"], job["quality"], job["size"], job.get("background"), job["prompt"],
                                 [i["sha"] for i in job.get("inputs") or []], job["template_version"], job["variant"],
-                                complexity=target["complexity"], opts=opts)
+                                complexity=eff["complexity"], opts=opts)
             job["cell_key"] = ck
-            if ck in old_jobs and str(old_jobs[ck].get("n")) != str(target["n"]):
+            if ck in old_jobs and str(old_jobs[ck].get("n")) != str(job["n"]):
                 reset.add(ck)
-        keep = {j["cell_key"] for j in mm.get("jobs") or []}
+            preview_jobs.append(job)
+        mm["jobs"] = preview_jobs
+        keep = {j["cell_key"] for j in preview_jobs}
         pruned = 0
         # D161 과 같은 정리, 사본만 변경(갈래 B 의 prune_stale_rerolls 공용 자리는 아직 빈 몸통이어도 추정 가능).
         for ck, count in list((mm.get("rerolls") or {}).items()):
@@ -1037,7 +1071,8 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
         except (OSError, ValueError, KeyError, TypeError):
             uncertain = True
         lo, hi = ap["est_usd"]
-        return {"prepare": target, "exact": True, "need": len(ap["needs_approval"]),
+        # kept_overrides 는 서버 모드 응답에만 싣는다(로컬판의 응답 정본은 그대로 — 패치별 모델을 정하는 화면이 서버 모드에만 있다)
+        return {"prepare": target, "exact": True, **_server_text({}, {"kept_overrides": len(kept_overrides)}), "need": len(ap["needs_approval"]),
                 "cells": len({e["cell_key"] for e in ap["needs_approval"]}), "est_usd": [lo, hi],
                 "credits": [round(lo * runner.CREDITS_PER_USD), round(hi * runner.CREDITS_PER_USD)],
                 "pending_preapproved": len(ap["preapproved"]), "est_usd_pre": list(runner.estimate_calls(ap["preapproved"])),

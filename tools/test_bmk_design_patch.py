@@ -60220,6 +60220,8 @@ V2_FORBIDDEN = (
 # 네이티브 대화상자 호출: alert( · window.confirm( · globalThis.prompt( … — 다른 객체의 메서드(el.prompt()·DPDialog.confirm())와
 # 같은 이름의 함수·메서드 선언(function confirm(…) {·confirm(message) {)은 호출이 아니다.
 V2_NATIVE_DIALOG = re.compile(r"(?<![\w$.])(?:(?:window|globalThis|self|top|parent)\s*\.\s*)?(alert|confirm|prompt)\s*\(")
+# 전역 객체를 대괄호로 거친 호출(window["confirm"](…) · globalThis['alert'](…) · self[`prompt`](…))도 네이티브 대화상자다.
+V2_NATIVE_BRACKET = re.compile(r"""(?<![\w$.])(?:window|globalThis|self|top|parent)\s*\[\s*["'`](?:alert|confirm|prompt)["'`]\s*\]""")
 V2_DECLARATION = re.compile(r"\s*\([^()]*\)\s*\{")
 
 
@@ -60242,6 +60244,9 @@ def v2_file_problems(name: str, raw: bytes) -> list[str]:
             continue  # 같은 이름의 함수·메서드 선언
         probs.append(f"네이티브 대화상자(alert·confirm·prompt): {text[max(0, m.start() - 20):m.end() + 20]!r}")
         break
+    m = V2_NATIVE_BRACKET.search(text)
+    if m:
+        probs.append(f"네이티브 대화상자(전역 객체의 대괄호 호출): {text[max(0, m.start() - 20):m.end() + 20]!r}")
     return probs
 
 
@@ -60271,6 +60276,10 @@ def ux_v2a_entry_unit():
         "globalThis.confirm": b'if (globalThis.confirm("x")) {}\n',
         "self.alert": b'self.alert ("x");\n',
         "함수 안의 호출": b'function ask() { return confirm("x"); }\n',
+        "window 대괄호": b'if (window["confirm"]("x")) {}\n',
+        "globalThis 대괄호": b"globalThis['alert']('x');\n",
+        "self 대괄호(백틱)": b'const v = self[`prompt`]("x");\n',
+        "맨 confirm(대입 뒤)": b'const ok = confirm("x");\n',
         "바깥 스크립트": b'<script src="https://cdn.example/x.js"></script>\n',
         "바깥 글꼴": b'<link rel="stylesheet" href="//fonts.example/css">\n',
         "바깥 import": b'@import url("https://fonts.example/css");\n',
@@ -60288,6 +60297,11 @@ def ux_v2a_entry_unit():
     declared = ('const api = {\n  confirm(message) { return message; },\n  async prompt(text, more) {\n    return text;\n  },\n};\n'
                 'function alert(x) { return x; }\nclass Box { confirm() { return true; } }\n').encode()
     check(v2_file_problems("v2_x.js", declared) == [], f"V2E 같은 이름의 메서드·함수 선언은 호출이 아님: {v2_file_problems('v2_x.js', declared)}")
+    # UX v2-B D563: 페이지 상자(DPDialog)의 메서드 호출은 평범하게 써도 된다 — 문자열 이어 붙이기로 돌아가지 않아도 통과한다.
+    dialog_calls = ('const dlg = window.DPDialog;\nif (await dlg.confirm(["x"], {ok: "확인"})) {}\nawait window.DPDialog.confirm(["x"]);\n'
+                    'await DPDialog?.confirm(["x"]);\nconst fn = dlg && dlg.confirm;\nawait this.dialog.confirm(lines);\n'
+                    'const names = {confirm: "확인", alert: "알림"};\nconst label = opts["confirm"] || "확인";\n').encode()
+    check(v2_file_problems("v2_x.js", dialog_calls) == [], f"V2E DPDialog 의 메서드 호출은 허용(D563): {v2_file_problems('v2_x.js', dialog_calls)}")
     present = sorted(f.name for f in web.iterdir() if f.is_file() and f.name.startswith("v2"))
     check(all(V2_WEB_FILES.fullmatch(name) for name in present), f"V2E web_design_patch 의 v2* 파일 이름 꼴: {present}")
     for name in present:
@@ -62076,6 +62090,1924 @@ def ux_v2a_body_unit():
           "V2B 잘못된 _v2 → 작업 없음")
 
 
+# ══════════════════════════════════════════════════════════════════════
+# UX v2 Phase V2-B (STUDIO_UX_V2B_SPEC — 패치별 모델 · --only 이름 = 묶음)
+# ══════════════════════════════════════════════════════════════════════
+# 불변 기준(D533 ①): 구현 전 판 e9b16ee 에서 아래 합성 프로젝트(_v2b_project)를 프로젝트 모델마다 Prepare 한 결과
+# {jobs, prepare_settings, report} 의 sha256. 패치별 생성 설정 파일이 없는 프로젝트는 이 값이 그대로여야 한다 —
+# 이 표는 고치지 않는다(값이 달라졌다면 기존 프로젝트의 작업·생성 조건 키·프롬프트가 바뀐 것이다).
+V2B_PINNED = {
+    "gpt-image-2.6-sunburst": "e952ea560b75ca6e88fb9e9dbfcd71542b59ebbe9a9a5e89a37c81a4bb5c6542",
+    "gpt-image-2.6-flare": "6a285b38116a937f7998776ada78cca77f450da076b65402fb92bb1f2d62b2eb",
+    "gpt-image-2.5-sunburst": "6ae742657627e0c0ff3d02e75dfae3bd6e81443386da601c26cf13bdfcc7b24e",
+    "gpt-image-2.5-flare": "e63429a7629a9182e3267d3c31a926974eb0c8c98981209bf047595e67385990",
+    "seedream-5.5": "4da1b44348dd18062031a58689af14d563d39a0f9616957dadf68ed8d2ae073b",
+    "ideogram-4.5": "c9f15d06ce07af8afdf406b1283180b9198574e5df5be74f4a4aae7ed3c01589",
+    "nano-banana-2.1": "1fbd83f75847b3899950872aedfee1653ef26fcf38a0f85a77db3f3a5fa632b2",
+    "nano-banana-2": "4a647e0c60da5449dd60b7ab257eced725b14c4030e4a3c3b2ba75982038ffa9",
+    "nano-banana-pro": "197ad9230a9f4fe89bd5de6d6a64fa9aa557f6d43e008b84562aa3fe8cdf7176",
+}
+# 같은 프로젝트를 셀당 호출 2 로 두 번 Prepare 한 둘째 결과(이전 작업 이어받기·「기존 N」·예상 후보 수) — 서버 모드 9개 + 로컬판 4개.
+V2B_PINNED_RERUN = {
+    "server:gpt-image-2.6-sunburst": "9fb1a2333b4cb1a99b2473ebe9604ec7b3c2a4fa2b119810dd44e86a09194d6d",
+    "server:gpt-image-2.6-flare": "2f4e7e90d5cc86d2905c9c5818313191175fe7afa51f3601d7f17859e5050fb8",
+    "server:gpt-image-2.5-sunburst": "b8368c4860a6a40e097ceb2f65f97c2a819d348bd54a166d8d6ab05a654d7cd6",
+    "server:gpt-image-2.5-flare": "a8c755423f76e84c8bf36d374b3cbf883eaf04c19967a42690702ca4050ea6e0",
+    "server:seedream-5.5": "3367fc49b1a56cf037eb97788b1af739ad1d367e097121ef29632f0ae2a06504",
+    "server:ideogram-4.5": "d5ae05ee392804bf6808adc3192acf22e6ce815a70022b4e9a8890830c2ffda9",
+    "server:nano-banana-2.1": "34a7a57ec30eebac2ab6aa5b9951b205fe2e14bf9ce847827b3dc2578fe6ea22",
+    "server:nano-banana-2": "838365211f331f10dea2984320730c6010e2c311afcab1daa7c7aa51f828e133",
+    "server:nano-banana-pro": "ff80c75525f4b70f50064cd2e343ee3adc5265b573c051f8389efc1cf207668c",
+    "local:gpt-image-2.6-sunburst": "9fb1a2333b4cb1a99b2473ebe9604ec7b3c2a4fa2b119810dd44e86a09194d6d",
+    "local:gpt-image-2.6-flare": "2f4e7e90d5cc86d2905c9c5818313191175fe7afa51f3601d7f17859e5050fb8",
+    "local:gpt-image-2.5-sunburst": "b8368c4860a6a40e097ceb2f65f97c2a819d348bd54a166d8d6ab05a654d7cd6",
+    "local:gpt-image-2.5-flare": "a8c755423f76e84c8bf36d374b3cbf883eaf04c19967a42690702ca4050ea6e0",
+}
+V2B_RECTS = [("001_square", [0, 0, 256, 256]), ("002_tall", [256, 0, 448, 344]), ("003_wide", [448, 0, 748, 100]),
+             ("004_panel", [0, 400, 192, 528])]
+
+
+def _v2b_args(pl, name, **kw):
+    return dict(pl.defaults()["prepare"], model=name, quality="high", variants="V1,V4", n=2, calls_per_cell=1,
+                complexity="medium") | kw
+
+
+def _v2b_project(dp, out, name, model):
+    """합성 프로젝트 — 크롭 넷(정사각 · 9:16 · 3:1 · 3:2)에 스펙 셋: 002 = 직접 입력 글(본문 경로), 003 = 지시문만(작업 없음),
+    004 = 그 모델로 쓴 AI 작성본(본문 경로). 001 은 스펙 없음(템플릿 경로). 반환 (핸들, root, {이름: crop_id})."""
+    dprompt = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_prompt")
+    base = np.full((544, 768, 3), (60, 100, 140), dtype=np.uint8)
+    base[::16, :, 1] = 180  # 평탄화·지문이 단색에 기대지 않게 줄무늬
+    handle, root = _fx_project(dp, out, name, V2B_RECTS, base)
+    m = store.load_manifest(root)
+    ids = {c["name"]: c["id"] for c in m["crops"]}
+    stamp = "2026-11-19T00:00:00+00:00"
+
+    def write(crop_name, **fields):
+        crop = next(c for c in m["crops"] if c["name"] == crop_name)
+        ov = dprompt.v2_update({}, **{k: v for k, v in fields.items() if k != "prompt"})
+        if "prompt" in fields:
+            v2 = dprompt.v2_of(ov) or dprompt.v2_of({"_v2": {}})
+            roles = dprompt.v2_roles(dprompt.spec_from_manifest(crop, None, "", {}, ov), root)
+            source, body = fields["prompt"]
+            ov = dprompt.v2_update(ov, prompt={
+                "source": source, "body_en": body, "summary_ko": "" if source == "manual" else "가장자리를 정리합니다.",
+                "input_hash": dprompt.v2_input_hash(v2, model, roles, manual=source == "manual"), "written_at": stamp})
+        path = Path(root, "specs", crop["id"] + ".json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((json.dumps(ov, ensure_ascii=False, indent=1) + "\n").encode("utf-8"))
+
+    write("002_tall", purpose="correct", user_instruction_ko="소매 주름을 정리", prompt=("manual", "Clean up the sleeve folds in @image1."))
+    write("003_wide", purpose="remove", user_instruction_ko="끈을 지워줘")
+    write("004_panel", purpose="detail", user_instruction_ko="가장자리를 또렷하게", prompt=("assist", "Tidy the panel edge in @image1."))
+    return handle, root, ids
+
+
+def _v2b_old_inputs_fp(root, m):
+    """e9b16ee 의 store.prepare_inputs_fp 식 그대로(재료 여덟 줄) — 패치별 생성 설정 파일이 없을 때의 지문이 이 값과 같아야 한다."""
+    src = m.get("source") or {}
+    refs_dir, gloss = src.get("refs_dir") or "", src.get("glossary") or ""
+    lay = src.get("layout") if isinstance(src.get("layout"), dict) else {}
+    rows = [store._spec_files_fp(root, m), store._dir_fp(os.path.join(root, "specs")), store._file_fp(os.path.join(root, "refs.json")),
+            store._file_fp(os.path.join(root, "layout.json")), store._file_fp(os.path.join(root, "glossary.json")),
+            [gloss, store._file_fp(gloss)], [refs_dir, store._dir_fp(refs_dir)], lay.get("rev")]
+    return hashlib.sha256(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
+
+
+def _v2b_pack(m, report):
+    return hashlib.sha256(json.dumps({"jobs": m["jobs"], "prepare_settings": m["prepare_settings"], "report": report},
+                                     ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+@contextlib.contextmanager
+def _v2b_env(dp, out, server=True):
+    """서버 모드(server=False 면 로컬판) · Forge 백엔드 이름 · mock 원장 · 고정 시각 — Prepare 보고의 시간·백엔드 줄이 실행마다 같게."""
+    from unittest.mock import patch
+    rn = dp.runner
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(dp.folder_paths, "get_output_directory", return_value=str(out / "output")))
+        stack.enter_context(patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1" if server else "", rn.FORGE_ENV: "1" if server else "", rn.MOCK_ENV: ""}))
+        stack.enter_context(patch.object(rn, "mock_enabled", return_value=True))
+        stack.enter_context(patch.object(dp.time, "time", return_value=1000.0))
+        yield
+
+
+def ux_v2b_core_unit():
+    """UX v2-B 공용 자리(명세 D527–D533·D554) — 기존 프로젝트의 Prepare 바이트 불변, 패치별 생성 설정 파일, 효과 값, 입력 지문,
+    모델 한 줄의 새 칸. --quick 포함."""
+    section("UX v2-B — 공용 자리 · 불변 기준 (ux_v2b_core_unit)")
+    from tempfile import mkdtemp
+
+    dp = _dp_package()
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    models = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_models")
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="ux_v2b_core_", dir=OUT_ROOT.resolve()))
+    pre = dp.BMKDesignPatchPrepare()
+
+    # ── D533 ①: 파일이 없는 프로젝트의 Prepare 결과는 e9b16ee 와 바이트가 같다(모델 9개)
+    printed = {}
+    with _v2b_env(dp, out):
+        for name in models.MODELS:
+            h, root, _ids = _v2b_project(dp, out, "pin-" + name, name)
+            _, _, report = pre.run(h, **_v2b_args(pl, name))
+            m = store.load_manifest(root)
+            printed[name] = _v2b_pack(m, report)
+            check(printed[name] == V2B_PINNED.get(name), f"V2BC1 파일 없는 프로젝트의 Prepare 바이트 불변 {name}")
+            check(m["prepare_inputs"] == _v2b_old_inputs_fp(root, m), f"V2BC1 파일 없는 프로젝트의 입력 지문 식 불변 {name}")
+            check(not Path(root, "crop_gen.json").exists(), f"V2BC1 Prepare 는 패치별 생성 설정 파일을 만들지 않음 {name}")
+    # ── 리뷰 1차(시험 빈틈): 다시 실행(이전 작업 이어받기·보고의 「기존 N」)·셀당 호출 2(예상 후보 수)·로컬판도 e9b16ee 와 바이트가 같다
+    for server in (True, False):
+        with _v2b_env(dp, out, server=server):
+            for name in (models.MODELS if server else models.LOCAL_MODELS):
+                tag = ("server:" if server else "local:") + name
+                h, root, _ids = _v2b_project(dp, out, tag.replace(":", "-"), name)
+                args = _v2b_args(pl, name, calls_per_cell=2)
+                h, _, _ = pre.run(h, **args)
+                h, _, report = pre.run(h, **args)
+                m = store.load_manifest(root)
+                printed[tag] = _v2b_pack(m, report)
+                check(printed[tag] == V2B_PINNED_RERUN.get(tag), f"V2BC1 다시 실행·셀당 호출 2 의 Prepare 바이트 불변 {tag}")
+                check("예상 후보 " + str(len(m["jobs"]) * 2 * 2) + "장" in report and f"(신규 0 · 기존 {len(m['jobs'])})" in report,
+                      f"V2BC1 다시 실행 보고의 예상 후보·기존 수 {tag}")
+    if os.environ.get("DP_V2B_PRINT"):
+        print(json.dumps(printed, indent=1))
+        return
+
+    # ── 모델 표: 복잡도 선택지 = 2.6 계열, 화면용 한 줄의 새 칸(D554)
+    check({n for n, m in models.MODELS.items() if m.complexities} == set(store.COMPLEXITY_MODELS)
+          and all(m.complexities in ((), models.COMPLEXITIES) for m in models.MODELS.values()), "V2BC2 복잡도가 있는 모델 = 2.6 계열")
+    for name, m in models.MODELS.items():
+        row = models.describe(name)
+        check((row["max_refs"], row["supports_quality"], row["complexities"]) == (m.max_inputs - 1, bool(m.qualities), list(m.complexities)),
+              f"V2BC2 모델 한 줄의 새 칸 {name}")
+    limited = models.describe("ideogram-4.5", {"ideogram_4_5": 3}, checked=True)
+    check(limited["max_inputs"] == 3 and limited["max_refs"] == 2, "V2BC2 max_refs 는 서버 목록의 실제 입력 상한에서 한 장을 뺀 수")
+
+    # ── 효과 값: 항목이 없으면 Prepare 가 쓰던 식 그대로(D531·D533)
+    for name in models.MODELS:
+        for quality in ("high", "low", "max"):
+            prep = _v2b_args(pl, name, quality=quality, image_size="4K", thinking_level="high", n=3)
+            eff = models.effective_gen(prep)
+            check(eff == {"model": name, "quality": models.job_quality(name, quality),
+                          "opts": models.job_opts(name, {"image_size": "4K", "thinking_level": "high"}), "complexity": "medium", "n": 3,
+                          "inherit": {"model": True, "n": True}, "clamped": None}, f"V2BC3 항목 없는 효과 값 = 지금 식 {name} {quality}")
+    prep = _v2b_args(pl, "gpt-image-2.5-sunburst", n=10)
+    check(models.effective_gen(prep)["n"] == 10 and models.effective_gen(dict(prep, model="seedream-5.5"))["n"] == 10,
+          "V2BC3 항목 없는 패치의 장 수는 낮추지 않음(지금 그대로 — 제출 전 판정이 막는다)")
+
+    # ── 모델 묶음 만들기(D529·D542): 필요한 칸을 전부 채우고, 없는 칸·선택지 밖의 값은 거절
+    check(models.gen_bundle("gpt-image-2.6-flare") == {"model": "gpt-image-2.6-flare", "quality": "max", "complexity": "high"}
+          and models.gen_bundle("gpt-image-2.5-flare", "low") == {"model": "gpt-image-2.5-flare", "quality": "low"}
+          and models.gen_bundle("seedream-5.5") == {"model": "seedream-5.5"}
+          and models.gen_bundle("ideogram-4.5") == {"model": "ideogram-4.5", "quality": "high"}
+          and models.gen_bundle("nano-banana-2.1", opts={"image_size": "4K"})
+          == {"model": "nano-banana-2.1", "opts": {"image_size": "4K", "thinking_level": "medium"}}
+          and models.gen_bundle("nano-banana-2") == {"model": "nano-banana-2", "opts": {"image_size": "2K", "thinking_level": "minimal"}}
+          and models.gen_bundle("nano-banana-pro", opts={}) == {"model": "nano-banana-pro", "opts": {"image_size": "2K"}},
+          "V2BC4 모델 묶음은 그 모델의 기본값으로 전부 채움")
+    check(list(models.gen_bundle("gpt-image-2.6-sunburst", "high", None, "low")) == ["model", "quality", "complexity"]
+          and list(models.gen_bundle("nano-banana-2.1")) == ["model", "opts"], "V2BC4 모델 묶음의 키 순서")
+    for args, key in ((("no-such-model",), "model_id"), ((None,), "model_id"), ((["seedream-5.5"],), "model_id"),
+                      (("seedream-5.5", "high"), "quality"), (("ideogram-4.5", "max"), "quality"), (("gpt-image-2.5-flare", 3), "quality"),
+                      (("ideogram-4.5", None, {"image_size": "2K"}), "opts"), (("nano-banana-2.1", None, {"aspect_ratio": "1:1"}), "opts"),
+                      (("nano-banana-2.1", None, {"image_size": "8K"}), "opts"), (("nano-banana-2", None, {"thinking_level": "medium"}), "opts"),
+                      (("nano-banana-pro", None, {"thinking_level": "high"}), "opts"), (("nano-banana-2.1", None, "2K"), "opts"),
+                      (("nano-banana-2.1", None, {"image_size": 2}), "opts"),
+                      (("gpt-image-2.5-sunburst", None, None, "low"), "complexity"), (("gpt-image-2.6-sunburst", None, None, "max"), "complexity"),
+                      (("seedream-5.5", None, None, "high"), "complexity")):
+        try:
+            models.gen_bundle(*args)
+            check(False, f"V2BC4 모델 묶음 거절 {args}")
+        except models.GenError as e:
+            check(e.key == key and str(e), f"V2BC4 모델 묶음 거절 {args} → {e.key}")
+    check(models.count_problem("seedream-5.5", 8) is None and models.count_problem("seedream-5.5", 9) is not None
+          and models.count_problem("gpt-image-2.5-flare", 10) is None and models.count_problem("gpt-image-2.5-flare", 11) is not None
+          and models.count_problem("ideogram-4.5", 0) is not None and models.count_problem("ideogram-4.5", True) is not None
+          and models.count_problem("ideogram-4.5", 2.0) is not None and models.count_problem("ideogram-4.5", "2") is not None
+          and models.count_problem(None, 10) is None and models.count_problem(None, 11) is not None, "V2BC4 장 수 범위는 그 모델의 상한")
+
+    # ── 읽은 항목 검사(D537)·효과 값(모델 묶음·장 수·상한으로 낮춤 D535)
+    good = [{"n": 3}, {"model": "seedream-5.5"}, {"model": "seedream-5.5", "n": 10}, {"model": "ideogram-4.5", "quality": "low", "n": 1},
+            {"model": "gpt-image-2.6-flare", "quality": "max", "complexity": "low"},
+            {"model": "nano-banana-2.1", "opts": {"image_size": "1K", "thinking_level": "high"}, "n": 2}]
+    bad = [None, [], {}, "seedream-5.5", {"model": "x"}, {"quality": "high"}, {"n": 2, "quality": "high"}, {"n": 0}, {"n": 11}, {"n": True}, {"n": "2"},
+           {"model": "ideogram-4.5"}, {"model": "seedream-5.5", "quality": "standard"}, {"model": "gpt-image-2.6-flare", "quality": "max"},
+           {"model": "gpt-image-2.5-flare", "quality": "max", "complexity": "high"}, {"model": "nano-banana-2.1", "opts": {"image_size": "2K"}},
+           {"model": "nano-banana-2.1", "opts": {"image_size": "2K", "thinking_level": "medium", "aspect_ratio": "1:1"}},
+           {"model": "seedream-5.5", "inherit": False}, {"model": "seedream-5.5", "count": 2}, {"model_id": "seedream-5.5"}]
+    check(all(models.gen_entry_problem(e) is None for e in good), "V2BC5 저장 꼴의 항목은 통과")
+    for e in bad:
+        check(isinstance(models.gen_entry_problem(e), str), f"V2BC5 저장 꼴이 아닌 항목 거절 {e!r}")
+        if e is not None:
+            try:
+                models.effective_gen(_v2b_args(pl, "gpt-image-2.5-flare"), e)
+                check(False, f"V2BC5 효과 값도 거절 {e!r}")
+            except models.GenError as err:
+                check(err.key == "entry" and models.GEN_BROKEN in str(err), f"V2BC5 효과 값도 거절 {e!r}")
+    prep = _v2b_args(pl, "gpt-image-2.6-sunburst", quality="xhigh", n=4, image_size="4K", thinking_level="high")
+    check(models.effective_gen(prep, {"n": 7}) == {"model": "gpt-image-2.6-sunburst", "quality": "xhigh", "opts": None, "complexity": "medium", "n": 7,
+                                                   "inherit": {"model": True, "n": False}, "clamped": None}, "V2BC5 장 수만 덮어쓴 효과 값")
+    check(models.effective_gen(prep, {"model": "nano-banana-2", "opts": {"image_size": "1K", "thinking_level": "high"}})
+          == {"model": "nano-banana-2", "quality": models.FIXED_QUALITY, "opts": {"image_size": "1K", "thinking_level": "high"}, "complexity": None, "n": 4,
+              "inherit": {"model": False, "n": True}, "clamped": None}, "V2BC5 모델 묶음의 효과 값(프로젝트의 해상도·추론을 이어받지 않음)")
+    check(models.effective_gen(prep, {"model": "ideogram-4.5", "quality": "low", "n": 2})
+          == {"model": "ideogram-4.5", "quality": "low", "opts": None, "complexity": None, "n": 2, "inherit": {"model": False, "n": False}, "clamped": None}
+          and models.effective_gen(prep, {"model": "gpt-image-2.6-flare", "quality": "max", "complexity": "low"})["complexity"] == "low",
+          "V2BC5 모델 묶음 + 장 수 · 복잡도는 묶음의 것")
+    low = models.effective_gen(dict(prep, n=10), {"model": "seedream-5.5"})
+    check((low["n"], low["clamped"], low["inherit"]["n"]) == (8, 10, True), "V2BC5 모델을 덮어쓴 패치의 물려받은 장 수도 그 모델의 상한으로")
+    low = models.effective_gen(dict(prep, model="ideogram-4.5", quality="high"), {"n": 10})
+    check((low["n"], low["clamped"]) == (8, 10) and models.effective_gen(prep, {"n": 10})["clamped"] is None,
+          "V2BC5 저장 뒤 모델이 바뀌어 상한을 넘은 장 수는 낮춤(D535)")
+
+    # ── crop_gen.json 읽기·쓰기(D527·D539·D541)
+    _, root, ids = _v2b_project(dp, out, "store", "seedream-5.5")
+    path = Path(root, store.CROP_GEN_NAME)
+    m = store.load_manifest(root)
+    check(store.load_crop_gen(root) == {"schema": store.CROP_GEN_SCHEMA, "rev": 0, "crops": {}} and store.crop_gen_entries(root) == {}
+          and not path.exists(), "V2BS1 파일이 없으면 rev 0·빈 crops(쓰지 않음)")
+    fp0 = store.prepare_inputs_fp(root, m)
+    check(fp0 == _v2b_old_inputs_fp(root, m), "V2BS1 파일이 없으면 입력 지문은 옛 식 그대로")
+    result, rev, changed = store.update_crop_gen(root, lambda crops: None, expect_rev=0)
+    check((rev, changed) == (0, False) and not path.exists(), "V2BS1 바뀐 것이 없으면 파일을 만들지 않음")
+    a, b = ids["001_square"], ids["002_tall"]
+    result, rev, changed = store.update_crop_gen(root, lambda crops: crops.update({a: {"model": "ideogram-4.5", "quality": "low"}}) or "done", expect_rev=0)
+    raw1 = path.read_bytes()
+    check((result, rev, changed) == ("done", 1, True) and json.loads(raw1) == {"schema": store.CROP_GEN_SCHEMA, "rev": 1, "crops": {a: {"model": "ideogram-4.5", "quality": "low"}}}
+          and raw1.endswith(b"\n") and b"\r" not in raw1, "V2BS2 첫 쓰기 = rev 1")
+    fp1 = store.prepare_inputs_fp(root, m)
+    check(fp1 != fp0 and _v2b_old_inputs_fp(root, m) == fp0, "V2BS2 파일이 생기면 입력 지문이 달라짐(옛 재료는 그대로)")
+    _, rev, changed = store.update_crop_gen(root, lambda crops: crops.update({a: {"model": "ideogram-4.5", "quality": "low"}}), expect_rev=1)
+    check((rev, changed) == (1, False) and path.read_bytes() == raw1 and store.prepare_inputs_fp(root, m) == fp1,
+          "V2BS2 같은 내용을 다시 쓰면 rev·파일·지문 그대로")
+    expect_raises(lambda: store.update_crop_gen(root, lambda crops: crops.clear(), expect_rev=0), "V2BS3 낡은 rev 는 거절", exc=store.CropGenConflict)
+    check(issubclass(store.CropGenConflict, ValueError) and path.read_bytes() == raw1, "V2BS3 거절 뒤 파일 그대로")
+
+    def half(crops):
+        crops[b] = {"n": 3}
+        raise RuntimeError("둘째 변경이 거절됨")
+
+    expect_raises(lambda: store.update_crop_gen(root, half, expect_rev=1), "V2BS3 mutate 가 실패하면 아무것도 쓰지 않음", exc=RuntimeError)
+    check(path.read_bytes() == raw1, "V2BS3 전부 되거나 전부 안 됨(파일 바이트 그대로)")
+    _, rev, changed = store.update_crop_gen(root, lambda crops: crops.update({b: {"n": 3}}), expect_rev=None)
+    check((rev, changed) == (2, True) and list(store.crop_gen_entries(root)) == [a, b], "V2BS4 expect_rev None 은 보지 않고 씀·rev 2")
+    _, rev, changed = store.update_crop_gen(root, lambda crops: crops.clear(), expect_rev=2)
+    check((rev, changed) == (3, True) and json.loads(path.read_bytes()) == {"schema": store.CROP_GEN_SCHEMA, "rev": 3, "crops": {}},
+          "V2BS4 crops 가 비어도 파일과 rev 는 남음")
+    check(store.prepare_inputs_fp(root, m) not in (fp0, fp1), "V2BS4 빈 crops 파일도 지문의 재료(파일이 있을 때만)")
+    # 리뷰(통합): 「바뀌었나」는 JSON 값으로 본다 — 손으로 고친 {"n": true}·{"n": 2.0} 을 정수로 바로잡는 쓰기는 써져야 한다(True == 1 로 넘기지 않는다).
+    # 키 순서만 다른 같은 내용은 쓰지 않는다.
+    for wrong, right in ((True, 1), (2.0, 2)):
+        path.write_bytes(json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": 7, "crops": {a: {"n": wrong}}}).encode())
+        _, rev, changed = store.update_crop_gen(root, lambda crops: crops.update({a: {"n": right}}), expect_rev=7)
+        saved = json.loads(path.read_bytes())["crops"][a]["n"]
+        check((rev, changed) == (8, True) and saved == right and type(saved) is int, f"V2BS4 타입만 다른 값도 바뀐 것으로 써짐: {wrong!r} → {saved!r} (rev {rev}, changed {changed})")
+    path.write_bytes(json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": 7, "crops": {a: {"model": "ideogram-4.5", "quality": "low", "n": 2}}}).encode())
+    raw7 = path.read_bytes()
+    _, rev, changed = store.update_crop_gen(root, lambda crops: crops.update({a: {"n": 2, "quality": "low", "model": "ideogram-4.5"}}), expect_rev=7)
+    check((rev, changed) == (7, False) and path.read_bytes() == raw7, "V2BS4 키 순서만 다른 같은 내용은 쓰지 않음")
+    for label, raw in (("JSON 아님", b"{"), ("목록", b"[]"), ("스키마 다름", b'{"schema": "x", "rev": 1, "crops": {}}'),
+                       ("rev 문자열", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": "1", "crops": {}}).encode()),
+                       ("rev 불", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": True, "crops": {}}).encode()),
+                       ("rev 음수", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": -1, "crops": {}}).encode()),
+                       ("crops 목록", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": 1, "crops": []}).encode()),
+                       ("항목이 객체 아님", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": 1, "crops": {a: 3}}).encode()),
+                       ("크롭 id 꼴 아님", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": 1, "crops": {"../x": {"n": 2}}}).encode()),
+                       ("모르는 머리 키", json.dumps({"schema": store.CROP_GEN_SCHEMA, "rev": 1, "crops": {}, "note": "x"}).encode())):
+        path.write_bytes(raw)
+        expect_raises(lambda: store.load_crop_gen(root), f"V2BS5 깨진 파일은 읽기 오류: {label}")
+        expect_raises(lambda: store.update_crop_gen(root, lambda crops: crops.update({a: {"n": 2}}), expect_rev=None),
+                      f"V2BS5 깨진 파일은 덮어쓰지 않음: {label}")
+        check(path.read_bytes() == raw, f"V2BS5 깨진 파일의 내용 그대로: {label}")
+    path.unlink()
+    check(store.prepare_inputs_fp(root, m) == fp0, "V2BS6 파일을 치우면 지문이 처음 값으로")
+
+
+def ux_v2b_invariant_unit():
+    """UX v2-B 불변·효과(명세 D530·D533·D535·D537) — 감독관이 구현 전에 쓴 시험이다(갈래 G 의 완료 조건 · 갈래는 이 묶음을 고치지 않는다).
+    패치별 생성 설정이 있어도 프로젝트 값을 따르는 패치의 작업은 바이트가 같고, 덮어쓴 패치만 그 모델의 규칙으로 만들어진다. --quick 포함."""
+    section("UX v2-B — Prepare 불변 · 패치별 효과 값 (ux_v2b_invariant_unit)")
+    from tempfile import mkdtemp
+
+    dp = _dp_package()
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    models = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_models")
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="ux_v2b_inv_", dir=OUT_ROOT.resolve()))
+    pre = dp.BMKDesignPatchPrepare()
+
+    def dump(value):
+        return json.dumps(value, ensure_ascii=False).encode("utf-8")
+
+    def put(root, entries):
+        """crops 를 통째로 entries 로 바꾼다(검사 없이 — 손으로 고친 파일 흉내도 이 길로)."""
+        def mutate(crops):
+            crops.clear()
+            crops.update(entries)
+        store.update_crop_gen(root, mutate, expect_rev=None)
+
+    def rekey(job):
+        return store.cell_key(job["model"], job["quality"], job["size"], job["background"], job["prompt"], [i["sha"] for i in job["inputs"]],
+                              job["template_version"], job["variant"], complexity=job.get("complexity"), opts=job.get("opts"))
+
+    def same_values(pl_args, name):
+        """프로젝트 값과 같은 값을 그 모델의 묶음으로 적은 항목(D533 ②)."""
+        m = models.get(name)
+        return models.gen_bundle(name, pl_args["quality"] if m.qualities else None,
+                                 models.job_opts(name, {k: pl_args[k] for k in m.opts}) if m.opts else None,
+                                 pl_args["complexity"] if m.complexities else None) | {"n": pl_args["n"]}
+
+    with _v2b_env(dp, out):
+        # ── D533 ①: 빈 crops 파일이 있어도 Prepare 결과(작업·기록·보고)는 e9b16ee 와 바이트가 같다 · ②: 프로젝트 값과 같은 덮어쓰기는 같은 작업
+        for name in models.MODELS:
+            args = _v2b_args(pl, name)
+            h, root, ids = _v2b_project(dp, out, "empty-" + name, name)
+            put(root, {ids["001_square"]: {"n": 9}})
+            put(root, {})
+            check(Path(root, store.CROP_GEN_NAME).exists(), f"V2BI1 빈 crops 파일 준비 {name}")
+            h, _, report = pre.run(h, **args)
+            m = store.load_manifest(root)
+            check(_v2b_pack(m, report) == V2B_PINNED[name], f"V2BI1 빈 crops 파일 — Prepare 바이트 불변 {name}")
+            check(m["prepare_inputs"] == store.prepare_inputs_fp(root, m) != _v2b_old_inputs_fp(root, m),
+                  f"V2BI1 파일이 있으면 입력 지문에 그 파일이 들어감 {name}")
+            jobs0, settings0 = dump(m["jobs"]), dump(m["prepare_settings"])
+            put(root, {cid: same_values(args, name) for cid in ids.values()})
+            h, _, _ = pre.run(h, **args)
+            m = store.load_manifest(root)
+            check(dump(m["jobs"]) == jobs0 and dump(m["prepare_settings"]) == settings0,
+                  f"V2BI2 프로젝트 값과 같은 덮어쓰기 = 같은 작업·같은 키(다시 과금되지 않음) {name}")
+            check(all(rekey(j) == j["cell_key"] for j in m["jobs"]), f"V2BI2 생성 조건 키는 작업 기록에서 그대로 다시 계산됨 {name}")
+
+        # ── D533 ①·③: 다른 크롭만 덮어씀 — 따르는 패치의 작업은 바이트 그대로, 풀면 처음과 같다
+        for project_model, target, entry in (
+                ("gpt-image-2.6-sunburst", "001_square", {"model": "ideogram-4.5", "quality": "low"}),
+                ("seedream-5.5", "002_tall", {"model": "nano-banana-2.1", "opts": {"image_size": "1K", "thinking_level": "high"}, "n": 3}),
+                ("nano-banana-2", "001_square", {"model": "gpt-image-2.6-flare", "quality": "xhigh", "complexity": "low"}),
+                ("ideogram-4.5", "002_tall", {"n": 5})):
+            args = _v2b_args(pl, project_model)
+            h, root, ids = _v2b_project(dp, out, f"mix-{project_model}-{target}", project_model)
+            h, _, report0 = pre.run(h, **args)
+            m0 = store.load_manifest(root)
+            check(_v2b_pack(m0, report0) == V2B_PINNED[project_model], f"V2BI3 기준 {project_model}")
+            cid = ids[target]
+            put(root, {cid: entry})
+            h, _, report1 = pre.run(h, **args)
+            m1 = store.load_manifest(root)
+            others0 = [j for j in m0["jobs"] if j["crop_id"] != cid]
+            others1 = [j for j in m1["jobs"] if j["crop_id"] != cid]
+            check(dump(others1) == dump(others0) and [j["crop_id"] for j in m1["jobs"]] == [j["crop_id"] for j in m0["jobs"]],
+                  f"V2BI3 따르는 패치의 작업은 바이트 그대로 {project_model} ← {target}")
+            check(dump(m1["prepare_settings"]) == dump(m0["prepare_settings"]),
+                  f"V2BI3 prepare_settings 는 프로젝트 값 한 벌 그대로 {project_model}")
+            eff = models.effective_gen(args, entry)
+            mine = [j for j in m1["jobs"] if j["crop_id"] == cid]
+            crop = next(c for c in m1["crops"] if c["id"] == cid)
+            w, h_ = crop["rect"][2] - crop["rect"][0], crop["rect"][3] - crop["rect"][1]
+            want_opts = models.job_opts(eff["model"], eff["opts"], src=(w, h_))
+            want_size = (list(models.output_size(eff["model"], w, h_, args["size_rule"], opts=eff["opts"])[:2]) if models.is_forge_only(eff["model"])
+                         else list(store.gpt_output_size(w, h_, args["size_rule"])[:2]))
+            check(len(mine) == 1 and (mine[0]["model"], mine[0]["quality"], mine[0]["n"], mine[0].get("opts"), mine[0]["size"])
+                  == (eff["model"], eff["quality"], eff["n"], want_opts, want_size), f"V2BI4 덮어쓴 패치는 그 모델의 규칙으로 {project_model} ← {entry}")
+            check(len(mine) == 1 and mine[0].get("complexity") == (eff["complexity"] if eff["model"] in store.COMPLEXITY_MODELS else None),
+                  f"V2BI4 복잡도 기록은 2.6 일 때만 {entry}")
+            check(all(rekey(j) == j["cell_key"] for j in m1["jobs"]), f"V2BI4 키 함수는 그대로(작업 기록으로 다시 계산) {project_model}")
+            if "model" in entry:
+                check(len(mine) == 1 and mine[0]["cell_key"] not in {j["cell_key"] for j in m0["jobs"]}, f"V2BI4 모델이 다르면 새 생성 조건 {entry}")
+                check("패치별 모델 1개 크롭" in report1, f"V2BI4 반영 보고에 패치별 모델 크롭 수: {report1.splitlines()[:4]}")
+            else:
+                check(len(mine) == 1 and mine[0]["cell_key"] in {j["cell_key"] for j in m0["jobs"]}, "V2BI4 장 수만 바꾸면 같은 생성 조건(n 은 키 밖)")
+                check("패치별 모델" not in report1, "V2BI4 장 수만 덮어쓴 패치는 「패치별 모델」 수에 넣지 않음")
+            put(root, {})
+            h, _, _ = pre.run(h, **args)
+            m2 = store.load_manifest(root)
+            check(dump(m2["jobs"]) == dump(m0["jobs"]) and dump(m2["prepare_settings"]) == dump(m0["prepare_settings"]),
+                  f"V2BI5 덮어썼다 풀면 작업 목록이 처음과 바이트가 같음 {project_model} ← {target}")
+
+        # ── AI 작성본은 효과 모델이 바뀌면 낡는다(D551) · 직접 입력 글은 그대로 본문 경로
+        args = _v2b_args(pl, "seedream-5.5")
+        h, root, ids = _v2b_project(dp, out, "stale", "seedream-5.5")
+        put(root, {ids["004_panel"]: {"model": "ideogram-4.5", "quality": "high"}, ids["002_tall"]: {"model": "ideogram-4.5", "quality": "high"}})
+        h, _, report = pre.run(h, **args)
+        m = store.load_manifest(root)
+        by = {cid: [j for j in m["jobs"] if j["crop_id"] == cid] for cid in ids.values()}
+        check(by[ids["004_panel"]] == [] and "작성본이 낡았습니다" in report, "V2BI6 모델을 바꾼 패치의 AI 작성본은 낡음 → 작업 없음")
+        check(len(by[ids["002_tall"]]) == 1 and by[ids["002_tall"]][0]["variant"] == "B1_body" and by[ids["002_tall"]][0]["model"] == "ideogram-4.5",
+              "V2BI6 직접 입력 글은 모델을 바꿔도 본문 경로")
+
+        # ── D535: 상한을 넘는 장 수는 낮추고 보고에 경고 · D537: 읽지 못한 항목은 그 패치만 작업 없음 · 깨진 파일은 반영 실패
+        args = _v2b_args(pl, "gpt-image-2.5-sunburst")
+        h, root, ids = _v2b_project(dp, out, "clamp", "gpt-image-2.5-sunburst")
+        h, _, report0 = pre.run(h, **args)
+        m0 = store.load_manifest(root)
+        put(root, {ids["001_square"]: {"model": "seedream-5.5", "n": 10}, ids["002_tall"]: {"model": "retired-model"}})
+        h, _, report = pre.run(h, **args)
+        m = store.load_manifest(root)
+        mine = [j for j in m["jobs"] if j["crop_id"] == ids["001_square"]]
+        check(len(mine) == 1 and mine[0]["n"] == 8 and mine[0]["model"] == "seedream-5.5", f"V2BI7 장 수를 그 모델의 상한으로 낮춤")
+        check(any(ids["001_square"] in line and "장 수" in line and "8" in line for line in report.splitlines()), "V2BI7 낮춘 것을 반영 보고에 경고")
+        check(not [j for j in m["jobs"] if j["crop_id"] == ids["002_tall"]]
+              and any(ids["002_tall"] in line and "작업 없음" in line and models.GEN_BROKEN in line for line in report.splitlines()),
+              "V2BI8 읽지 못한 항목은 그 패치만 작업 없음(프로젝트 모델로 조용히 만들지 않음)")
+        check(dump([j for j in m["jobs"] if j["crop_id"] == ids["004_panel"]]) == dump([j for j in m0["jobs"] if j["crop_id"] == ids["004_panel"]]),
+              "V2BI8 다른 패치의 작업은 그대로")
+        Path(root, store.CROP_GEN_NAME).write_bytes(b"{")
+        before = Path(root, store.MANIFEST_NAME).read_bytes()
+        expect_raises(lambda: pre.run(h, **args), "V2BI9 깨진 패치별 생성 설정 파일이면 반영 실패")
+        check(Path(root, store.MANIFEST_NAME).read_bytes() == before, "V2BI9 실패한 반영은 매니페스트를 바꾸지 않음")
+
+        # ── 리뷰 1차: 읽지 못한 항목의 「작업 없음」은 채택 가드 뒤에 — 채택 미반영 크롭이면 입력 지문을 올리지 않는다(「반영 필요」 유지),
+        #    그 크롭의 스펙 JSON 이 깨졌으면 지금처럼 반영 전체가 실패한다(항목 때문에 조용히 건너뛰지 않는다)
+        h, root, ids = _v2b_project(dp, out, "adopt", "gpt-image-2.5-sunburst")
+        h, _, _ = pre.run(h, **args)
+        m0 = store.load_manifest(root)
+        spec_path = Path(root, "specs", ids["001_square"] + ".json")
+        spec_path.write_bytes(json.dumps({"_layer_targets": "A: 금장; B: 리본"}, ensure_ascii=False).encode("utf-8"))
+        crop = next(c for c in m0["crops"] if c["id"] == ids["001_square"])
+        stale = store.adopt_stale(crop, store.load_spec_override(root, crop["id"]))
+        check(bool(stale) and not stale.startswith("채택 확인 못 함"), f"V2BI10 준비 — 채택 미반영 크롭: {stale!r}")
+        h, _, _ = pre.run(h, **args)
+        kept = store.load_manifest(root)["prepare_inputs"]
+        check(kept == m0["prepare_inputs"] != store.prepare_inputs_fp(root, m0), "V2BI10 기준 — 채택 미반영이면 입력 지문을 올리지 않음")
+        put(root, {ids["001_square"]: {"model": "retired-model"}})
+        h, _, report = pre.run(h, **args)
+        m = store.load_manifest(root)
+        check(m["prepare_inputs"] == kept != store.prepare_inputs_fp(root, m),
+              "V2BI10 읽지 못한 항목이 겹쳐도 채택 미반영의 「반영 필요」는 남음(입력 지문을 올리지 않음)")
+        check(not [j for j in m["jobs"] if j["crop_id"] == ids["001_square"]] and "다음 반영 때 적용" in report, "V2BI10 그 크롭은 채택 가드의 작업 없음")
+        spec_path.write_bytes(b"{")
+        expect_raises(lambda: pre.run(h, **args), "V2BI11 스펙 JSON 이 깨진 크롭은 항목을 읽지 못해도 반영 전체 실패(지금 그대로)")
+
+    # ── 로컬판(ComfyUI 탭)의 규칙(재리뷰 2–4차): 패치별 생성 설정이 있는 프로젝트는 로컬에서 반영도 생성도 하지 않는다 — 로컬의 승인 창은
+    #    프로젝트 값 한 벌(Studio)·건수와 예상 금액(탭)만 보이고 패치마다의 모델·장 수를 보이지 않는다. 설정이 없으면(파일 없음·빈 crops) 그대로다.
+    import asyncio
+    from unittest.mock import patch
+    run_node = dp.BMKDesignPatchRun()
+    with _v2b_env(dp, out, server=False):
+        lname = "gpt-image-2.5-sunburst"
+        largs = _v2b_args(pl, lname)
+        h, root, ids = _v2b_project(dp, out, "local-entries", lname)
+        h, _, report0 = pre.run(h, **largs)
+        m0 = store.load_manifest(root)
+        check(asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")) is not None, "V2BI12 준비 — 파일 없는 로컬 프로젝트의 Run(드라이런)")
+        for label, entries in (("모델 묶음", {ids["001_square"]: models.gen_bundle("gpt-image-2.5-flare")}), ("장 수", {ids["002_tall"]: {"n": 5}})):
+            put(root, entries)
+            before = Path(root, store.MANIFEST_NAME).read_bytes()
+            expect_raises(lambda: pre.run(h, **largs), f"V2BI12 로컬판 — 패치별 설정({label})이 있으면 반영 실패", contains="서버 모드에서만")
+            check(Path(root, store.MANIFEST_NAME).read_bytes() == before, f"V2BI12 로컬판 — 실패한 반영은 매니페스트를 바꾸지 않음({label})")
+            expect_raises(lambda: asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")),
+                          f"V2BI12 로컬판 — 패치별 설정({label})이 있으면 Run 도 멈춤(반영을 거치지 않은 큐 포함)", contains="서버 모드에서만")
+        put(root, {})  # 설정을 모두 풂(빈 crops 파일은 남는다)
+        h, _, report = pre.run(h, **largs)
+        m = store.load_manifest(root)
+        check(dump(m["jobs"]) == dump(m0["jobs"]) and dump(m["prepare_settings"]) == dump(m0["prepare_settings"]) and "패치별 모델" not in report,
+              "V2BI12 로컬판 — 설정을 모두 풀면(빈 crops) 반영 결과가 처음과 같음")
+        check(asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")) is not None, "V2BI12 로컬판 — 설정을 모두 풀면 Run 이 그대로 돈다(드라이런)")
+
+        # 서버에서 반영해 둔 패치별 작업이 매니페스트에 남은 채 설정만 풀린 폴더(반영 전) — 로컬에서 Prepare 없이 Run 하면 멈춘다
+        put(root, {ids["001_square"]: models.gen_bundle("gpt-image-2.5-flare"), ids["002_tall"]: {"n": 5}})
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
+            sh, _, _ = pre.run(h, **largs)  # 서버 모드의 반영 — 패치별 작업이 매니페스트에 들어간다
+        server_jobs = store.load_manifest(root)["jobs"]
+        check(any(j["model"] == "gpt-image-2.5-flare" for j in server_jobs) and any(j["n"] == 5 for j in server_jobs),
+              "V2BI13 준비 — 서버 모드로 반영한 패치별 작업")
+        put(root, {})  # 서버에서 설정을 풀었지만 아직 반영하지 않음 → 작업은 옛 값 그대로
+        expect_raises(lambda: asyncio.run(run_node.run(sh, "", 64, 1, 25, False, False, "")),
+                      "V2BI13 로컬판 Run — 프로젝트 값과 다른 작업이 남아 있으면 멈춤(Prepare 를 먼저)", contains="Prepare")
+        h, _, _ = pre.run(sh, **largs)
+        check(dump(store.load_manifest(root)["jobs"]) == dump(m0["jobs"]), "V2BI13 로컬에서 반영하면 작업이 프로젝트 값으로 돌아옴")
+        check(asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")) is not None, "V2BI13 그 뒤 Run 은 그대로 돈다(드라이런)")
+
+        # 5차 리뷰: 지금 없는 크롭(지워진 영역)의 항목은 로컬을 막지 않는다 — 서버 화면에서 풀 수 없는 항목 때문에 프로젝트가 갇히지 않게
+        put(root, {"gone_crop_1": {"n": 5}})
+        h, _, report = pre.run(h, **largs)
+        check(dump(store.load_manifest(root)["jobs"]) == dump(m0["jobs"]), "V2BI14 로컬판 — 지금 없는 크롭의 항목만 있으면 평소처럼 반영")
+        check(asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")) is not None, "V2BI14 로컬판 — 그때 Run 도 그대로")
+        # 5차 리뷰: 모델·장 수는 같고 품질(또는 2.6 의 복잡도)만 다른 옛 작업도 「프로젝트 값과 다른 작업」이다
+        put(root, {ids["001_square"]: models.gen_bundle(lname, "max")})  # 프로젝트 품질 high · 패치 max — 모델·장 수는 같다
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
+            sh, _, _ = pre.run(h, **largs)
+        check(any(j["quality"] == "max" for j in store.load_manifest(root)["jobs"]), "V2BI14 준비 — 품질만 다른 패치 작업")
+        put(root, {})
+        expect_raises(lambda: asyncio.run(run_node.run(sh, "", 64, 1, 25, False, False, "")),
+                      "V2BI14 로컬판 Run — 품질만 다른 옛 작업도 멈춤(Prepare 를 먼저)", contains="Prepare")
+        h, _, _ = pre.run(sh, **largs)
+        check(asyncio.run(run_node.run(h, "", 64, 1, 25, False, False, "")) is not None, "V2BI14 로컬에서 반영한 뒤에는 Run 이 돈다")
+        # 5차 리뷰: 로컬의 전환 미리 보기는 반영할 수 없는 프로젝트의 건수를 보이지 않는다
+        put(root, {ids["002_tall"]: {"n": 5}})
+        lsw = pl.switch_preview(root, store.load_manifest(root), dict(pl.defaults(root), prepare=largs), prepare=dict(largs, quality="low"))
+        check("서버 모드에서만" in str(lsw.get("error")) and lsw.get("uncertain") is True and "need" not in lsw,
+              f"V2BI14 로컬판 — 패치별 설정이 있으면 전환 미리 보기는 사유만: {sorted(lsw)}")
+        check("crop_gen.json 을 치워" not in dp._LOCAL_PATCH_SETTINGS and "풀" in dp._LOCAL_PATCH_SETTINGS,
+              "V2BI14 안내 문구는 파일을 치우라고 하지 않는다(치우면 서버에서 반영한 작업이 그대로 남는다)")
+
+def ux_v2b_flow_unit():
+    """UX v2-B 갈래를 이은 흐름(감독관 — 통합 뒤): 라우트로 쓴 패치별 설정 → 「반영 필요」 → Prepare → 목록의 applied · 실행 설정 유도는
+    프로젝트 값(명세 ❓6) · 동시 제출 수 · 전환 미리 보기 · 계획의 모델별 묶음이 같은 작업 목록을 본다. --quick 포함."""
+    section("UX v2-B — 갈래를 이은 흐름 (ux_v2b_flow_unit)")
+    from tempfile import mkdtemp
+
+    dp = _dp_package()
+    bd, pl, rn = dp.board, dp.board.pl, dp.runner
+    models = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_models")
+    cropgen = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_cropgen")
+    jobs_mod = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_jobs")
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="ux_v2b_flow_", dir=OUT_ROOT.resolve()))
+    scope = _fj_scope(out / "home")
+    pre = dp.BMKDesignPatchPrepare()
+    project = "gpt-image-2.6-sunburst"
+
+    def rows_of(_scope):
+        return {name: models.describe(name) for name in models.MODELS}, False
+
+    def view(key, data=None):
+        token = bd.set_scope(scope)
+        try:
+            return cropgen._request(key, rows_of, data)
+        finally:
+            bd.reset_scope(token)
+
+    def by_id(v):
+        return {r["crop_id"]: r for r in v["crops"]}
+
+    with _v2b_env(dp, out):
+        h, root, ids = _v2b_project(dp, scope["input"], "flow", project)
+        a, b, c, d = (ids[name] for name, _ in V2B_RECTS)  # 001 템플릿 · 002 직접 입력 · 003 작업 없음 · 004 템플릿(아래에서 스펙을 치움)
+        # 004 의 AI 작성본은 치운다 — 프로젝트 모델을 바꾸면 AI 작성본이 낡아 작업이 없어지는데 전환 미리 보기는 그것을 세지 못한다
+        # (이 묶음 이전부터의 한계 — 실제보다 많게 보인다). 여기서는 미리 보기와 실제 반영의 건수를 대조하므로 템플릿 패치로 둔다.
+        Path(root, "specs", d + ".json").unlink()
+        args = _v2b_args(pl, project)
+        pl.update(root, 0, "prepare", args)
+        key = store.root_key(root)
+        h, _, report = pre.run(h, **args)
+        m0 = store.load_manifest(root)
+        check(sorted({j["crop_id"] for j in m0["jobs"]}) == sorted([a, b, d]) and all(j["model"] == project for j in m0["jobs"]),
+              "V2BF1 기준 Prepare(파일 없음) — 작업이 있는 패치 셋")
+        first = view(key)
+        check(first["seen"] == 0 and all(r["applied"] and r["gen"] is None for r in first["crops"]),
+              f"V2BF1 반영 직후 모든 패치 applied(작업 없는 패치 포함): {[(r['crop_id'], r['applied']) for r in first['crops']]}")
+        settings = bd._route_settings(root, m0)["settings"]
+        check(bd._apply_pending(root, m0, settings) == [], "V2BF1 반영 직후 「반영 필요」 없음")
+
+        # ── 라우트로 한 판에 셋: 001 → Ideogram 4.5 low · 002 → 나노바나나 2.1 1K · 004 → 장 수 3
+        saved = view(key, {"root": key, "seen": 0, "changes": [
+            {"crop_ids": [a], "patch": {"model_id": "ideogram-4.5", "quality": "low"}},
+            {"crop_ids": [b], "patch": {"model_id": "nano-banana-2.1", "opts": {"image_size": "1K"}}},
+            {"crop_ids": [d], "patch": {"count": 3}}]})
+        rows = by_id(saved)
+        check(saved["seen"] == 1 and saved["changed"] and not rows[a]["applied"] and not rows[b]["applied"] and not rows[d]["applied"]
+              and rows[c]["applied"] is False, f"V2BF2 쓰고 나면 반영 전(applied false): {[(r['crop_id'], r['applied']) for r in saved['crops']]}")
+        check(Path(root, store.MANIFEST_NAME).read_bytes() and store.load_manifest(root)["jobs"] == m0["jobs"], "V2BF2 쓰기는 작업 목록을 건드리지 않음")
+        pending = bd._apply_pending(root, store.load_manifest(root), settings)
+        check(any("Prepare 입력이 바뀜" in p for p in pending), f"V2BF2 패치별 설정을 쓰면 「반영 필요」: {pending}")
+
+        # ── 반영(Prepare) → 목록이 applied, 작업은 패치마다 그 모델
+        h, _, report = pre.run(h, **args)
+        m1 = store.load_manifest(root)
+        after = by_id(view(key))
+        check(all(after[x]["applied"] for x in (a, b, c, d)), f"V2BF3 반영 뒤 applied: {[(k, v['applied']) for k, v in after.items()]}")
+        check(bd._apply_pending(root, m1, settings) == [], "V2BF3 반영 뒤 「반영 필요」 없음")
+        got = {j["crop_id"]: (j["model"], j["quality"], j["n"], (j.get("opts") or {}).get("image_size")) for j in m1["jobs"]}
+        check(got.get(a) == ("ideogram-4.5", "low", 2, None) and got.get(b) == ("nano-banana-2.1", "standard", 2, "1K")
+              and got.get(d) == (project, "high", 3, None) and c not in got, f"V2BF3 작업 = 패치의 효과 값: {got}")
+        check(after[b]["ratio"] == {"ok": True, "matched": "9:16", "nearest": "9:16"} and after[a]["ratio"] is None, "V2BF3 비율 판정은 효과 모델 기준")
+
+        # ── 명세 ❓6: 모델이 섞인 작업 목록이어도 실행 설정의 유도·갈라짐 판정은 프로젝트 값(prepare_settings)을 본다
+        der = pl.derive(root, m1)
+        check(pl.prepare_record(m1)[0] == "prepare_settings" and der["settings"]["prepare"]["model"] == project
+              and der["settings"]["prepare"]["n"] == 2 and der["from"]["prepare.model"] == "manifest" and der["from"]["prepare.n"] == "manifest",
+              f"V2BF4 실행 설정 유도는 프로젝트 값(최다값 길 아님): {der['from'].get('prepare.model')}")
+        check(not [x for x in pl.drift(settings, m1) if x["section"] == "prepare"], "V2BF4 섞인 작업이어도 준비 설정 갈라짐 없음")
+        check(dict(m1["prepare_settings"]) == dict(m0["prepare_settings"]), "V2BF4 prepare_settings 는 프로젝트 값 한 벌 그대로")
+
+        # ── 동시 제출 수: 모든 작업의 최솟값(장마다 따로 부르는 모델의 장 수가 늘면 줄어든다)
+        check(jobs_mod._forge_concurrency(root, 4) == 4, f"V2BF5 나노바나나 2장 → 동시 4 유지: {jobs_mod._forge_concurrency(root, 4)}")
+        view(key, {"root": key, "seen": 1, "changes": [{"crop_ids": [b], "patch": {"count": 8}}]})
+        h, _, _ = pre.run(h, **args)
+        m2 = store.load_manifest(root)
+        check(jobs_mod._forge_concurrency(root, 4) == 1, f"V2BF5 나노바나나 8장 패치 하나 → 실행 전체 동시 1: {jobs_mod._forge_concurrency(root, 4)}")
+
+        # ── 전환 미리 보기: 모두 끝난 프로젝트에서 프로젝트 모델을 바꾸면 따르는 패치만 새 조건
+        for job in m2["jobs"]:
+            for rep in range(job["reps"]):
+                rn._write_json(rn._lpath(root, job["cell_key"], rep, "done"), {"slots": []})
+        target = dict(args, model="gpt-image-2.5-sunburst")
+        sw = pl.switch_preview(root, m2, settings, prepare=target)
+        check(sw.get("exact") is True and sw.get("kept_overrides") == 2 and sw.get("need") == 1,
+              f"V2BF6 전환 미리 보기 — 덮어쓴 둘은 그대로, 따르는 하나만 승인 필요: {dict((k, sw.get(k)) for k in ('exact', 'kept_overrides', 'need', 'error'))}")
+        same = pl.switch_preview(root, m2, settings, prepare=args)
+        check(same.get("exact") is True and same.get("need") == 0 and same.get("kept_overrides") == 2, "V2BF6 같은 설정의 미리 보기 0건")
+        # 재리뷰: kept_overrides 는 작업이 없는 패치(프롬프트 미준비 등)의 모델 묶음도 센다 — v1 의 「패치 k개는 따로 정한 모델을 씁니다」
+        # (GET /pipeline 의 crop_overrides.model)와 같은 수여야 한다
+        view(key, {"root": key, "seen": 2, "changes": [{"crop_ids": [c], "patch": {"model_id": "seedream-5.5"}}]})
+        kept3 = pl.switch_preview(root, m2, settings, prepare=target)
+        check(kept3.get("kept_overrides") == 3 == bd._crop_override_counts(root)["model"],
+              f"V2BF6 kept_overrides 는 작업 없는 패치의 모델 묶음도 셈: {kept3.get('kept_overrides')} vs {bd._crop_override_counts(root)}")
+        view(key, {"root": key, "seen": 3, "changes": [{"crop_ids": [c], "patch": {"inherit_model": True}}]})
+        # 리뷰(통합): 미리 보기의 건수를 정답으로 고정하지 않고 실제로 그 설정으로 반영한 계획과 대조한다
+        h, _, _ = pre.run(h, **target)
+        real = rn.split_approval(rn.plan_calls(store.load_manifest(root), root), "", backend=rn.backend_name(root))
+        check(len(real["needs_approval"]) == sw.get("need") == 1 and {e["crop_id"] for e in real["needs_approval"]} == {d},
+              f"V2BF6 미리 보기 건수 = 실제 반영 뒤의 승인 필요 건수: {len(real['needs_approval'])} vs {sw.get('need')}")
+        h, _, _ = pre.run(h, **args)
+        check(json.dumps(store.load_manifest(root)["jobs"], ensure_ascii=False) == json.dumps(m2["jobs"], ensure_ascii=False),
+              "V2BF6 설정을 되돌려 반영하면 작업 목록이 그대로")
+
+        # ── 계획의 모델별 묶음(승인 해시를 만드는 목록에서 센다): 끝난 원장을 치우면 셋 다 승인 필요
+        shutil.rmtree(Path(root, "cands"), ignore_errors=True)
+        mock_plan = bd.pipeline_plan(root, only_ids=[a, b, c, d], style=False)["run"]
+        check([g["model"] for g in mock_plan["groups"]] == [project] and mock_plan["need"] == 1
+              and any(r["reason"] == "blocked" and "Forge 서버에서만" in r.get("msg", "") for r in mock_plan["reasons"]),
+              f"V2BF7 mock 백엔드 — Forge 전용 모델 패치는 발사 못 함, 묶음은 승인되는 것만: {mock_plan['groups']} {mock_plan['reasons']}")
+        from unittest.mock import patch as _patch
+        with _patch.object(rn, "mock_enabled", return_value=False):
+            plan = bd.pipeline_plan(root, only_ids=[a, b, c, d], style=False)
+        groups = plan["run"].get("groups")
+        check(isinstance(groups, list) and [(g["model"], g["need"], g["images"], g["crops"]) for g in groups]
+              == [(project, 1, 3, 1), ("ideogram-4.5", 1, 2, 1), ("nano-banana-2.1", 1, 8, 1)] and sum(g["need"] for g in groups) == plan["run"]["need"] == 3,
+              f"V2BF7 계획의 모델별 묶음(표 순서·건수·장 수 합): {groups}")
+        check(isinstance(groups, list) and len(groups) == 3 and groups[0].get("complexity") == "medium" and groups[1].get("quality") == "low" and groups[2].get("opts") == {"image_size": "1K", "thinking_level": "medium"}
+              and groups[2]["fan_out"] is True and groups[0]["fan_out"] is False, f"V2BF7 묶음의 품질·복잡도·옵션·장마다 따로 표시: {groups}")
+
+        # ── 리뷰(통합) 6: 비율 목록 모델의 패치는 레이아웃에서 비율이 달라지면 applied 가 아니다(작업의 비율과 지금 사각형의 비율을 대조)
+        layout = store.layout_from_manifest(store.load_manifest(root))
+        next(cr for cr in layout["crops"] if cr["id"] == b)["rect"] = [256, 0, 448, 192]  # 9:16 → 1:1
+        store.write_json_atomic(str(Path(root, store.LAYOUT_NAME)), layout)
+        moved = by_id(view(key))[b]
+        check(moved["ratio"] == {"ok": True, "matched": "1:1", "nearest": "1:1"} and moved["applied"] is False,
+              f"V2BF8 비율이 달라진 영역은 반영 전(applied false): {moved['ratio']} {moved['applied']}")
+        Path(root, store.LAYOUT_NAME).unlink()
+        check(by_id(view(key))[b]["applied"] is True, "V2BF8 레이아웃이 매니페스트와 같으면 다시 applied")
+        # 재리뷰: 맞는 비율이 없는 사각형(3:1)으로 반영된 나노바나나 패치 — 레이아웃에서 1:3 으로 바꾸면 둘 다 「맞는 비율 없음」이지만
+        # 가장 가까운 비율(요청 크기)이 달라지므로 반영 전이다
+        wide_h, wide_root, wide_ids = _v2b_project(dp, scope["input"], "ratio-none", project)
+        Path(wide_root, "specs", wide_ids["003_wide"] + ".json").unlink()  # 3:1 영역을 템플릿 패치로(작업이 생기게)
+        pl.update(wide_root, 0, "prepare", args)
+        store.update_crop_gen(wide_root, lambda crops: crops.update({wide_ids["003_wide"]: models.gen_bundle("nano-banana-2.1")}), expect_rev=0)
+        wide_h, _, _ = pre.run(wide_h, **args)
+        wkey, w = store.root_key(wide_root), wide_ids["003_wide"]
+        row0 = by_id(view(wkey))[w]
+        check(row0["ratio"]["ok"] is False and row0["applied"] is True, f"V2BF8 맞는 비율이 없는 채 반영된 패치 = applied(같은 사각형): {row0['ratio']}")
+        layout = store.layout_from_manifest(store.load_manifest(wide_root))
+        next(cr for cr in layout["crops"] if cr["id"] == w)["rect"] = [448, 0, 548, 300]  # 300×100 → 100×300
+        store.write_json_atomic(str(Path(wide_root, store.LAYOUT_NAME)), layout)
+        row1 = by_id(view(wkey))[w]
+        check(row1["ratio"]["ok"] is False and row1["ratio"]["nearest"] != row0["ratio"]["nearest"] and row1["applied"] is False,
+              f"V2BF8 가장 가까운 비율이 달라진 영역은 반영 전: {row0['ratio']} → {row1['ratio']} applied {row1['applied']}")
+        # 3차 리뷰: 작업에 크기 기록(size_info)이 없으면 가장 가까운 비율을 확인할 수 없다 — 반영 전으로 본다
+        Path(wide_root, store.LAYOUT_NAME).unlink()
+
+        def drop_info(mm):
+            for job in mm["jobs"]:
+                if job["crop_id"] == w:
+                    job.pop("size_info", None)
+        store.update_manifest(wide_root, drop_info)
+        check(by_id(view(wkey))[w]["applied"] is False, "V2BF8 크기 기록이 없는 작업(맞는 비율 없음)은 반영 전으로")
+
+        # ── 리뷰(통합) 3: 프로젝트 모델이 비율 목록 모델이어도 크기 규칙을 쓰는 패치(모델을 따로 정한 GPT)가 있으면 크기 규칙 변경은 갈라짐이다
+        nano = "nano-banana-2.1"
+        nargs = _v2b_args(pl, nano)
+        for label, entries in (("덮어쓴 GPT 패치 있음", True), ("덮어쓰기 없음", False)):
+            nh, nroot, nids = _v2b_project(dp, scope["input"], "rule-" + ("mix" if entries else "plain"), nano)
+            pl.update(nroot, 0, "prepare", nargs)
+            if entries:
+                store.update_crop_gen(nroot, lambda crops: crops.update({nids["001_square"]: models.gen_bundle("gpt-image-2.6-sunburst")}), expect_rev=0)
+            nh, _, _ = pre.run(nh, **nargs)
+            nm = store.load_manifest(nroot)
+            nsettings = bd._route_settings(nroot, nm)["settings"]
+            check(pl.drift(nsettings, nm) == [], f"V2BF9 반영 직후 갈라짐 없음({label})")
+            fields = [x["field"] for x in pl.drift(dict(nsettings, prepare=dict(nsettings["prepare"], size_rule="int_k_2560")), nm)]
+            check(fields == (["size_rule"] if entries else []), f"V2BF9 크기 규칙 변경의 갈라짐 판정({label}): {fields}")
+            if entries:  # 실제로 그 패치의 생성 조건이 달라진다(그래서 갈라짐이어야 한다)
+                before_key = next(j["cell_key"] for j in nm["jobs"] if j["crop_id"] == nids["001_square"])
+                nh, _, _ = pre.run(nh, **dict(nargs, size_rule="int_k_2560"))
+                check(next(j["cell_key"] for j in store.load_manifest(nroot)["jobs"] if j["crop_id"] == nids["001_square"]) != before_key,
+                      "V2BF9 크기 규칙이 바뀌면 GPT 패치의 생성 조건이 달라짐")
+
+    # ── 리뷰(통합) 7: 로컬판(ComfyUI 탭)의 전환 미리 보기 응답에는 새 키가 없다(응답 정본 그대로)
+    with _v2b_env(dp, out, server=False):
+        lname = "gpt-image-2.5-sunburst"
+        lh, lroot, _lids = _v2b_project(dp, out, "local-preview", lname)
+        largs = _v2b_args(pl, lname)
+        lh, _, _ = pre.run(lh, **largs)
+        lm = store.load_manifest(lroot)
+        lsw = pl.switch_preview(lroot, lm, dict(pl.defaults(lroot), prepare=largs), prepare=dict(largs, model="gpt-image-2.5-flare"))
+        check(lsw.get("exact") is True and "kept_overrides" not in lsw, f"V2BF10 로컬판 미리 보기 응답에 kept_overrides 없음: {sorted(lsw)}")
+
+
+# ── 아래 묶음들은 갈래가 채운다(갈래마다 자기 묶음 안에서만 — 다른 묶음·위의 감독관 묶음은 고치지 않는다) ───────────────
+def ux_v2b_gen_unit():
+    """UX v2-B 갈래 G — 전환 미리 보기의 덮어쓴 패치(D534) · 스펙 보기·AI 작성의 효과 모델(D531·D551) · 옮긴 영역의 AI 작성 409(D562).
+    --quick 포함."""
+    section("UX v2-B — 전환 미리 보기 · 스펙·AI 작성의 효과 모델 (ux_v2b_gen_unit)")
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, patch
+    from aiohttp.test_utils import make_mocked_request
+
+    dp = _dp_package()
+    bd, pl, rn = dp.board, dp.board.pl, dp.runner
+    assist = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_assist")
+    dev = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge_dev")
+    pre = dp.BMKDesignPatchPrepare()
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="ux_v2b_gen_", dir=OUT_ROOT.resolve()))
+    project_model, target_model = "gpt-image-2.5-flare", "gpt-image-2.6-sunburst"
+
+    with _v2b_env(dp, out):
+        h, root = _fx_project(dp, out, "preview", V2B_RECTS[:3], texture(344, 748, 9))
+        args = _v2b_args(pl, project_model, variants="V1", calls_per_cell=2)
+        target = dict(args, model=target_model, calls_per_cell=1)
+        pre.run(h, **args)
+        m = store.load_manifest(root)
+        own, counted, inherited = [c["id"] for c in m["crops"]]
+        settings = pl.derive(root, m)["settings"]
+        preview = pl.switch_preview(root, m, settings, prepare=target)
+        pre.run(h, **target)
+        actual = rn.split_approval(rn.plan_calls(store.load_manifest(root), root), "", backend=rn.BACKEND_MOCK)
+        lo, hi = actual["est_usd"]
+        check(preview == {"prepare": target, "exact": True, "kept_overrides": 0, "need": 3, "cells": 3,
+                          "est_usd": [lo, hi], "credits": [round(lo * rn.CREDITS_PER_USD), round(hi * rn.CREDITS_PER_USD)],
+                          "pending_preapproved": 0, "est_usd_pre": [0.0, 0.0], "pruned": 0, "blocked": [],
+                          "uncertain": False, "backend": rn.BACKEND_MOCK}, "V2BG1 파일 없는 전환은 기존 승인 건수·비용·응답 그대로")
+
+        bundle = dp.models.gen_bundle("nano-banana-2.1", opts={"image_size": "1K", "thinking_level": "high"})
+        store.update_crop_gen(root, lambda crops: crops.update({own: bundle | {"n": 3}, counted: {"n": 5},
+                                                                "absent": bundle}), expect_rev=0)
+        _, _, report = pre.run(h, **args)
+        m = store.load_manifest(root)
+        jobs = {j["crop_id"]: j for j in m["jobs"]}
+        check(jobs[own]["model"] == bundle["model"] and jobs[own]["n"] == 3 and jobs[counted]["n"] == 5
+              and jobs[inherited]["n"] == 2 and "예상 후보 20장" in report.splitlines()[0]
+              and "패치별 모델 1개 크롭" in report.splitlines(), "V2BG2 Prepare 는 패치 설정을 읽고 혼합 장 수 × 호출 수를 합산")
+        for job in m["jobs"]:
+            for rep in range(job["reps"]):
+                rn._write_json(rn._lpath(root, job["cell_key"], rep, "done"), {"slots": []})
+
+        def simulated():
+            with patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plan:
+                response = pl.switch_preview(root, m, settings, prepare=target)
+            return response, {j["crop_id"]: j for j in plan.call_args.args[0]["jobs"]}
+
+        preview, switched = simulated()
+        check(preview["exact"] and preview["need"] == preview["cells"] == 2 and preview["kept_overrides"] == 1
+              and switched[own] == dict(jobs[own], reps=1), "V2BG3 완료된 모델 덮어쓰기 셀은 유지하고 따르는 두 셀만 새 승인")
+        check(switched[counted]["model"] == switched[inherited]["model"] == target_model
+              and switched[counted]["n"] == 5 and switched[inherited]["n"] == target["n"],
+              "V2BG3 장 수만 덮어쓴 패치는 모델만 전환")
+        store.update_crop_gen(root, lambda crops: crops.update({counted: {"model": "unknown"}}), expect_rev=1)
+        preview, switched = simulated()
+        check(preview["need"] == 1 and preview["kept_overrides"] == 1 and counted not in switched,
+              "V2BG4 읽지 못한 항목의 완료된 작업도 전환 계획에서 제외")
+        inexact = pl.switch_preview(root, m, settings, prepare=dict(target, variants="V1,V4"))
+        check(inexact["exact"] is False and "kept_overrides" not in inexact, "V2BG4 추정 불가 응답에는 유지 크롭 수 없음")
+        Path(root, store.CROP_GEN_NAME).write_bytes(b"{")
+        broken = pl.switch_preview(root, m, settings, prepare=target)
+        check(set(broken) == {"prepare", "uncertain", "error"} and broken["uncertain"] and broken["prepare"] == target
+              and store.CROP_GEN_NAME in broken["error"], "V2BG4 깨진 파일은 전환 미리 보기 오류")
+
+        for reserved in (0, 1):
+            h, root = _fx_project(dp, out, f"invalid-{reserved}", V2B_RECTS[:2], texture(344, 448, 7))
+            values = _v2b_args(pl, project_model, variants="V1")
+            pre.run(h, **values)
+            m = store.load_manifest(root)
+            invalid = m["jobs"][0]
+            ck = invalid["cell_key"]
+            if reserved:
+                m["rerolls"] = {ck: reserved}
+                store.save_manifest(root, m)
+            store.update_crop_gen(root, lambda crops: crops.update({invalid["crop_id"]: {"model": "unknown-model"}}), expect_rev=0)
+            preview = pl.switch_preview(root, m, pl.derive(root, m)["settings"], prepare=values)
+            pre.run(h, **values)
+            applied = store.load_manifest(root)
+            actual = rn.split_approval(rn.plan_calls(applied, root), "", backend=rn.BACKEND_MOCK)
+            pruned = reserved - applied.get("rerolls", {}).get(ck, 0)
+            check(preview["need"] == len(actual["needs_approval"]) == 1 and preview["pruned"] == pruned == reserved
+                  and preview["pending_preapproved"] == len(actual["preapproved"]) == 0 and preview["est_usd"] == list(actual["est_usd"]),
+                  f"V2BG9 손상된 미완료 작업 제외(예약 {reserved}건) — 미리 보기 need/pruned {preview['need']}/{preview['pruned']}, "
+                  f"반영 후 {len(actual['needs_approval'])}/{pruned}")
+
+    with _v2b_env(dp, out), patch.object(rn, "mock_enabled", return_value=False):
+        for overrides in (False, True):
+            h, root = _fx_project(dp, out, f"size-rule-{overrides}", [V2B_RECTS[0], ("002_tall", [256, 0, 400, 256])],
+                                  texture(256, 400, 8))
+            m = store.load_manifest(root)
+            own, counted = [c["id"] for c in m["crops"]]
+            if overrides:
+                entries = {own: dp.models.gen_bundle(target_model), counted: {"n": 10}}
+                store.update_crop_gen(root, lambda crops: crops.update(entries), expect_rev=0)
+            values = _v2b_args(pl, project_model, size_rule="user_k", variants="V1")
+            target = dict(values, model="nano-banana-2.1", size_rule="int_k_2560")
+            pre.run(h, **values)
+            m = store.load_manifest(root)
+            for job in m["jobs"]:
+                rn._write_json(rn._lpath(root, job["cell_key"], 0, "done"), {"slots": []})
+            with patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plan:
+                preview = pl.switch_preview(root, m, pl.derive(root, m)["settings"], prepare=target)
+            simulated_jobs = {j["crop_id"]: j for j in plan.call_args.args[0]["jobs"]}
+            pre.run(h, **target)
+            actual = rn.split_approval(rn.plan_calls(store.load_manifest(root), root), "", backend=rn.BACKEND_FORGE)
+            need = {e["crop_id"]: e["job"] for e in actual["needs_approval"]}
+            check(preview["exact"] and preview["need"] == len(actual["needs_approval"]) == 2 and need.keys() == {own, counted}
+                  and all(simulated_jobs[cid]["cell_key"] == need[cid]["cell_key"] for cid in need)
+                  and preview["kept_overrides"] == int(overrides), f"V2BG10 크기 규칙 전환 미리 보기와 실제 승인 셀 일치(덮어쓰기 {overrides})")
+            if overrides:
+                old = next(j for j in m["jobs"] if j["crop_id"] == own)
+                check(simulated_jobs[own]["model"] == old["model"] == target_model and simulated_jobs[own]["size"] != old["size"]
+                      and simulated_jobs[own]["size"] == need[own]["size"], "V2BG10 완료된 GPT 패치는 크기 규칙이 바뀌면 다시 승인")
+                check(simulated_jobs[counted]["n"] == need[counted]["n"] == 8 and simulated_jobs[counted]["model"] == target["model"]
+                      and preview["need"] == len(actual["needs_approval"]), "V2BG11 장 수만 10으로 덮어쓴 패치는 나노 전환 시 8장")
+
+    async def spec_and_assist():
+        scope = _fj_scope(out)
+        h, root, ids = _v2b_project(dp, out, "spec-assist", project_model)
+        values = _v2b_args(pl, project_model)
+        pl.update(root, 0, "prepare", values)
+        ai, manual = ids["004_panel"], ids["002_tall"]
+        fake = dev.FakeForge()
+        client = assist.forge.ForgeClient(assist.forge.ForgeConfig("https://forge.test"), transport=fake.handle)
+        accounts = types.SimpleNamespace(ensure_access=AsyncMock(), context=lambda s: {
+            "client": client, "token_of": lambda: dev.issue_token(s["account"])})
+        now = 0
+        routes = {(method, path): handler for method, path, handler in
+                  (*assist.specs.routes(), *assist.routes(accounts, per_minute=1, clock=lambda: now))}
+
+        async def call(method, path, crop_id, *, view=None, status=200, label="V2BG5", **fields):
+            path = bd.API + "/" + path
+            data = {"root": store.root_key(root), "crop_id": crop_id, **fields}
+            if view:
+                data.update(seen=view["seen"], crop_sig=view["crop_sig"])
+            url = path + "?" + urllib.parse.urlencode(data) if method == "GET" else path
+            req = make_mocked_request(method, url, headers={"Content-Type": "application/json"})
+            req.read = AsyncMock(return_value=json.dumps(data).encode())
+            res = await routes[method, path](req)
+            check(res.status == status, f"{label} {method} {path} HTTP {res.status} (기대 {status})")
+            return json.loads(res.body)
+
+        scope_token = bd.set_scope(scope)
+        try:
+            original = await call("GET", "spec", ai)
+            bundle = dp.models.gen_bundle(target_model)
+            entries = {ai: bundle, manual: bundle}
+            store.update_crop_gen(root, lambda crops: crops.update(entries), expect_rev=0)
+            stale = await call("GET", "spec", ai)
+            check(stale["model"] == target_model and stale["state"] == "blocked" and original["state"] == "body"
+                  and stale["input_hash"] != original["input_hash"], "V2BG5 모델 덮어쓰기 뒤 기존 AI 작성본은 낡음")
+            direct = await call("GET", "spec", manual)
+            check(direct["state"] == "body" and direct["model"] == target_model, "V2BG5 모델이 바뀌어도 직접 쓴 글은 유효")
+            edited = await call("POST", "spec", manual, view=direct, raw_prompt_override="Restore the seam in @image1.")
+            store.update_crop_gen(root, dict.clear, expect_rev=1)
+            check(await call("GET", "spec", ai) == original, "V2BG5 모델을 풀면 기존 AI 작성본과 지문 복원")
+            restored = await call("GET", "spec", manual)
+            check(restored["state"] == edited["state"] == "body" and restored["model"] == project_model
+                  and restored["prompt_en"] == edited["prompt_en"] and restored["v2"]["prompt"]["body_en"] == "Restore the seam in @image1.",
+                  "V2BG5 덮어쓴 모델에서 저장한 직접 입력 글은 풀어도 그대로")
+            store.update_crop_gen(root, lambda crops: crops.update({ai: {"quality": "high"}}), expect_rev=2)
+            for method in ("GET", "POST"):
+                err = await call(method, "spec", ai, view=original, status=422)
+                check(dp.models.GEN_BROKEN in err["error"], f"V2BG6 읽지 못한 항목의 {method} /spec 422")
+            store.update_crop_gen(root, lambda crops: crops.update(entries), expect_rev=3)
+            view = await call("GET", "spec", ai)
+            m = store.load_manifest(root)
+            layout = store.layout_from_manifest(m)
+            draft = bd._crop(layout, ai)
+            rect = draft["rect"]
+            draft["rect"] = [rect[0] + 1, rect[1], rect[2] + 1, rect[3]]
+            store.update_layout(root, lambda doc: doc.update(layout), expect_rev=None, create=True)
+            rejected = await call("POST", "prompt/assist", ai, view=view, status=409)
+            check(rejected.get("reason") == "apply_needed" and not fake.calls and not accounts.ensure_access.called,
+                  "V2BG7 영역 이동 뒤 미반영이면 접근 확인·지침·글쓰기 모두 0회")
+            store.update_layout(root, lambda doc: bd._crop(doc, ai).update(rect=rect, name="004_renamed"), expect_rev=0)
+            written = await call("POST", "prompt/assist", ai, view=view)
+            saved = await call("GET", "spec", ai)
+            record = saved["v2"]["prompt"]
+            crop = bd._crop(m, ai)
+            ov = store.load_spec_override(root, ai)
+            roles = P.v2_roles(P.spec_from_manifest(crop, None, "", {}, ov), root)
+            expected_hash = P.v2_input_hash(saved["v2"], target_model, roles)
+            check(written.get("status") == "written" and record["profile"] == "gpt_image_25" and len(fake.prompt_calls) == 3
+                  and fake.prompt_calls[1]["body"]["checkpoint"] == "gpt_image_25_sunburst",
+                  "V2BG7 이름만 바뀌면 첫 작성 한도가 남고 2.6 패치에 맞는 2.5 지침으로 작성")
+            check(saved["model"] == target_model and saved["state"] == "body" and written["input_hash"] == record["input_hash"]
+                  == view["input_hash"] == expected_hash, "V2BG7 작성본에 효과 모델의 입력 해시 저장")
+            _, _, report = pre.run(h, **values)
+            jobs = [j for j in store.load_manifest(root)["jobs"] if j["crop_id"] == ai]
+            check(len(jobs) == 1 and jobs[0]["template_version"] == P.BODY_TEMPLATE and jobs[0]["prompt"] == written["prompt_en"]
+                  and jobs[0]["model"] == target_model and not any(ai in line and "작업 없음" in line for line in report.splitlines()),
+                  "V2BG12 덮어쓴 모델로 AI 작성 직후 Prepare에서 같은 본문으로 작업 생성")
+
+            other = ids["003_wide"]
+            other_view = await call("GET", "spec", other)
+            path = Path(root, "specs", other + ".json")
+            before = path.read_bytes()
+            prepare_prompt = client.prepare_prompt
+
+            async def move_during_guidance(*args, **kwargs):
+                response = await prepare_prompt(*args, **kwargs)
+                x0, y0, x1, y1 = bd._crop(m, other)["rect"]
+                store.update_layout(root, lambda doc: bd._crop(doc, other).update(rect=[x0 + 1, y0, x1 + 1, y1]), expect_rev=None)
+                return response
+
+            now += 61
+            with patch.object(client, "prepare_prompt", side_effect=move_during_guidance) as guidance, \
+                    patch.object(client, "prompt_assist", wraps=client.prompt_assist) as writer:
+                rejected = await call("POST", "prompt/assist", other, view=other_view, status=409, label="V2BG8")
+            check(rejected.get("reason") == "apply_needed" and guidance.await_count == 1 and writer.await_count == 0
+                  and path.read_bytes() == before, f"V2BG8 지침 응답 중 영역 이동 — 글쓰기 {writer.await_count}회, 스펙 바이트 보존")
+
+            # 반영된 레이아웃과 사각형·이름을 맞추고 대상 문구만 바꾼 뒤, 같은 크롭을 삭제한 경우와 파일이 없는 경우도 검사한다.
+            layout = store.layout_from_manifest(m)
+            bd._crop(layout, ai)["targets"][0]["text"] = "trim"
+            store.update_layout(root, lambda doc: doc.update(crops=layout["crops"]), expect_rev=None)
+            for case in ("대상 문구만 변경", "레이아웃에서 크롭 삭제", "레이아웃 파일 없음"):
+                if case == "레이아웃에서 크롭 삭제":
+                    store.update_layout(root, lambda doc: doc["crops"].remove(bd._crop(doc, ai)), expect_rev=None)
+                elif case == "레이아웃 파일 없음":
+                    Path(root, store.LAYOUT_NAME).unlink()
+                now += 61
+                view = await call("GET", "spec", ai)
+                result = await call("POST", "prompt/assist", ai, view=view, force=True, label="V2BG13")
+                check(result.get("status") == "written" and result["cached"] is False and result["forge_calls"] >= 1,
+                      f"V2BG13 {case}에도 글쓰기 허용")
+            Path(root, store.CROP_GEN_NAME).write_bytes(b"{")
+            err = await call("GET", "spec", ai, status=422)
+            check(store.CROP_GEN_NAME in err["error"], "V2BG6 깨진 파일의 /spec 422")
+        finally:
+            bd.reset_scope(scope_token)
+
+    with _v2b_env(dp, out), patch.object(rn, "mock_enabled", return_value=False):
+        asyncio.run(spec_and_assist())
+
+
+#
+# ── 갈래 R ──────────────────────────────────────────────────────────────
+#
+def ux_v2b_route_unit():
+    """UX v2-B 갈래 R — GET·POST /crop_gen(D538–D546) · env 의 caps.v2_crop_model·모델 한 줄(D554·D556). --quick 포함."""
+    section("UX v2-B — crop_gen 라우트 · env (ux_v2b_route_unit)")
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, Mock, patch
+    from aiohttp.test_utils import make_mocked_request
+
+    dp = _dp_package()
+    bd, pl = dp.board, dp.board.pl
+    srv = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_server")
+    forge = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge")
+    backend = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge_backend")
+    models = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_models")
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="v2_cropgen_", dir=OUT_ROOT.resolve()))
+    scope = _fj_scope(out / "home")
+    project, gpt, nano = "gpt-image-2.5-sunburst", "gpt-image-2.6-flare", "nano-banana-2.1"
+    transport = AsyncMock(side_effect=AssertionError("V2BR 외부 요청"))
+
+    @contextlib.asynccontextmanager
+    async def serve(**config):
+        jobs = types.SimpleNamespace(JobRunner=Mock, routes=lambda runner: ())
+        app = srv.make_app(srv.ServerConfig(str(out / "data"), public_origin="https://studio.example", **config),
+                           jobs_module=jobs, forge_transport=transport)
+        app.freeze()
+        token = bd.set_scope(scope)
+        try:
+            yield app
+        finally:
+            bd.reset_scope(token)
+            await app.cleanup()
+
+    async def call(app, method, path, data=None, *, status=200, account=scope):
+        request = make_mocked_request(method, bd.API + path, app=app, headers={"Content-Type": "application/json"})
+        request.read = AsyncMock(return_value=json.dumps(data).encode())
+        if account:
+            request["bmk_dp_session"] = {"name": "test", "tag": "test", "scope": account}
+        token = bd.set_scope(account)
+        try:
+            route = await app.router.resolve(request)
+            if route.http_exception is not None:
+                check(route.http_exception.status == status, f"V2BR {method} {path} 라우트 {status}")
+                return {}
+            response = await route.handler(request)
+            body = json.loads(response.body)
+            check(response.status == status, f"V2BR {method} {path} {status} 기대, 실제 {response.status}: {body.get('error')}")
+            return body
+        finally:
+            bd.reset_scope(token)
+
+    def change(ids, **fields):
+        return {"crop_ids": ids, "patch": fields}
+
+    def by_id(view):
+        return {row["crop_id"]: row for row in view["crops"]}
+
+    async def review_cases(app):
+        second = dict(_fj_scope(out / "second"), account="b", org="org2")
+        token = bd.set_scope(second)
+        try:
+            _, root, ids = _v2b_project(dp, second["input"], "review", project)
+            prepare = _v2b_args(pl, project)
+            pl.update(root, 0, "prepare", prepare)
+        finally:
+            bd.reset_scope(token)
+        square, manual, wide, ai = (ids[name] for name, _ in V2B_RECTS)
+        root_key = store.root_key(root)
+        path = Path(root, store.CROP_GEN_NAME)
+
+        async def get():
+            return await call(app, "GET", "/crop_gen?root=" + root_key, account=second)
+
+        async def post(seen, *changes, status=200):
+            data = {"root": root_key, "seen": seen, "changes": changes}
+            return await call(app, "POST", "/crop_gen", data, account=second, status=status)
+
+        catalog_key = (second["org"], second["account"])
+        with patch.object(backend, "cached_catalog", wraps=backend.cached_catalog) as cached:
+            second_view = await get()
+            check(bd.current_scope() == scope and square in by_id(second_view) and cached.call_count == 1
+                  and cached.call_args.args == (catalog_key,), "V2BR 둘째 계정 요청의 스레드에서 둘째 목록 조회")
+
+        # 두 AI 작성본의 스펙은 한 판으로 읽고, 해시와 렌더는 그 판의 잠금을 놓고 계산한다.
+        Path(root, "specs", square + ".json").write_bytes(Path(root, "specs", ai + ".json").read_bytes())
+        cropgen = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_cropgen")
+        original_lock = bd.store.manifest_lock
+        depth = 0
+
+        @contextlib.contextmanager
+        def tracked_lock(folder):
+            nonlocal depth
+            with original_lock(folder):
+                depth += 1
+                try:
+                    yield
+                finally:
+                    depth -= 1
+
+        for label in ("GET", "POST", "409"):
+            calls = {}
+            def observe(module, name):
+                original = getattr(module, name)
+                def tracked(*args, **kwargs):
+                    calls.setdefault(name, []).append(depth > 0)
+                    return original(*args, **kwargs)
+                return patch.object(module, name, tracked)
+
+            with contextlib.ExitStack() as patches:
+                patches.enter_context(patch.object(bd.store, "manifest_lock", tracked_lock))
+                for module, name in ((bd.store, "project_glossary"), (bd._vlm(), "_load_spec"),
+                                     (cropgen.dprompt, "v2_roles"), (cropgen.dprompt, "render")):
+                    patches.enter_context(observe(module, name))
+                if label == "GET":
+                    await get()
+                else:
+                    await post(0, change([manual], count=1), status=409 if label == "409" else 200)
+            check(calls.get("project_glossary") == [True], f"V2BR {label} 용어집 한 번 읽기")
+            check(calls.get("_load_spec") and all(calls["_load_spec"]), f"V2BR {label} 스펙 내용은 잠금 안에서 읽기")
+            check(all(calls.get(name) == [False, False] for name in ("v2_roles", "render")),
+                  f"V2BR {label} 두 작성본의 해시·렌더는 잠금 밖")
+
+        before = path.read_bytes()
+        for fields, bad_key in (({"model_id": []}, "model_id"), ({"model_id": {}}, "model_id"),
+                                ({"model_id": gpt, "quality": {}}, "quality"), ({"model_id": nano, "opts": []}, "opts"),
+                                ({"model_id": nano, "opts": "2K"}, "opts"), ({"model_id": nano, "opts": {"image_size": ["2K"]}}, "opts"),
+                                ({"model_id": gpt, "complexity": []}, "complexity"),
+                                ({"count": 0}, "count"), ({"count": -1}, "count"), ({"count": 10**30}, "count")):
+            bad = await post(1, change([square], **fields), status=400)
+            check([(r["crop_id"], r["key"]) for r in bad["rejected"]] == [(square, bad_key)] and path.read_bytes() == before,
+                  f"V2BR 잘못된 타입·범위 거절과 파일 보존 {fields}")
+        boundary = [change([f"absent_{i}_{j}" for j in range(10)], count=1) for i in range(20)]
+        missing = await post(1, *boundary, status=404)
+        check(missing["crop_id"] == "absent_0_0" and path.read_bytes() == before, "V2BR 변경 20개·대상 200개 형식 통과")
+
+        remembered = {models.get(project).checkpoint: 4}
+        with patch.dict(backend._CATALOG, {catalog_key: (time.monotonic(), remembered)}), patch.dict(backend._CATALOG_FAILED):
+            backend.mark_catalog_failed(catalog_key)
+            saved = await post(1, change([square, wide], model_id=nano))
+            check(saved["changed"] and saved["seen"] == 2 and by_id(saved)[square]["available"],
+                  "V2BR 목록 실패 표지가 있으면 옛 목록에서 빠진 모델도 저장")
+
+        m = store.load_manifest(root)
+        opts = by_id(saved)[square]["effective"]["opts"]
+        job = {"model": nano, "quality": models.FIXED_QUALITY, "n": prepare["n"]}
+        m.update(prepare_settings=prepare, jobs=[dict(job, crop_id=square, opts=dict(opts, aspect_ratio="1:1")),
+                                                 # 맞는 비율이 없는 작업에는 Prepare 가 가장 가까운 비율을 크기 기록에 남긴다(3차 리뷰 — 기록이 없으면 반영 전)
+                                                 dict(job, crop_id=wide, opts=opts, size_info={"nearest": models.nearest_ratio(nano, 300, 100)})])
+        store.save_manifest(root, m)
+        layout = store.layout_from_manifest(m)
+        layout_path = str(Path(root, store.LAYOUT_NAME))
+        store.write_json_atomic(layout_path, layout)
+        rows = by_id(await get())
+        check(rows[square]["ratio"]["matched"] == "1:1" and rows[square]["applied"], "V2BR 같은 사각형의 작업 비율 일치")
+        check(rows[wide]["ratio"]["matched"] is None and rows[wide]["applied"], "V2BR 비율을 맞출 수 없는 사각형과 비율 키 없는 작업")
+        check(rows[wide]["ratio"]["nearest"] == models.nearest_ratio(nano, 300, 100), "V2BR (준비) 넓은 영역의 가장 가까운 비율")
+        next(c for c in layout["crops"] if c["id"] == square)["rect"] = [0, 0, 192, 344]
+        store.write_json_atomic(layout_path, layout)
+        moved = by_id(await get())[square]
+        check(moved["ratio"]["matched"] == "9:16" and not moved["applied"], "V2BR 작업 1:1에서 레이아웃 9:16 변경")
+
+        invalid = {manual: {"model": ["x"]}, ai: {"model": nano, "opts": {"image_size": {}}}}
+        _, rev, _ = store.update_crop_gen(root, lambda entries: entries.update(invalid), expect_rev=2)
+        rows = by_id(await get())
+        check({cid for cid, r in rows.items() if r["error"]} == set(invalid)
+              and all(rows[cid]["effective"] is None for cid in invalid), "V2BR 저장된 모델·옵션 타입 오류의 행 격리")
+        repaired = await post(rev, change(list(invalid), count=3))
+        check(all(by_id(repaired)[cid]["error"] is None and store.crop_gen_entries(root)[cid] == {"n": 3} for cid in invalid),
+              "V2BR 잘못된 모델·옵션 항목 다시 저장")
+        _, rev, _ = store.update_crop_gen(root, lambda entries: entries.update({manual: {"n": True}}), expect_rev=repaired["seen"])
+        repaired = await post(rev, change([manual], count=1))
+        disk = json.loads(path.read_bytes())
+        count = disk["crops"][manual]["n"]
+        check(repaired["changed"] and repaired["seen"] == disk["rev"] == rev + 1 and type(count) is int and count == 1
+              and type(by_id(repaired)[manual]["gen"]["n"]) is int, "V2BR 불리언 장 수를 정수 1로 복구·파일과 판 갱신")
+
+    async def run():
+        async with serve(crop_model=True, forge=forge.ForgeConfig("https://forge.example", media_origins=("https://media.example",))) as app:
+            await review_cases(app)
+            _, root, ids = _v2b_project(dp, scope["input"], "patches", project)
+            square, manual, wide, ai = (ids[name] for name, _ in V2B_RECTS)
+            prepare = _v2b_args(pl, project)
+            pl.update(root, 0, "prepare", prepare)
+            key, path = store.root_key(root), Path(root, store.CROP_GEN_NAME)
+            url = "/crop_gen?root=" + key
+
+            async def get(**kwargs):
+                return await call(app, "GET", url, **kwargs)
+
+            async def post(rev, *changes, **kwargs):
+                return await call(app, "POST", "/crop_gen", {"root": key, "seen": rev, "changes": changes}, **kwargs)
+
+            caps = (await call(app, "GET", "/env", account=None))["caps"]
+            check(caps["v2_crop_model"] is True and all({"max_refs", "supports_quality", "complexities"} <= r.keys()
+                                                        for r in caps["models"]), "V2BR 서버 env 모델별 기능")
+            first = await get()
+            rows = by_id(first)
+            expected = {"model": project, "quality": "high", "n": 2, "complexity": None, "opts": None}
+            check(set(first) == {"ok", "seen", "project", "crops"} and first["ok"] and first["seen"] == 0
+                  and first["project"] == expected and list(rows) == [square, manual, wide, ai], "V2BR 파일 없는 프로젝트·매니페스트 순서")
+            check(all(set(r) == {"crop_id", "gen", "effective", "ratio", "available", "why", "prompt_stale", "error", "applied"}
+                      and r["gen"] is r["ratio"] is r["why"] is r["error"] is None and not r["prompt_stale"] and r["available"]
+                      and r["effective"] == {"model": project, "quality": "high", "n": 2, "inherit": {"model": True, "n": True}}
+                      for r in rows.values()) and root not in str(first), "V2BR 기본 응답의 키·상속·경로")
+            clear = change([square], inherit_model=True, count=None)
+            empty = await post(0, clear)
+            check(empty == {**first, "changed": False} and not path.exists(), "V2BR 상속 상태를 다시 풀면 파일도 만들지 않음")
+            for account, expected_status in ((None, 401), (_fj_scope(out / "another"), 404)):
+                await get(account=account, status=expected_status)
+                await post(0, clear, account=account, status=expected_status)
+
+            body = {"root": key, "seen": 0, "changes": [clear]}
+            malformed = [({"extra": 1}, "extra"), ({"root": 1}, "root"), ({"seen": True}, "seen"),
+                         ({"seen": -1}, "seen"), ({"seen": 1.5}, "seen"), ({"changes": {}}, "changes"),
+                         ({"changes": []}, "changes"), ({"changes": [clear] * 21}, "changes"),
+                         ({"changes": [1]}, "changes"), ({"changes": [{"crop_ids": [square]}]}, "patch"),
+                         ({"changes": [dict(clear, x=1)]}, "x"),
+                         ({"changes": [clear, clear]}, "crop_ids")]
+            for bad_ids in ([], square, [42], ["bad/id"], [square, square], [str(i) for i in range(201)]):
+                malformed.append(({"changes": [change(bad_ids, count=1)]}, "crop_ids"))
+            for fields, label in (({}, "patch"), ([], "patch"), ({"x": 1}, "x"), ({"inherit_model": 1}, "inherit_model"),
+                                  ({"inherit_model": False}, "inherit_model"), ({"inherit_model": True, "model_id": gpt}, "model_id"),
+                                  ({"quality": "high"}, "quality"), ({"opts": {}}, "opts"), ({"complexity": None}, "complexity"),
+                                  ({"count": True}, "count"), ({"count": 1.5}, "count")):
+                malformed.append(({"changes": [{"crop_ids": [square], "patch": fields}]}, label))
+            for update, label in malformed:
+                result = await call(app, "POST", "/crop_gen", body | update, status=400)
+                check(label in result["error"] and not path.exists(), f"V2BR 형식 오류의 필드 {label}·파일 불변")
+
+            # 레이아웃 목록의 첫 자리에 새 영역을 넣고 매니페스트에만 남는 크롭도 만든다.
+            layout = store.layout_from_manifest(store.load_manifest(root))
+            new = "new_patch"
+            layout["crops"] = [dict(layout["crops"][0], id=new, name="005_new"), *layout["crops"][:-1]]
+            layout["crops"][1].update(rect=[0, 0, 192, 344], locked=True)
+            store.write_json_atomic(str(Path(root, store.LAYOUT_NAME)), layout)
+            changed_layout = await get()
+            check(list(by_id(changed_layout)) == [new, square, manual, wide, ai] and not by_id(changed_layout)[new]["applied"],
+                  "V2BR 레이아웃 순서·새 크롭·매니페스트 전용 크롭")
+
+            batch = (change([square, manual, ai], model_id=nano), change([new], model_id=gpt, count=9))
+            saved = await post(0, *batch)
+            rows, doc = by_id(saved), json.loads(path.read_bytes())
+            check(set(saved) == set(first) | {"changed"} and saved["seen"] == doc["rev"] == 1 and saved["changed"]
+                  and rows[square]["gen"] == doc["crops"][square] == {"model": nano, "opts": {"image_size": "2K", "thinking_level": "medium"}}
+                  and doc["crops"][new] == {"model": gpt, "quality": "max", "complexity": models.DEFAULT_COMPLEXITY, "n": 9}
+                  and list(doc["crops"][new]) == ["model", "quality", "complexity", "n"], "V2BR 일괄 저장·잠긴 크롭·기본 모델 묶음의 저장 순서")
+            check(rows[square]["ratio"] == {"ok": True, "matched": "9:16", "nearest": "9:16"} and not rows[square]["applied"]
+                  and rows[ai]["ratio"] == {"ok": True, "matched": "3:2", "nearest": "3:2"}
+                  and rows[ai]["prompt_stale"] and not rows[manual]["prompt_stale"], "V2BR 레이아웃·매니페스트 비율 및 AI 작성본·직접 입력")
+            before = path.read_bytes()
+            same = await post(1, *batch)
+            check(same == {**saved, "changed": False} and path.read_bytes() == before, "V2BR 같은 묶음 재저장")
+            conflict = await post(0, change(["missing"], count=1), status=409)
+            latest = await get()
+            check(conflict["reason"] == "stale" and {k: conflict[k] for k in first} == {**latest, "ok": False}
+                  and path.read_bytes() == before, "V2BR 오래된 판은 대상 검사 전에 현재 값 전체를 돌려줌")
+            missing = await post(1, clear, change(["missing", "another"], count=1), status=404)
+            check(missing["crop_id"] == "missing" and path.read_bytes() == before, "V2BR 첫 번째 없는 대상·파일 불변")
+
+            # 첫 변경은 유효해도 뒤의 모든 거절을 모아 한 판 전체를 취소한다.
+            invalid = await post(1, clear, change([ai, manual], model_id=nano, opts={"aspect_ratio": "1:1"}),
+                                 change([wide], model_id=nano, quality="high"), change([new], model_id=project, complexity="low"),
+                                 status=400)
+            check([(r["crop_id"], r["key"]) for r in invalid["rejected"]] ==
+                  [(ai, "opts"), (manual, "opts"), (wide, "quality"), (new, "complexity")]
+                  and all(r["error"] for r in invalid["rejected"]) and path.read_bytes() == before
+                  and (await get())["seen"] == 1, "V2BR 값 거절 일괄 수집·파일 바이트와 판 보존")
+            bad_count = await post(1, change([square], count=9), change([new], model_id=nano, count=9), status=400)
+            check([r["key"] for r in bad_count["rejected"]] == ["count", "count"] and path.read_bytes() == before,
+                  "V2BR 저장된 모델·새 모델 각각의 장 수 상한")
+            limited = {models.get(project).checkpoint: 4}
+            with patch.object(backend, "cached_catalog", return_value=limited) as cache:
+                denied_view = by_id(await get())[square]
+                denied = await post(1, change([square], model_id=nano), status=400)
+                check(denied["reason"] == "model_unavailable" and not denied_view["available"]
+                      and denied["rejected"] == [{"crop_id": square, "key": "model_id", "error": denied_view["why"]}]
+                      and all(c.args == ((scope["org"], scope["account"]),) for c in cache.call_args_list)
+                      and path.read_bytes() == before, "V2BR 계정별 기억된 목록 대조")
+
+            clamped = by_id(await post(1, change([new, wide], model_id=nano), change([square], inherit_model=True, count=9)))
+            check(clamped[new]["effective"]["clamped"] == 9 and clamped[new]["effective"]["n"] == 8 and clamped[new]["gen"]["n"] == 9
+                  and clamped[square]["effective"]["inherit"] == {"model": True, "n": False}
+                  and clamped[wide]["ratio"] == {"ok": False, "matched": None, "nearest": "21:9"}, "V2BR 모델 교체 장 수 낮춤·상속 후 상한·비율 불일치")
+            released = await post(2, clear)
+            check(released["seen"] == 3 and by_id(released)[square]["gen"] is None and square not in store.crop_gen_entries(root),
+                  "V2BR 두 묶음 해제는 항목 삭제")
+            store.update_layout(root, lambda d: d["crops"].pop(0), expect_rev=layout["rev"])
+            check(new not in by_id(await get()) and store.crop_gen_entries(root)[new]["n"] == 9, "V2BR 사라진 크롭은 숨기고 설정 유지")
+
+            m = store.load_manifest(root)
+            job = {"crop_id": ai, "model": nano, "quality": models.FIXED_QUALITY, "n": 2,
+                   "opts": {"image_size": "2K", "thinking_level": "medium", "aspect_ratio": "3:2"}}
+            m.update(jobs=[job.copy(), job.copy()], prepare_settings=dict(prepare), prepare_inputs=store.prepare_inputs_fp(root, m))
+            store.save_manifest(root, m)
+            rows = by_id(await get())
+            check(rows[ai]["applied"] and rows[wide]["applied"], "V2BR 모든 작업 일치·작업 없는 크롭의 입력 지문 일치")
+            for field, value in (("model", gpt), ("n", 3), ("quality", "other"), ("opts", {"image_size": "1K"})):
+                m["jobs"][1] = dict(job, **{field: value})
+                store.save_manifest(root, m)
+                check(not by_id(await get())[ai]["applied"], f"V2BR 둘째 작업의 {field} 불일치")
+            m["prepare_settings"]["n"] = 1
+            store.save_manifest(root, m)
+            check(not by_id(await get())[wide]["applied"], "V2BR 지문이 같아도 준비 절 변경")
+            store.update_crop_gen(root, lambda entries: entries.update({manual: {"n": "broken"}}), expect_rev=3)
+            broken = by_id(await get())[manual]
+            check(broken["gen"] == {"n": "broken"} and broken["effective"] is broken["ratio"] is None
+                  and broken["why"] == broken["error"] and broken["error"] and not any(broken[k] for k in ("applied", "available", "prompt_stale")),
+                  "V2BR 한 항목 손상 격리")
+            fixed = await post(4, change([manual], count=1))
+            check(by_id(fixed)[manual]["gen"] == {"n": 1}, "V2BR 손상된 항목을 새로 작성")
+            with patch.dict(os.environ, {"BMK_DP_MOCK_API": "1"}):
+                env_rows = {r["name"]: r for r in (await call(app, "GET", "/env"))["caps"]["models"]}
+                rejected = await post(5, change([wide], model_id=nano), status=400)
+                check(not env_rows[nano]["available"] and by_id(await get())[wide]["why"] == env_rows[nano]["why"]
+                      and rejected["reason"] == "model_unavailable" and rejected["rejected"][0]["key"] == "model_id",
+                      "V2BR mock에서 Forge 전용 모델 거절·env와 같은 사유")
+            custom = await post(5, change([ai], model_id=gpt, quality="high", complexity="low", count=3))
+            m["jobs"] = [{"crop_id": ai, "model": gpt, "quality": "high", "n": 3, "complexity": "low"}]
+            store.save_manifest(root, m)
+            check(by_id(custom)[ai]["effective"]["complexity"] == "low" and by_id(await get())[ai]["applied"],
+                  "V2BR 복잡도 있는 모델의 작업 일치")
+            m["jobs"][0]["complexity"] = "high"
+            store.save_manifest(root, m)
+            check(not by_id(await get())[ai]["applied"], "V2BR 복잡도만 다른 작업")
+            defaults = await post(6, change([ai], model_id=gpt))
+            check(by_id(defaults)[ai]["gen"] == {"model": gpt, "quality": "max", "complexity": models.DEFAULT_COMPLEXITY, "n": 3},
+                  "V2BR 모델 묶음을 다시 쓰면 품질·복잡도는 기본값, 장 수는 보존")
+            cleared = await post(7, change([ai], inherit_model=True, count=None))
+            check(by_id(cleared)[ai]["gen"] is None and ai not in store.crop_gen_entries(root), "V2BR 모델과 장 수를 한 번에 해제")
+            broken_spec = Path(root, "specs", ai + ".json")
+            broken_spec.write_bytes(b"{")
+            check(not by_id(await get())[ai]["prompt_stale"], "V2BR 깨진 스펙의 작성본 표시")
+            Path(root, pl.PIPELINE_NAME).write_bytes(b"{")
+            check((await get(status=409))["reason"] == "pipeline_broken", "V2BR 깨진 실행 설정 409")
+            Path(root, pl.PIPELINE_NAME).unlink()
+            path.write_bytes(b"{")
+            for broken_response in (await get(status=422), await post(8, clear, status=422)):
+                check(broken_response["error"] and root not in str(broken_response) and path.read_bytes() == b"{", "V2BR 깨진 파일 보존·경로 가림")
+        async with serve(crop_model=True) as app:
+            check((await call(app, "GET", "/env"))["caps"]["v2_crop_model"] is True, "V2BR Forge 연결 없는 서버 플래그")
+        async with serve() as app:
+            expected_env = _env_ui_v2(_server_api()["env_server_no_session"]["response"], bd)
+            check(await call(app, "GET", "/env", account=None) == expected_env, "V2BR 세션 없는 mock 서버의 env 정본")
+            check((await call(app, "GET", "/env"))["caps"]["v2_crop_model"] is False, "V2BR 서버 기본 플래그 꺼짐")
+            for method in ("GET", "POST"):
+                match = await app.router.resolve(make_mocked_request(method, bd.API + "/crop_gen", app=app))
+                check(getattr(match.http_exception, "status", None) == 404, f"V2BR 기본 서버 {method} 라우트 미등록 404")
+        check(bd.LOCAL_CAPS["v2_crop_model"] is False and all(p != bd.API + "/crop_gen" for _, p, _ in bd._ROUTES),
+              "V2BR 로컬판 플래그·라우트")
+        check(not transport.called, "V2BR 조회·저장 전체 Forge 전송 0회")
+
+    with patch.object(srv, "_server_secret", return_value=bytes(32)), patch.dict(os.environ, {"BMK_DP_MOCK_API": ""}):
+        asyncio.run(run())
+
+
+#
+# ── 갈래 P ──────────────────────────────────────────────────────────────
+#
+def ux_v2b_plan_unit():
+    """UX v2-B 갈래 P — 계획의 모델별 묶음 run.groups(D547) · 승인 상자(D548·D549) · DPSubmit.applyChecked(D561) · v1 표시(D558) ·
+    안전망 세마포어(D550). --quick 포함."""
+    section("UX v2-B — 계획 묶음 · 승인 상자 · 무료 반영 (ux_v2b_plan_unit)")
+    from tempfile import TemporaryDirectory
+    from unittest.mock import patch
+    import bmk_design_patch_board as board
+    import bmk_design_patch_forge_backend as fb
+    import bmk_design_patch_jobs as jobs
+    import bmk_design_patch_models as models
+    import bmk_design_patch_runner as runner
+
+    out = OUT_ROOT / "ux_v2b_plan"
+    out.mkdir(parents=True, exist_ok=True)
+    gpt, latest, nano = "gpt-image-2.5-sunburst", "gpt-image-2.6-flare", "nano-banana-2.1"
+    a, b, c = [store.crop_id_for(name) for name in ("001_A", "002_B", "003_C")]
+    only = ",".join((a, b))
+    run_cfg = {"retry_failed": False, "retry_orphans": False}
+
+    def job(cid, variant, model=gpt, n=1, **fields):
+        result = _pl_job(cid, variant, model=model, quality=models.get(model).default_quality, n=n)
+        result.update(fields)
+        return result
+
+    def banana(variant, tier="1K", level="high", ratio="1:1", n=2):
+        return job(a, variant, nano, n, opts={"image_size": tier, "thinking_level": level, "aspect_ratio": ratio},
+                   size=[v * models.IMAGE_SIZES[tier] for v in models.RATIO_SIZES[ratio]])
+
+    with TemporaryDirectory(dir=out) as tmp, patch.object(board, "server_mode", return_value=True), \
+            patch.object(runner, "forge_enabled", return_value=True):
+        root = _pl_project(tmp, "groups", crops=[
+            {"id": cid, "name": name, "layer_name": name, "rect": [0, 0, 256, 256],
+             "targets": store.new_targets(store.parse_crop_layer_name(name), None)} for cid, name in ((a, "001_A"), (b, "002_B"))])
+        m = store.load_manifest(root)
+
+        def select(rows):
+            m["jobs"] = rows
+            store.save_manifest(root, m)
+            return board._run_sel(root, store.load_manifest(root), run_cfg, only, mock=False)
+
+        first = job(a, "v1", n=2, reps=2)
+        second = job(b, "v2", n=2)
+        single = select([first, second])
+        check(single["groups"] == [{"model": gpt, "quality": "max", "need": 3, "images": 6, "fan_out": False, "crops": 2}],
+              "V2BP 같은 조건의 호출·장 수·고유 크롭")
+        second["n"] = 5
+        mixed_n = select([first, second])
+        check(len(mixed_n["groups"]) == 1 and mixed_n["groups"][0]["images"] == 9, "V2BP 장 수가 달라도 한 묶음")
+        pre, done, blocked = job(a, "reroll"), job(a, "done"), job(b, "blocked", quality="invalid")
+        m["rerolls"] = {pre["cell_key"]: 1}
+        store.write_json_atomic(os.path.join(root, "cands", done["cell_key"], "r0.done.json"), {})
+        plan = select([banana("n1"), banana("n2", ratio="4:5"), first, job(b, "low", latest, complexity="low"),
+                       banana("n3", level="minimal"), job(a, "high", latest, complexity="high"), banana("n4", tier="2K"),
+                       job(b, "quality", quality="low"), pre, done, blocked, job(c, "outside")])
+        groups = plan["groups"]
+        check([g["model"] for g in groups] == [latest, latest, gpt, gpt, nano, nano, nano]
+              and [g["complexity"] for g in groups[:2]] == ["low", "high"]
+              and [g["quality"] for g in groups[2:4]] == ["max", "low"], "V2BP 모델 표·첫 등장 순서·복잡도와 품질")
+        check([(g["opts"], g["need"], g["images"], g["crops"]) for g in groups[4:]] == [
+            ({"image_size": "1K", "thinking_level": "high"}, 2, 4, 1),
+            ({"image_size": "1K", "thinking_level": "minimal"}, 1, 2, 1),
+            ({"image_size": "2K", "thinking_level": "high"}, 1, 2, 1)] and all(g["fan_out"] for g in groups[4:]),
+            "V2BP 비율만 달라진 호출은 같은 묶음·해상도와 추론은 분리")
+        _, _, raw_plan, approval = board._run_plans(root, m, run_cfg, only, mock=False)
+        check(sum(g["need"] for g in groups) == plan["need"] == len(approval["needs_approval"]) == 9
+              and plan["hash"] == approval["pending_hash"] and len(raw_plan["done"]) == len(approval["preapproved"]) == 1
+              and len([e for e in approval["blocked"] if e.get("blocked")]) == plan["filtered"] == 1,
+              "V2BP 승인 해시의 호출만 포함·완료·사전 승인·차단·선택 밖 제외")
+        check(select([pre, done, blocked])["groups"] == [], "V2BP 승인 대상 없음")
+        with patch.object(board, "server_mode", return_value=False), patch.object(board, "_mock_active", return_value=True):
+            select([first])
+            spec = _pl_api()["routes"]["GET /pipeline/plan"]
+            local = board.pipeline_plan(root, only_ids=[a], style=False)["run"]
+            diff = _pl_shape(spec["ok"]["run"], local, spec, "run")
+            check("groups" not in local and not diff, f"V2BP 로컬 선택 계획 응답 정본 {diff}")
+
+        def request_slots(current):
+            # 세마포어를 잡은 직후의 중단 판정에서 끝낸다. 클라이언트·카탈로그·원격 요청은 필요 없다.
+            backend = fb.ForgeBackend({"root": root, "options": {"concurrency": 4}, "account": "test",
+                                       "token_of": lambda: object(), "reject_token": lambda *_: None, "stop": lambda: True})
+            with patch.object(asyncio, "Semaphore", wraps=asyncio.Semaphore) as semaphore:
+                try:
+                    asyncio.run(backend.request(current, [], "test"))
+                except runner._interrupt_types():
+                    pass
+                return semaphore.call_args.args[0]
+
+        small, heavy = job(a, "gpt", n=4), banana("eight", n=8)
+        for rows, expected in (([small, heavy], 1), ([small, first], 4)):
+            store.save_manifest(root, dict(m, jobs=rows))
+            check(request_slots(small) == jobs._forge_concurrency(root, 4) == expected, f"V2BP 첫 GPT 작업의 동시 잡 수 {expected}")
+        check(request_slots(heavy) == 1, "V2BP 매니페스트 밖 현재 작업도 상한에 포함")
+        store.save_manifest(root, dict(m, jobs=[small, heavy]))
+        with patch.object(store, "load_manifest", side_effect=ValueError("읽기 실패")):
+            slots = request_slots(small)
+            check(slots == 1, f"V2BP 매니페스트 읽기 실패 시 첫 GPT도 동시 잡 1개 (실제 {slots})")
+
+        root = _pl_project(tmp, "flags")
+        def state():
+            return board.build_state(root, since_rev=store.load_manifest(root)["rev"])
+
+        def pipeline():
+            request = types.SimpleNamespace(query={"root": root})
+            with patch.object(board, "_root_param", return_value=root):
+                response = asyncio.run(board.pipeline_handler(request))
+            assert response.status == 200, response.text
+            return json.loads(response.text)
+
+        check(pipeline()["crop_overrides"] == {"model": 0, "n": 0} and board.layout_state(root)["crop_models"] == {}
+              and state()["crop_gen_rev"] == board.build_state(root)["crop_gen_rev"] == 0, "V2BP 파일 없음·전체 및 unchanged state")
+        sig = board.pipeline_plan(root, only_ids=[], style=False)["sig"]
+        check(state()["plan_v"] == sig, "V2BP 계산한 계획의 서명")
+        store.update_crop_gen(root, lambda entries: entries.update({a: dict(models.gen_bundle(gpt), n=4)}), expect_rev=0)
+        check(state()["plan_v"] is None and state()["crop_gen_rev"] == 1
+              and board.pipeline_plan(root, only_ids=[], style=False)["sig"] != sig, "V2BP 다른 창의 쓰기로 계획 무효화·새 서명")
+        rows = [_layout_crop(name, [0, 0, 256, 256]) for name in ("001_A", "002_B", "003_C")]
+        store.save_manifest(root, dict(store.load_manifest(root), crops=[dict(row, layer_name=row["name"]) for row in rows[:2]]))
+        store.write_json_atomic(os.path.join(root, store.LAYOUT_NAME), _layout_doc(rows[1:]))
+        gone = store.crop_id_for("004_gone")
+        store.update_crop_gen(root, lambda entries: entries.update({
+            b: {"n": 3}, c: dict(models.gen_bundle(nano), n=8), gone: dict(models.gen_bundle(gpt), n=1)}), expect_rev=1)
+        check(pipeline()["crop_overrides"] == {"model": 2, "n": 3} and board.layout_state(root)["crop_models"] == {a: gpt, c: nano}
+              and state()["crop_gen_rev"] == 2, "V2BP 매니페스트·레이아웃 합집합과 고유 모델·장 수")
+        store.update_crop_gen(root, lambda entries: entries[a].update(quality="invalid"), expect_rev=2)
+        crop_models = board.layout_state(root)["crop_models"]
+        check(crop_models == {c: nano}, "V2BP 읽을 수 없는 모델 묶음은 비율 판정에서 제외")
+        counts = pipeline()["crop_overrides"]
+        check(counts == {"model": len(crop_models), "n": 2}, f"V2BP 잘못된 품질의 패치는 모델·장 수 집계에서 제외 (실제 {counts})")
+        Path(root, store.CROP_GEN_NAME).write_bytes(b"{")
+        counts = pipeline()["crop_overrides"]
+        check(counts["model"] == counts["n"] == 0 and counts["error"] and board.layout_state(root)["crop_models"] == {}
+              and state()["crop_gen_rev"] is None, "V2BP 깨진 파일의 응답")
+        with patch.object(board, "server_mode", return_value=False):
+            check("crop_overrides" not in pipeline() and "crop_models" not in board.layout_state(root) and "crop_gen_rev" not in state(),
+                  "V2BP 로컬 응답에 패치별 설정 키 없음")
+        check(store.CROP_GEN_NAME in board._PROJECT_OLD_TRACES, "V2BP 새 프로젝트가 옛 패치 설정을 물려받지 않음")
+
+    node = shutil.which("node")
+    if not node:
+        skip("V2BP node 없음 — 화면 VM 시험 생략")
+        return
+    web = PKG / "web_design_patch"
+    data = out / "input.json"
+    board_js = (web / "board.js").read_text(encoding="utf-8")
+    poll_source = "\n".join(_layout_js_fn(board_js, name) + "\n}" for name in ("refresh", "pollState"))
+    data.write_text(json.dumps({"api": _pl_api(), "models": [models.describe(name) for name in models.MODELS],
+                                "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"), "poll": poll_source}), encoding="utf-8")
+    polling = r'''
+function poller(S, {pipe = null, editor = null}) {
+  let reply, reads = 0;
+  const board = vm.createContext({ S, pipe, editor, editing: !!editor, refsOn: false, polling: false, pollAgain: false, cycle: null,
+    getState: async force => { reads++; if (force) throw Error("예상 밖 전체 state 조회"); return reply; },
+    renderHeader() {}, setConn(msg) { if (msg) throw Error(msg); } });
+  vm.runInContext(IN.poll, board);
+  return async fields => {
+    const before = reads;
+    reply = { unchanged: true, rev: S.rev, running: S.running, drain: S.drain, plan_v: S.plan_v, pipeline_rev: S.pipeline_rev, ...fields };
+    await board.refresh(false);
+    if (reads !== before + 1) throw Error("폴링 횟수 변경");
+  };
+}
+'''
+    h = _PL_JS_HARNESS
+    sections = (("import fs", "async function run("), ("class El {", "async function mouse("),
+                ("function boardState()", 'await scenario("panel"'), ("function quietPipeline(mod)", 'await scenario("panelDrift"'))
+    ui = "\n".join(h[h.index(start):h.index(end, h.index(start))] for start, end in sections)
+    ui += polling + _PAID_STUDIO_JS_HARNESS.split("// ── J-P3 승인 단추:", 1)[0] + r'''
+import assert from "node:assert/strict";
+const api = ctx.window.DPSubmit, root = KEY, only = "a";
+const gpt = { model: "gpt-image-2.5-sunburst", quality: "max", need: 2, images: 5, fan_out: false };
+const nano = { model: "nano-banana-2.1", quality: "standard", need: 1, images: 3, fan_out: true,
+  opts: { image_size: "2K", thinking_level: "high" } };
+const prepare = { ...gpt, n: 4 }, summary = { new_jobs: 2, old_cands: 1, no_job: [] };
+const gptText = gpt.model + " · 품질 max", nanoText = "나노바나나 2.1 · 해상도 2K · 추론 깊게";
+const header = n => "Forge 로 생성 " + n + "건을 요청합니다. 사내 사용량이 잡힙니다.";
+function env() {
+  ctx.window.DPEnv = { serverMode: true, backend: "forge", caps: { models: IN.models }, can: n => n === "jobs" };
+}
+function setup(groups, { need, problem, pipe, history, post, backend = "forge" } = {}) {
+  env();
+  ctx.window.DPEnv.backend = backend;
+  const doc = ctx.document = new Doc(), calls = [];
+  El.prototype.remove = function() { this.parent.children = this.parent.children.filter(c => c !== this); };
+  ctx.window.DPDialog = { lock: () => true, unlock() {} };
+  const plan = problem || { run: { hash: "123456789abc", backend, groups,
+    need: need ?? (groups ? groups.reduce((n, g) => n + g.need, 0) : 2) } };
+  ctx.fetch = async (url, init) => {
+    const path = new URL(url).pathname.split("/design_patch/")[1], body = init.body && JSON.parse(init.body);
+    calls.push({ path, query: Object.fromEntries(url.searchParams), body });
+    const routes = { state: [200, { crops: [{ id: only, name: only }] }],
+      pipeline: pipe || [200, { rev: 3, manifest_rev: 9, settings: { prepare } }],
+      "pipeline/plan": [200, plan], "jobs/prompt": post || [200, { prompt_id: "job" }],
+      "jobs/history/job": history || [200, { job: { status: { status_str: "success" }, apply_summary: summary } }],
+      "jobs/queue": [200, {}] };
+    const route = routes[path];
+    const [status, data] = typeof route === "function" ? route(body) : route;
+    const snapshot = clone(data);
+    return { status, ok: status < 400, json: async () => snapshot };
+  };
+  const elements = tag => doc.body.all().filter(e => e.tagName === tag);
+  return { doc, calls, plan, elements, paid: () => api.submitPaid("run", { root, only }), apply: () => api.applyChecked({ root }),
+    lines: () => elements("P").map(p => p.textContent), click: ok => elements("BUTTON")[ok ? 0 : 1].fire("click", { isTrusted: true }) };
+}
+const many = Array.from({length: 7}, (_, i) => ({ ...gpt, need: 1, images: i + 1, quality: "q" + i }));
+const detail = g => g.model + " · 품질 " + g.quality + " — 잡 1건 · 그림 " + g.images + "장";
+for (const [name, groups, expected] of [
+  ["단일·혼합 장 수", [gpt], [header(2), "모델 " + gptText, "잡 2건 · 그림 5장"]],
+  ["단일 장별 호출", [nano], [header(1), "모델 " + nanoText, "잡 1건 · 그림 3장", "이 모델은 장마다 따로 생성합니다"]],
+  ["두 묶음", [gpt, nano], [header(3), gptText + " — 잡 2건 · 그림 5장", nanoText + " — 잡 1건 · 그림 3장 · 장마다 따로 생성",
+    "합계 잡 3건 · 그림 8장"]],
+  ["여섯 묶음", many.slice(0,6), [header(6), ...many.slice(0,6).map(detail), "합계 잡 6건 · 그림 21장"]],
+  ["일곱 묶음", many, [header(7), ...many.slice(0,5).map(detail), "그 밖 2종 — 잡 2건 · 그림 13장", "합계 잡 7건 · 그림 28장"]],
+  ["옛 서버", undefined, [header(2), "모델 " + gptText, "잡 2건 · 그림 8장"]]
+]) await scenario(name, async () => {
+  const s = setup(groups), paid = s.paid(); await sleep(1);
+  const lines = s.lines(); s.click(true); assert((await paid).ok);
+  assert.deepEqual(lines, expected); assert.equal(s.calls.at(-1).body.stage, "run"); return true;
+});
+await scenario("묶음 건수 오류", async () => {
+  for (const groups of [[], [gpt]]) {
+    const s = setup(groups, { need: 3 }), r = await s.paid();
+    assert.equal(r.reason, "plan_error"); assert.equal(r.error, "계획의 모델별 건수를 읽지 못했습니다");
+    assert(!api.asking()); assert(!s.calls.some(c => c.body));
+  }
+  return true;
+});
+await scenario("승인 본문을 만들 수 없는 입력", () => {
+  env();
+  for (const bad of [null, {...gpt, images: 1}, {...gpt, need: "2"}, {...gpt, model: ""}, {...gpt, fan_out: "false"}]) {
+    assert.equal(api.approvalLines({need: 2, groups: [bad]}, prepare), null);
+  }
+  return api.approvalLines({need: 2}, null) === null;
+});
+const fixed = {...gpt, images: 8};
+const warnText = "다시 생성(사전 승인) 4건도 함께 실행(선택과 무관) — 사내 사용량이 잡힙니다.";
+for (const groups of [[gpt], [gpt, {...gpt, quality: "low", need: 1, images: 3}]]) {
+  const count = groups.reduce((n, g) => n + g.need, 0), suffix = " · 묶음 " + groups.length + "개";
+  await scenario("submitPaid 사전 승인 경고" + suffix, async () => {
+    const s = setup(groups); s.plan.run.pre = 4;
+    const paid = s.paid(); await until(() => api.asking());
+    const rows = s.elements("P");
+    s.click(false); assert.equal((await paid).reason, "cancelled");
+    assert.deepEqual(rows.filter(p => p.classList.contains("warn")).map(p => p.textContent), [warnText]);
+    return rows.at(-1).textContent === warnText;
+  });
+  await scenario("v1 사전 승인 경고" + suffix, async () => {
+    env(); ctx.window.DPDialog = {lock: () => true, unlock() {}};
+    const e = await mkStudio({plan: p => Object.assign(p.run, {backend: "forge", groups, need: count, pre: 4})});
+    try {
+      e.click(e.B("생성 승인")); await until(() => e.box());
+      const box = e.box(), rows = box.all().filter(n => n.tagName === "P");
+      e.click(e.B("취소", box));
+      assert.deepEqual(rows.filter(p => p.classList.contains("warn")).map(p => p.textContent), [warnText]);
+      return rows.at(-1).textContent === warnText && !e.srv.count("jobs/prompt", "POST");
+    } finally { e.stop(); }
+  });
+  await scenario("mock 승인 본문 두 줄" + suffix, async () => {
+    const s = setup(groups, {backend: "mock"}); s.plan.run.pre = 4;
+    const paid = s.paid(); await until(() => api.asking());
+    const lines = s.lines(); s.click(false); await paid;
+    assert.deepEqual(lines, ["[MOCK] 과금 없음 — 생성 " + count + "건", "mock 백엔드 — 승인 코드가 mock 에 묶여 있어 유료 실행을 승인하지 못합니다."]);
+    return true;
+  });
+  await scenario("자동 반영 요약 순서와 생성 제출 판" + suffix, async () => {
+    const pipe = {rev: 3, manifest_rev: 9, settings: {prepare}};
+    const s = setup(groups, {pipe: [200, pipe], post: body => {
+      if (body.stage === "apply") { pipe.manifest_rev++; s.plan.apply_pending = []; }
+      return [200, {prompt_id: body.stage === "apply" ? "job" : "paid"}];
+    }});
+    s.plan.apply_pending = ["변경"];
+    const paid = s.paid(); await until(() => api.asking());
+    const lines = s.lines(); s.click(true); const result = await paid;
+    assert.deepEqual(lines.slice(-2), [groups.length === 1 ? "잡 2건 · 그림 5장" : "합계 잡 3건 · 그림 8장",
+      "자동 반영: 새 조건 2개 · 옛 조건이 되는 후보 1장 · 작업 없음 0개"]);
+    assert.deepEqual(s.calls.filter(c => c.path === "jobs/prompt").map(c => [c.body.stage, c.body.expect]),
+      [["apply", "3:9"], ["run", "3:10"]]);
+    return result.ok && s.calls.filter(c => c.path === "pipeline").length === 2;
+  });
+  await scenario("승인 상자 뒤 해시 변경 시 유료 요청 없음" + suffix, async () => {
+    const s = setup(groups), paid = s.paid(); await until(() => api.asking());
+    s.plan.run.hash = "fedcba987654"; s.click(true);
+    const result = await paid;
+    return !result.ok && result.reason === "stale" && !s.calls.some(c => c.path === "jobs/prompt");
+  });
+}
+for (const [name, groups, expected] of [
+  ["동일 장 수", [fixed], [header(2), "모델 " + gptText, "잡 2건 · 그림 8장"]],
+  ["혼합 장 수", [gpt], [header(2), "모델 " + gptText, "잡 2건 · 그림 5장"]],
+  ["두 모델", [gpt,nano], [header(3), gptText + " — 잡 2건 · 그림 5장", nanoText + " — 잡 1건 · 그림 3장 · 장마다 따로 생성",
+    "합계 잡 3건 · 그림 8장"]],
+  ["묶음 합계 불일치", [nano], null], ["단추 건수 불일치", [fixed], null],
+  // 계획에 묶음이 있는데 공용 모듈만 옛 판(화면 파일이 섞임)이면 프로젝트 값으로 지어낸 글(「그림 8장」 — 실제는 5장)을 보이지 않고 막는다
+  ["옛 공용 모듈", [gpt], null]
+]) await scenario("v1 승인 " + name, async () => {
+  env(); ctx.window.DPDialog = {lock: () => true, unlock() {}};
+  const need = expected ? groups.reduce((total,g) => total + g.need, 0) : 2;
+  let run = {groups, need, backend: "forge", pre: 0};
+  const helper = api.approvalLines;
+  const e = await mkStudio({P: p => Object.assign(p.settings.prepare, prepare), plan: p => Object.assign(p.run, run)});
+  try {
+    const button = e.B("생성 승인");
+    assert.equal(button.textContent, "생성 승인 " + need + "건");
+    if (name === "옛 공용 모듈") delete api.approvalLines;
+    if (name === "단추 건수 불일치") {
+      run = {...run, groups: [nano], need: 1}; await e.pipe.recalc();
+      assert.equal(e.B("생성 승인").textContent, "생성 승인 1건");
+    }
+    e.click(button);
+    await until(() => e.box() || e.toast("승인할 건수를 확인하지 못했습니다"));
+    if (expected) {
+      const box = e.box();
+      assert.deepEqual(box.all().filter(n => n.tagName === "P").map(n => n.textContent), expected);
+      e.click(e.B("취소", box));
+    } else {
+      assert(!e.box()); assert(e.toast("승인할 건수를 확인하지 못했습니다 — 계획을 다시 받아 주세요"));
+    }
+    return !e.srv.count("jobs/prompt", "POST") && !e.tab.got.length;
+  } finally { api.approvalLines = helper; e.stop(); }
+});
+for (const server of [true,false]) await scenario("unchanged → pipeline 조회 횟수 " + server, async () => {
+  if (server) env(); else delete ctx.window.DPEnv;
+  const e = await mkStudio({S: st => { st.plan_v = null; if (server) st.crop_gen_rev = 0; }});
+  try {
+    const poll = poller(e.S, {pipe: e.pipe}), before = e.srv.count("pipeline");
+    for (const rev of [1,1,null,null,2]) await poll(server ? {crop_gen_rev: rev} : {});
+    return e.srv.count("pipeline") === before + (server ? 3 : 0) && Object.hasOwn(e.S, "crop_gen_rev") === server;
+  } finally { e.stop(); }
+});
+await scenario("표의 복잡도·옛 이름 판정", async () => {
+  setup(); const row = { ...IN.models[0], name: "other" };
+  ctx.window.DPEnv.caps.models = [row];
+  assert(api.modelText({ model: "other", complexity: "low" }).includes("복잡도 low"));
+  row.name = "gpt-image-2.6-test"; row.complexities = [];
+  assert(!api.modelText({ model: row.name }).includes("복잡도"));
+  delete row.complexities; return api.modelText({ model: row.name }).includes("복잡도 high");
+});
+await scenario("명시적 무료 반영·판·요청 순서", async () => {
+  const s = setup(), r = await s.apply();
+  assert.deepEqual(clone(r), { ok: true, prompt_id: "job", summary });
+  assert.deepEqual(s.calls.map(c => c.path), ["pipeline", "pipeline/plan", "jobs/prompt", "jobs/history/job"]);
+  assert.deepEqual(s.calls[1].query, {root}); assert.deepEqual(s.calls[2].body, {root, stage: "apply", expect: "3:9"});
+  return true;
+});
+await scenario("반영 확인·취소·양방향 잠금", async () => {
+  const s = setup(undefined, { problem: { run: {}, notes: ["변경 사유"] } }), apply = s.apply(); await sleep(1);
+  assert.equal(s.doc.activeElement.attrs["aria-label"], "반영 확인");
+  assert.deepEqual(s.lines(), ["무료 반영을 먼저 실행합니다(과금 없음). 실행 설정이 마지막 반영과 다릅니다.", "변경 사유", "계속할까요?"]);
+  assert.equal((await s.paid()).reason, "busy"); s.click(false); assert.equal((await apply).reason, "cancelled");
+  assert(!s.calls.some(c => c.body));
+  const p = setup([gpt]), paid = p.paid(); await sleep(1);
+  assert.equal((await p.apply()).reason, "busy"); p.click(false); await paid; return true;
+});
+await scenario("판·계획 실패·계산 중·실행 중이면 제출 없음", async () => {
+  for (const [options, reason] of [[{ pipe: [500, {}] }, "plan_error"], [{ pipe: [200, { rev: 1 }] }, "plan_error"],
+    [{ problem: { busy: true } }, "busy"], [{ problem: { run: { error: "오류" } } }, "plan_error"],
+    [{ problem: { run: { running: true } } }, "running"]]) {
+    const s = setup(undefined, options); assert.equal((await s.apply()).reason, reason);
+    assert(!api.asking()); assert(!s.calls.some(c => c.body));
+    if (options.pipe) assert.equal(s.calls.length, 1);
+  }
+  const local = setup(); ctx.window.DPEnv.serverMode = false;
+  return (await local.apply()).reason === "server_only" && !local.calls.length;
+});
+await scenario("반영 거절 사유·기록 실패 대기 삭제", async () => {
+  const refused = setup(undefined, { post: [409, { reason: "stale_settings", error: "설정 변경" }] });
+  assert.deepEqual(clone(await refused.apply()), { ok: false, reason: "apply_failed", error: "stale_settings · 설정 변경" });
+  const s = setup(undefined, { history: [500, {}] }), r = await s.apply();
+  assert.equal(r.reason, "apply_failed"); assert.equal(r.prompt_id, "job");
+  assert.equal(s.calls.at(-1).path, "jobs/queue"); assert.deepEqual(s.calls.at(-1).body, { root, delete: ["job"] }); return true;
+});
+for (const count of [undefined, 0, 2]) await scenario("v1 모델 칸·전환 확인 " + count, async () => {
+  env();
+  const e = await mkStudio({ P: p => { p.settings.prepare.model = gpt.model; if (count !== undefined) p.crop_overrides = { model: count, n: 3 }; } });
+  try {
+    await e.pipe.openSettings();
+    const note = "개는 따로 정한 모델을 씁니다 — 새 화면에서 바꿉니다";
+    assert.deepEqual(e.panel.all().filter(n => n.own.includes(note)).map(n => n.own), count ? ["패치 2" + note] : []);
+    const preview = R["GET /pipeline"].ok.switch;
+    if (count !== undefined) preview.kept_overrides = count;
+    let message;
+    ctx.window.DPDialog = { confirm: text => { message = text; return false; } };
+    e.click(e.B("2.6 으로 전환")); await until(() => message !== undefined);
+    assert(message.includes("다음 [반영] 뒤 생성 승인 필요"));
+    return message.includes("패치 2개는 따로 정한 모델을 유지합니다") === !!count && !message.includes("패치 0개");
+  } finally { delete R["GET /pipeline"].ok.switch.kept_overrides; e.stop(); }
+});
+console.log(JSON.stringify(out)); process.exit(0);
+'''
+    layout = _LAYOUT_EDIT_HARNESS.split("// 배치 3-1(F17):", 1)[0] + polling + r'''
+const gpt = IN.models.find(m => m.name.includes("2.5")), nano = IN.models.find(m => m.name === "nano-banana-2.1");
+for (const base of [gpt, nano]) await scenario("크롭별 비율 판정·넓히기 " + base.name, async () => {
+  ctx.window.DPEnv = { serverMode: true, caps: { models: IN.models } };
+  const a = C1(), b = C2(), other = base === nano ? gpt : nano, canvas = [2000,2000];
+  a.rect = [100,100,915,1100]; b.rect = [120,130,935,1130];
+  const e = await editor([a,b], { crop_models: { [b.id]: other.name }, canvas }, { canvas, crops: [a,b], crop_gen_rev: 0 },
+    { savedModel: () => base });
+  try {
+    for (const [crop, model] of [[a,base],[b,other]]) {
+      await e.pick(crop.name);
+      const row = e.list.all().find(n => n.tagName === "LI" && n.children[0].textContent === crop.name);
+      const btn = e.button(e.panel, "모델 비율로 넓히기");
+      if (!!btn !== (model === nano) || row.textContent.includes("비율 안 맞음") !== !!btn) return false;
+      if (btn) { btn.fire("click"); if (!e.panel.textContent.includes("모델 비율로 넓히기 · 4:5")) return false; }
+    }
+    const st = { rev:1, layout_rev:0, crop_gen_rev:0, plan_v:null, canvas, crops:[a,b] };
+    const poll = poller(st, {editor: e.ed}), before = e.srv.gets.length;
+    e.srv.L.crop_models = {}; await poll({crop_gen_rev:1}); await sleep(30); await poll({crop_gen_rev:1});
+    return e.srv.gets.length === before + 1 && !!e.button(e.panel, "모델 비율로 넓히기") === (base === nano) && !e.button(e.panel, "제안 적용");
+  } finally { e.ed.leave(); }
+});
+await scenario("로컬 unchanged → layout 추가 조회 없음", async () => {
+  delete ctx.window.DPEnv;
+  const st = { rev:1, layout_rev:0, plan_v:null, crops:[] }, e = await editor([C1()], {}, st);
+  try {
+    const before = e.srv.gets.length, poll = poller(st, {editor:e.ed});
+    await poll({}); await poll({});
+    return !Object.hasOwn(st, "crop_gen_rev") && e.srv.gets.length === before;
+  } finally { e.ed.leave(); }
+});
+console.log(JSON.stringify(out)); process.exit(0);
+'''
+    for name, script, args in (("submit_pipeline", ui, [data]), ("layout", layout, [web / "layout_geom.js", web / "layout_edit.js", data])):
+        path = out / (name + ".mjs")
+        path.write_text(script, encoding="utf-8", newline="\n")
+        proc = subprocess.run([node, str(path), *map(str, args)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+        check(proc.returncode == 0 and bool(proc.stdout.strip()), f"V2BP {name} VM 실행 {proc.stderr[-1200:]}")
+        if proc.returncode == 0 and proc.stdout.strip():
+            for case, value in json.loads(proc.stdout.strip().splitlines()[-1]).items():
+                check(value is True, f"V2BP {case}" if value is True else f"V2BP {case}: {value}")
+
+
+#
+# ── 갈래 D(통합 뒤) ─────────────────────────────────────────────────────
+#
+def ux_v2b_dev_unit():
+    """UX v2-B 갈래 D — 가짜 Forge 를 상대로 모델이 섞인 실행(D550 · 명세 ❓7). --quick 포함."""
+    section("UX v2-B — 가짜 Forge 의 섞인 모델 실행 (ux_v2b_dev_unit)")
+    from tempfile import mkdtemp
+    from unittest.mock import patch
+
+    dp = _dp_package()
+    bd, rn, models = dp.board, dp.runner, dp.models
+    fg = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge")
+    fb = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge_backend")
+    dev = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge_dev")
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))
+    project, ideo, nano = "gpt-image-2.6-sunburst", "ideogram-4.5", "nano-banana-2.1"
+    ideogram_gen = models.gen_bundle(ideo, "low")
+    pre = dp.BMKDesignPatchPrepare()
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="v2bd_", dir=OUT_ROOT.resolve()))
+
+    def prepare(name, *, wide=False):
+        if wide:
+            # 3:1 크롭도 실제 작업이 되도록 지시문만 있는 스펙 없이 시작한다.
+            rects = [V2B_RECTS[i] for i in (0, 2, 3)]
+            h, root = _fx_project(dp, out, name, rects, np.full((544, 768, 3), 120, dtype=np.uint8))
+            a, b, d = [c["id"] for c in store.load_manifest(root)["crops"]]
+        else:
+            h, root, ids = _v2b_project(dp, out, name, project)
+            a, b, d = (ids[k] for k in ("001_square", "002_tall", "004_panel"))
+        store.update_crop_gen(root, lambda rows: rows.update({
+            a: ideogram_gen, b: models.gen_bundle(nano, opts={"image_size": "1K"}) | {"n": 8}, d: {"n": 3}}), expect_rev=0)
+        bd.pl.update(root, 0, "prepare", args)
+        h, _, _ = pre.run(h, **args)
+        return h, root, (a, b, d)
+
+    def plan(root, ids):
+        return bd.pipeline_plan(root, only_ids=list(ids), style=False)["run"]
+
+    class MeasuredForge(dev.FakeForge):
+        def __init__(self, poll_errors):
+            super().__init__(media_origin="https://forge.test")
+            self.poll_errors = iter(poll_errors)
+            self.active = self.peak = 0
+            self.options_by_request = {}
+
+        async def handle(self, method, url, headers, body, timeout):
+            path = urllib.parse.urlsplit(url).path
+            submit = method == "POST" and path == "/api/image/generate"
+            poll = method == "GET" and path.startswith("/api/image/jobs/")
+            if submit:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+                data = json.loads(body)
+                keys = ("quality", "complexity", "ideogram", "image_size", "aspect_ratio", "thinking_level")
+                self.options_by_request[data.get("request_id")] = {k: data[k] for k in keys if k in data}
+            if poll:
+                # 폴링을 잠깐 늦춰 다른 작업이 제출될 기회를 준다. 과부하 사례에서만 오류를 돌려준다.
+                self.fault = {"path": path, "times": 1, "delay": 0.03, "status": next(self.poll_errors, 200)}
+            reply = await super().handle(method, url, headers, body, timeout)
+            rejected = (submit or poll) and reply[0] != 200
+            if rejected or (poll and json.loads(reply[2])["status"] in ("completed", "failed")):
+                self.active -= 1
+            return reply
+
+    def run_plan(root, ids, approve, *, concurrency=4, poll_errors=()):
+        fake = MeasuredForge(poll_errors)
+        config = fg.ForgeConfig(fake.media_origin, media_origins=(fake.media_origin,))
+        client = fg.ForgeClient(config, transport=fake.handle)
+        account = "v2bd"
+        ctx = {"root": root, "client": client, "organization_id": "org1", "account": account,
+               "token_of": lambda: dev.issue_token(account), "reject_token": lambda _: None, "stop": lambda: False,
+               "options": {"concurrency": concurrency, "prompt_autopilot": False}}
+        token = rn.set_forge(ctx)
+        try:
+            backend = rn.make_backend(root, None)
+            _, ap = dp._run_plan(root, approve, {"only": ",".join(ids)}, backend.name)
+            report = asyncio.run(rn.run_calls(root, ap["to_run"], backend, concurrency=concurrency))
+            # 모든 호출이 반환한 뒤에는 세마포어의 허가가 전부 돌아와 있다.
+            slots = backend._semaphore._value if backend._semaphore is not None else None
+            return fake, report, slots
+        finally:
+            rn.reset_forge(token)
+            fb.forget_catalog((ctx["organization_id"], account))
+
+    def board_candidates(root):
+        return {t["crop_id"]: t["candidates"] for t in bd.build_state(root)["targets"]}
+
+    def metadata(row):
+        return row.get("model"), row.get("quality"), row.get("opts")
+
+    with _v2b_env(dp, out), patch.object(rn, "mock_enabled", return_value=False), patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": ""}):
+        args = _v2b_args(bd.pl, project, variants="V1")
+        h, root, ids = prepare("mixed")
+        a, b, d = ids
+        jobs = {j["crop_id"]: j for j in store.load_manifest(root)["jobs"]}
+        counts = {a: 2, b: 8, d: 3}
+        expected = {a: (ideo, "low", None), b: (nano, "standard", {"image_size": "1K", "thinking_level": "medium",
+                                                                    "aspect_ratio": "9:16"}), d: (project, "high", None)}
+        check({cid: (metadata(j), j["n"]) for cid, j in jobs.items()} == {cid: (expected[cid], counts[cid]) for cid in ids},
+              "V2BD1 Prepare 의 패치별 모델·품질·옵션·장 수")
+        approved = plan(root, ids)
+        fake, report, slots = run_plan(root, ids, approved["hash"])
+        check(approved["need"] == report.launched == report.done == len(fake.requests) == len(jobs) == 3
+              and not report.failed and not report.errors and report.stopped_reason == "none"
+              and fake.calls.count(("POST", "/api/image/generate")) == 3, "V2BD1 승인 해시로 세 작업 완료·중복 제출과 재시도 없음")
+        records = {r["job_id"]: r for r in fake.requests if "job_id" in r}
+        wire_opts = {ideo: {"ideogram": {"operation": "auto", "quality": "low", "magic_prompt": "off"}},
+                     nano: expected[b][2], project: {"quality": "high", "complexity": "medium"}}
+        for cid, job in jobs.items():
+            name = job["model"]
+            job_id = fb.read_sidecar(root, job["cell_key"], 0).get("job_id")
+            record = records.get(job_id, {})
+            sent = fake.jobs.get(job_id, {}).get("request_data", {})
+            shape = fixture["generate"] if name == project else fixture["models"]["requests"][name]
+            check(record.get("checkpoint") == fixture["models"]["names"][name] and record.get("reused") is False
+                  and record.get("keys") == sorted(shape["request"]) and sent.get("num_outputs") == job["n"]
+                  and fake.options_by_request.get(sent.get("request_id")) == wire_opts[name],
+                  f"V2BD1 작업별 접수 기록의 checkpoint·요청 키·옵션·num_outputs {cid}")
+
+        candidates = store.load_manifest(root)["candidates"]
+        visible = board_candidates(root)
+        for cid in ids:
+            saved = [c for c in candidates if c["crop_id"] == cid]
+            shown = visible[cid]
+            check(len(saved) == len(shown) == counts[cid] and {c["key"] for c in saved} == {c["key"] for c in shown}
+                  and all(metadata(c["origin_info"]) == expected[cid] for c in saved)
+                  and all(metadata(c) == expected[cid] and not c["old_cell"] for c in shown),
+                  f"V2BD2 받은 후보와 보드의 모델·품질·옵션 {cid}")
+        limit = min(models.job_slots(j["model"], 4, j["n"]) for j in jobs.values())
+        check(slots == limit == 1 and 0 < fake.peak <= limit, f"V2BD3 나노바나나 8장 혼합 실행의 세마포어 {slots}·실측 최대 {fake.peak}")
+
+        old_key = jobs[a]["cell_key"]
+        keys = {c["key"] for c in visible[a]}
+        store.update_crop_gen(root, lambda rows: rows.pop(a), expect_rev=1)
+        h, _, _ = pre.run(h, **args)
+        cleared = plan(root, ids)
+        current = next(j for j in store.load_manifest(root)["jobs"] if j["crop_id"] == a)
+        shown = board_candidates(root)[a]
+        check(current["model"] == project and current["cell_key"] != old_key and cleared["need"] == cleared["by_crop"][a]["need"] == 1
+              and cleared["hash"] and [g["model"] for g in cleared["groups"]] == [project]
+              and {c["key"] for c in shown} == keys and all(c["cell_key"] == old_key and c["old_cell"] for c in shown),
+              "V2BD5 덮어쓰기 해제 뒤 기존 후보는 옛 조건·새 프로젝트 모델 작업만 승인 필요")
+        store.update_crop_gen(root, lambda rows: rows.update({a: ideogram_gen}), expect_rev=2)
+        pre.run(h, **args)
+        restored = plan(root, ids)
+        shown = board_candidates(root)[a]
+        restored_keys = [j["cell_key"] for j in store.load_manifest(root)["jobs"] if j["crop_id"] == a]
+        check(restored_keys == [old_key] and restored["by_crop"][a]["done"] == 1 and restored["need"] == 0
+              and not restored["hash"] and not restored["groups"]
+              and {c["key"] for c in shown} == keys and all(c["cell_key"] == old_key and not c["old_cell"] for c in shown),
+              "V2BD5 같은 모델 묶음을 되살리면 같은 후보가 현재 조건으로 완료·재승인 0건")
+
+        _, root, ids = prepare("ratio", wide=True)
+        a, b, d = ids
+        mixed, allowed = plan(root, ids), plan(root, (a, d))
+        reasons = mixed["reasons"]
+        check(mixed["by_crop"][b]["blocked"] == 1 and mixed["by_crop"][b]["need"] == 0
+              and mixed["hash"] == allowed["hash"] and mixed["need"] == allowed["need"] == 2
+              and [(g["model"], g["need"], g["images"]) for g in mixed["groups"]] == [(project, 1, 3), (ideo, 1, 2)]
+              and [(r["n"], r["msg"]) for r in reasons if r["reason"] == "blocked"] == [(1, "발사 못 함 — " + models.ratio_problem(nano))]
+              and sum(r["n"] for r in reasons if r["reason"] != "blocked") == 2, "V2BD4 비율 차단 작업을 제외한 승인 해시·묶음·사유")
+        fake, report, slots = run_plan(root, ids, mixed["hash"])
+        check(slots == fake.peak == 1, "V2BD3 승인된 두 작업 밖의 8장 패치도 매니페스트 동시 상한에 포함")
+        check(report.launched == report.done == 2 and not report.failed and not report.errors
+              and sorted(r["checkpoint"] for r in fake.requests) == sorted(fixture["models"]["names"][n] for n in (project, ideo))
+              and fake.calls.count(("POST", "/api/image/generate")) == 2, "V2BD4 나노바나나 제출 0건·나머지 두 모델 완료")
+
+        _, root, ids = prepare("overload")
+        pending = plan(root, ids)
+        fake, report, _ = run_plan(root, ids, pending["hash"], concurrency=1, poll_errors=(429, 503))
+        sent = [r["checkpoint"] for r in fake.requests]
+        failed = [rn.read_ledger(root, c["cell_key"])[c["rep"]]["failed"]["status"] for c in report.calls if c["status"] == "failed"]
+        check(pending["need"] == 3 and len(set(sent)) == len(sent) == 2 and report.stopped_reason == "auth"
+              and failed == [429, 503] and len(report.remaining) == 1 and fake.calls.count(("POST", "/api/image/generate")) == 2,
+              "V2BD6 서로 다른 모델의 429·503 누적 뒤 남은 작업 제출 0건")
+
+
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -63207,7 +65139,7 @@ def forge_models_unit():
     check(row == {"name": "ideogram-4.5", "label": "Ideogram 4.5", "kind": "ideogram", "available": True, "why": None,
                   "qualities": ["low", "medium", "high"], "default_quality": "high", "opts": {}, "opt_defaults": {},
                   "ratios": [], "ratio_sizes": {}, "ratio_tolerance": None, "family": None, "fallback": None, "max_inputs": 5, "max_n": 8,
-                  "fan_out": False}, f"FM7 화면용 모델 한 줄 {row}")
+                  "fan_out": False, "max_refs": 4, "supports_quality": True, "complexities": []}, f"FM7 화면용 모델 한 줄 {row}")
     row = dpm.describe("seedream-5.5", gone, checked=True)
     check(row["available"] is False and row["why"] and row["qualities"] == [] and row["default_quality"] is None and row["fan_out"] is True
           and dpm.describe("seedream-5.5")["available"] is True, "FM7 빠진 모델은 이유와 함께, 대조 전에는 참")
@@ -63364,7 +65296,8 @@ def forge_models2_unit():
                   "opt_defaults": {"image_size": "2K", "thinking_level": "medium"}, "ratios": list(dpm.RATIOS),
                   "ratio_sizes": {k: list(v) for k, v in dpm.RATIO_SIZES.items()}, "ratio_tolerance": 0.01,
                   "family": "nano-banana",
-                  "fallback": "nano-banana-2", "max_inputs": 14, "max_n": 8, "fan_out": True} and "Forge 에 없습니다" in row["why"],
+                  "fallback": "nano-banana-2", "max_inputs": 14, "max_n": 8, "fan_out": True,
+                  "max_refs": 13, "supports_quality": False, "complexities": []} and "Forge 에 없습니다" in row["why"],
           f"FN6 화면용 한 줄(빠진 모델 — 대체 모델 이름) {row}")
     row = dpm.describe("nano-banana-pro")
     check(row["available"] is True and row["fallback"] is None and row["opts"] == {"image_size": ["1K", "2K", "4K"]}
@@ -72559,7 +74492,9 @@ def forge_f3_server_unit():
                           "F3S9 오류 상태에서도 safe·목록 가림")
                 with patch.object(pl, "view", return_value={"error": scope["home"] + "/bmk_design_patch/p/x.psd"}):
                     _, data = await call(app, "GET", bd.API + "/pipeline", headers=auth)
-                    check(data == {"error": "<계정 폴더>/bmk_design_patch/p/x.psd"}, "F3S9 미들웨어가 요청 계정 범위를 유지")
+                    # 서버 모드의 GET /pipeline 은 패치별 생성 설정의 수(crop_overrides — UX v2-B)를 응답에 더한다(받은 dict 는 고치지 않는다)
+                    check(data == {"error": "<계정 폴더>/bmk_design_patch/p/x.psd", "crop_overrides": {"model": 0, "n": 0}},
+                          "F3S9 미들웨어가 요청 계정 범위를 유지")
             check(payload == saved_payload, "F3S9 응답 변환은 원본 설정·기록을 바꾸지 않음")
             async def binary(request):
                 return web.Response(body=b"C:/data/private/x", content_type="image/png")
@@ -74281,6 +76216,20 @@ if __name__ == "__main__":
         ux_v2a_spec_unit()
     if want("ux_v2a_assist_unit"):
         ux_v2a_assist_unit()
+    if want("ux_v2b_core_unit"):
+        ux_v2b_core_unit()
+    if want("ux_v2b_invariant_unit"):
+        ux_v2b_invariant_unit()
+    if want("ux_v2b_flow_unit"):
+        ux_v2b_flow_unit()
+    if want("ux_v2b_gen_unit"):
+        ux_v2b_gen_unit()
+    if want("ux_v2b_route_unit"):
+        ux_v2b_route_unit()
+    if want("ux_v2b_plan_unit"):
+        ux_v2b_plan_unit()
+    if want("ux_v2b_dev_unit"):
+        ux_v2b_dev_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")

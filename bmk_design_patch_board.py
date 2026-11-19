@@ -264,6 +264,7 @@ try:
     from . import bmk_design_patch_analysis as an
     from . import bmk_design_patch_ext as ext
     from . import bmk_design_patch_mask as dmask
+    from . import bmk_design_patch_models as models
     from . import bmk_design_patch_pipeline as pl
     from . import bmk_design_patch_prompt as dprompt
     from . import bmk_design_patch_psd as dpsd
@@ -273,6 +274,7 @@ except ImportError:  # 단독 실행/테스트
     import bmk_design_patch_analysis as an
     import bmk_design_patch_ext as ext
     import bmk_design_patch_mask as dmask
+    import bmk_design_patch_models as models
     import bmk_design_patch_pipeline as pl
     import bmk_design_patch_prompt as dprompt
     import bmk_design_patch_psd as dpsd
@@ -2815,6 +2817,11 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
              "layout_rev": lay["rev"] if lay else None, "refs_rev": doc["rev"] if doc else None, "refs_files_v": _refs_files_v(_refs_dir(m)),
              "pipeline_rev": pl.pipeline_rev(root), "plan_v": None, "pref_v": store.board_pref_v(root),
              "export_state": export_state, "export_last": {k: ex.get(k) for k in ("rev", "time")} if ex is not None else None}
+    if server_mode():
+        try:
+            flags["crop_gen_rev"] = store.load_crop_gen(root)["rev"]
+        except (ValueError, OSError):
+            flags["crop_gen_rev"] = None
     external = [c for c in m["candidates"] if (c.get("origin_info") or {}).get("via") == "studio"]
     external_missing = ext.missing_candidates(external)
     if external:
@@ -3531,6 +3538,16 @@ def layout_state(root: str, since: int | None = None) -> dict:
            "pending_rerolls": _pending(root, m)[1], "refs_dir": find_refs is not None, "manifest_crops": len(m["crops"]),
            "psd": None, "psd_diff": None, "crops": [], "removed": [],
            "next_nnn": None if refs_error or refs_unreadable else _layout_next_nnn(root, m, lay, doc)}
+    if server_mode():
+        out["crop_models"] = {}
+        try:
+            entries = store.crop_gen_entries(root)
+        except (ValueError, OSError):
+            pass
+        else:
+            ids = {c["id"] for c in m["crops"]} | {c["id"] for c in (lay or {}).get("crops", [])}
+            out["crop_models"] = {cid: e["model"] for cid, e in entries.items()
+                                  if cid in ids and "model" in e and models.gen_entry_problem(e) is None}
     snap = _read_snapshot(root, m)
     if lay is None:
         if out["editable"]:
@@ -5838,7 +5855,7 @@ def _plan_sigs(root: str, m: dict, busy: tuple[bool, bool], refs_v: str | None, 
     바이트로 두고 이 둘만 처음 기록·갱신하는데, 그것이 apply_pending('지문 없음'·'입력이 바뀜')·notes(Prepare 갈라짐)를 바꾼다 — 빠지면
     plan_v 가 그대로라 Studio 가 낡은 '반영 필요'·해시 복사 끔을 다시 받지 않음, Codex 2차 c2-2) + 원장(cands/<셀>/ 원장 파일) + mock
     스위치 + pipeline.json 지문 + Run 실행 중.
-    Draft = 크롭·source·베이스 + specs/·refs.json·glossary.json·layout.json·source.glossary·PSD·레퍼런스 파일(타깃 refs·refs_auto)·
+    Draft = 크롭·source·베이스 + specs/·refs.json·glossary.json·layout.json·crop_gen.json·source.glossary·PSD·레퍼런스 파일(타깃 refs·refs_auto)·
     스펙이 가리키는 파일(guide·before_paste·스펙 refs — prepare_inputs_fp 의 재료라 그림만 바뀌어도 apply_pending '입력이 바뀜'이 되는데,
     specs/ 바로 아래·refs_dir 바로 아래가 아니면 다른 재료로는 잡히지 않음, Codex 3차 c3-1. 경로는 _spec_paths 기억값이라 폴링은 stat 만)·
     refs_dir 목록 + 초안 원장(vlm/ — img 제외) + mock 스위치 + pipeline.json 지문 + Draft 실행 중 + Qwen config.json + 예상 크레딧
@@ -5879,7 +5896,7 @@ def _plan_sigs(root: str, m: dict, busy: tuple[bool, bool], refs_v: str | None, 
     refs += [[p, store._file_fp(p)] for p in _spec_paths(root, specs, refs_dir)]
     qdir = _qwen_dir()
     draft = [m["crops"], src, m.get("base"), m.get("work_rect"), specs,
-             [store._file_fp(os.path.join(root, n)) for n in (drefs.REFS_NAME, "glossary.json", store.LAYOUT_NAME)],
+             [store._file_fp(os.path.join(root, n)) for n in (drefs.REFS_NAME, "glossary.json", store.LAYOUT_NAME, store.CROP_GEN_NAME)],
              store._file_fp(src["glossary"]) if src.get("glossary") else None,
              store._file_fp(src["psd"]) if src.get("psd") else None, refs, refs_v,
              _scan(os.path.join(root, "vlm"), depth=2, skip=("img",)), mock, pfp, drafting,
@@ -5933,6 +5950,31 @@ def _run_free(root: str, m: dict, run_cfg: dict, mock: bool | None = None) -> di
             "by_crop": rows, "running": is_running(root)}
 
 
+def _approval_groups(entries: list) -> list[dict]:
+    groups = {}
+    for e in entries:
+        job = e["job"]
+        name, quality = job["model"], job["quality"]
+        model = models.get(name)
+        complexity = job.get("complexity") if model and model.complexities else None
+        opts = job.get("opts") or {}
+        key = (name, quality, complexity, opts.get("image_size"), opts.get("thinking_level"))
+        if key not in groups:
+            group = {"model": name, "quality": quality, "need": 0, "images": 0, "fan_out": bool(model and model.fan_out)}
+            if model and model.complexities:
+                group["complexity"] = complexity
+            if model and model.opts:
+                group["opts"] = {k: opts[k] for k in ("image_size", "thinking_level") if k in opts}
+            groups[key] = (group, set())
+        group, crops = groups[key]
+        group["need"] += 1
+        group["images"] += e["n"]
+        crops.add(e["crop_id"])
+    order = {name: i for i, name in enumerate(models.MODELS)}
+    return sorted((dict(group, crops=len(crops)) for group, crops in groups.values()),
+                  key=lambda g: order.get(g["model"], len(order)))
+
+
 def _run_sel(root: str, m: dict, run_cfg: dict, only: str, mock: bool | None = None) -> dict:
     """선택(only) Run 계획: hash(노드 Run 이 같은 only 로 대조할 실행 전 해시)·need·filtered·est_usd·credits·reasons. only 의 style
     토큰은 뺀다(Run 위젯과 같은 문자열 — pl.strip_style)."""
@@ -5950,7 +5992,8 @@ def _run_sel(root: str, m: dict, run_cfg: dict, only: str, mock: bool | None = N
                if blocked_entries else [])
     return {"hash": ap["pending_hash"], "need": len(ap["needs_approval"]), "filtered": plan["filtered"], "est_usd": [lo, hi],
             "credits": [round(lo * runner.CREDITS_PER_USD), round(hi * runner.CREDITS_PER_USD)],
-            "reasons": [{"reason": r, "n": n} for r, n in reasons.items()] + blocked}
+            "reasons": [{"reason": r, "n": n} for r, n in reasons.items()] + blocked,
+            **({"groups": _approval_groups(ap["needs_approval"])} if server_mode() else {})}
 
 
 def _draft_cfg(root: str, settings: dict, mock: bool | None = None) -> tuple[str, dict]:
@@ -7189,6 +7232,19 @@ async def refs_link_handler(request: web.Request) -> web.StreamResponse:
     return _json(await asyncio.to_thread(ref_link, root, _refs_rev(data), data.get("op"), data))
 
 
+def _crop_override_counts(root: str) -> dict:
+    try:
+        entries = store.crop_gen_entries(root)
+    except (ValueError, OSError):
+        return {"model": 0, "n": 0, "error": "패치별 생성 설정 파일을 읽지 못했습니다"}
+    if not entries:
+        return {"model": 0, "n": 0}
+    crops = store.load_manifest(root)["crops"] + (_layout_or_none(root) or {}).get("crops", [])
+    ids = {c["id"] for c in crops}
+    valid = [entry for cid, entry in entries.items() if cid in ids and models.gen_entry_problem(entry) is None]
+    return {key: sum(key in entry for entry in valid) for key in ("model", "n")}
+
+
 @_guard
 async def pipeline_handler(request: web.Request) -> web.StreamResponse:
     root = _root_param(request.query.get("root"))
@@ -7201,6 +7257,8 @@ async def pipeline_handler(request: web.Request) -> web.StreamResponse:
     result = await asyncio.to_thread(pl.view, root, switch_prepare=prepare,
                                     import_pending=_import_pending if prepare is not None else None)
     if server_mode():
+        # 받은 dict 를 고치지 않고 새 dict 로(응답에만 더하는 칸 — 패치별 생성 설정, UX v2-B D558)
+        result = {**result, "crop_overrides": await asyncio.to_thread(_crop_override_counts, root)}
         settings = result.get("settings") or result.get("derived", {}).get("settings") or {}
         source = await asyncio.to_thread(_read_forge_source, root, settings.get("import", {}).get("psd_path"))
         if source:
@@ -7373,7 +7431,7 @@ _PROJECT_NEW_LOCK = threading.Lock()
 _PROJECT_NEW_LOCKS: dict[str, threading.Lock] = {}
 _PROJECT_NEW_LOCKS_GUARD = threading.Lock()
 _PROJECT_NEW_SLOTS = threading.BoundedSemaphore(2)
-_PROJECT_OLD_TRACES = ("cands", "inputs", "specs", "vlm", "layout.json", "refs.json", "pipeline.json", "board_pref.json")
+_PROJECT_OLD_TRACES = ("cands", "inputs", "specs", "vlm", "layout.json", "refs.json", "pipeline.json", "board_pref.json", store.CROP_GEN_NAME)
 
 
 def _project_new_lock():
