@@ -310,6 +310,10 @@ window.DPV2Api = (() => {
     return null;
   }
 
+  function getJobQueue(root) {
+    return getJson("jobs/queue?" + qs({ root }));
+  }
+
   return {
     apiUrl, can,
     listProjects, openProject, createProjectFile,
@@ -319,6 +323,6 @@ window.DPV2Api = (() => {
     pickCandidate, rejectCandidate, drainRun,
     getSeams, saveToForge, exportDownloadUrl,
     getMask, adjustMask, fetchImageRgba, encodePngL, saveMaskPng,
-    getSpec, saveSpec, assistPrompt, batchUpdateCrops, submitAdapter, submitStage, waitJob,
+    getSpec, saveSpec, assistPrompt, batchUpdateCrops, submitAdapter, submitStage, waitJob, getJobQueue,
   };
 })();

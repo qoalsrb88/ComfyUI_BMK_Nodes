@@ -521,15 +521,23 @@ window.DPV2Overlays = (() => {
   async function openSheetOverlay(preferredPath = "") {
     const ov = $("sheet-overlay");
     if (!ov) return;
+    // #C13-9: 보관함 카드로 열 때 목록 재조회 중 앞 시트 이미지로 저장되지 않도록 여는 즉시 잠그고 비운다
+    const openSeq = ++sheetLoadSeq;
     sheetState.open = true;
+    sheetState.loading = true;
+    sheetState.sheetImg = null;
+    if (preferredPath) sheetState.sheetPath = preferredPath;
     sheetState.maximized = false;
     $("sheet-split-body").classList.remove("maximized");
     $("btn-sheet-max").textContent = "⤢ 최대화";
     const bc = $("sheet-breadcrumb-proj");
     if (bc) bc.textContent = (Store.state.S && Store.state.S.project) || Store.state.root || "프로젝트";
+    drawSheetSource();
+    drawSheetWarp();
     ov.classList.remove("hidden");
 
     await Store.loadRefs(true);
+    if (!sheetState.open || openSeq !== sheetLoadSeq) return;
 
     // 시트 드롭다운 채우기
     const shSel = $("sheet-select");
@@ -566,7 +574,9 @@ window.DPV2Overlays = (() => {
   }
 
   function closeSheetOverlay() {
+    sheetLoadSeq += 1;
     sheetState.open = false;
+    sheetState.loading = false;
     sheetState.drag = null;
     sheetState.hoverHit = null;
     sheetState.warpHover = null;
@@ -1118,6 +1128,7 @@ window.DPV2Overlays = (() => {
   }
 
   function openPresetsModal() {
+    if (Store.state.runFlowBusy || Store.state.assistBusy) return;
     const p = Store.primaryPatch();
     if (!p) return;
     const pr = Data.purposeInfo(p.meta.purpose);
