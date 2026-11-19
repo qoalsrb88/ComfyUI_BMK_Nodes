@@ -62624,7 +62624,13 @@ def ux_v2b_flow_unit():
 
         # ── 계획의 모델별 묶음(승인 해시를 만드는 목록에서 센다): 끝난 원장을 치우면 셋 다 승인 필요
         shutil.rmtree(Path(root, "cands"), ignore_errors=True)
-        plan = bd.pipeline_plan(root, only_ids=[a, b, c, d], style=False)
+        mock_plan = bd.pipeline_plan(root, only_ids=[a, b, c, d], style=False)["run"]
+        check([g["model"] for g in mock_plan["groups"]] == [project] and mock_plan["need"] == 1
+              and any(r["reason"] == "blocked" and "Forge 서버에서만" in r.get("msg", "") for r in mock_plan["reasons"]),
+              f"V2BF7 mock 백엔드 — Forge 전용 모델 패치는 발사 못 함, 묶음은 승인되는 것만: {mock_plan['groups']} {mock_plan['reasons']}")
+        from unittest.mock import patch as _patch
+        with _patch.object(rn, "mock_enabled", return_value=False):
+            plan = bd.pipeline_plan(root, only_ids=[a, b, c, d], style=False)
         groups = plan["run"].get("groups")
         check(isinstance(groups, list) and [(g["model"], g["need"], g["images"], g["crops"]) for g in groups]
               == [(project, 1, 3, 1), ("ideogram-4.5", 1, 2, 1), ("nano-banana-2.1", 1, 8, 1)] and sum(g["need"] for g in groups) == plan["run"]["need"] == 3,
