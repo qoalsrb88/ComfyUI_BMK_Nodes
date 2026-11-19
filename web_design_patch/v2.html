@@ -303,12 +303,12 @@
                     <span class="ai-target-model" id="ai-target-model"></span>
                   </div>
                   <p class="ai-summary-ko" id="ai-summary-ko"></p>
-                  <details class="raw-prompt-details" id="raw-prompt-details">
-                    <summary>원문 프롬프트 확인 / 직접 덮어쓰기</summary>
-                    <textarea class="raw-prompt-textarea" id="inp-raw-prompt" rows="3" placeholder="직접 영문 요청 본문을 입력하려면 여기에 작성 후 저장하세요"></textarea>
-                    <div class="raw-prompt-readonly hidden" id="box-full-prompt"></div>
-                  </details>
                 </div>
+                <details class="raw-prompt-details" id="raw-prompt-details">
+                  <summary>원문 프롬프트 확인 / 직접 입력</summary>
+                  <textarea class="raw-prompt-textarea" id="inp-raw-prompt" rows="3" placeholder="직접 영문 요청 본문을 입력하려면 여기에 작성 후 저장하세요"></textarea>
+                  <div class="raw-prompt-readonly hidden" id="box-full-prompt"></div>
+                </details>
               </div>
 
               <!-- 모델 & 생성 옵션 -->
@@ -343,6 +343,7 @@
                   </div>
                 </div>
                 <div class="param-row hidden" id="model-extra-opts"></div>
+                <div class="block-sub" id="model-scope-note" style="margin-top:6px;">모델·장수·품질·복잡도는 프로젝트 전체에 적용되며, 변경 시 다음 생성에서 반영 확인이 표시됩니다.</div>
               </div>
 
               <!-- 전문가 설정 (접이식) -->

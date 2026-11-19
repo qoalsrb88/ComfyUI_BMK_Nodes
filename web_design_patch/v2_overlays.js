@@ -24,6 +24,8 @@ window.DPV2Overlays = (() => {
         type: "button",
         className: a.cls || "btn-secondary",
         text: a.label,
+        disabled: !!a.disabled,
+        title: a.title || "",
         onClick: a.onClick,
       }));
     }
@@ -278,9 +280,12 @@ window.DPV2Overlays = (() => {
       ctx.restore();
     }
 
-    // 실시간 픽셀 치수 라벨
-    const pxW = Math.round(rw), pxH = Math.round(rh);
-    const pxX = Math.round(rx), pxY = Math.round(ry);
+    // 실시간 픽셀 치수 라벨 (#C07-6: 긴 변 2048 초과 큰 시트는 서버 원본 size 기준으로 표시)
+    const curSheet = (Store.state.sheets || []).find((s) => s.path === sheetState.sheetPath);
+    const origW = (curSheet && Array.isArray(curSheet.size) && curSheet.size[0]) || cv.width;
+    const origH = (curSheet && Array.isArray(curSheet.size) && curSheet.size[1]) || cv.height;
+    const pxW = Math.round(r.w * origW), pxH = Math.round(r.h * origH);
+    const pxX = Math.round(r.x * origW), pxY = Math.round(r.y * origH);
     const label = `${pxW} × ${pxH} px`;
     ctx.save();
     const fsz = Math.max(10, Math.round(11.5 * inv));
@@ -594,12 +599,16 @@ window.DPV2Overlays = (() => {
       Store.toast("먼저 시트 이미지를 업로드해 주세요.");
       return;
     }
+    const curSheet = (Store.state.sheets || []).find((s) => s.path === sheetState.sheetPath);
+    // #C07-6: /refs/cut 은 서버 원본 픽셀 좌표를 요구한다(미리보기 2048px 축소본과 큰 시트 원본 크기 분리)
+    const origW = (curSheet && Array.isArray(curSheet.size) && curSheet.size[0]) || img.naturalWidth;
+    const origH = (curSheet && Array.isArray(curSheet.size) && curSheet.size[1]) || img.naturalHeight;
     const r = sheetState.cutRect;
     const rectPx = [
-      Math.round(r.x * img.naturalWidth),
-      Math.round(r.y * img.naturalHeight),
-      Math.round((r.x + r.w) * img.naturalWidth),
-      Math.round((r.y + r.h) * img.naturalHeight),
+      Math.round(r.x * origW),
+      Math.round(r.y * origH),
+      Math.round((r.x + r.w) * origW),
+      Math.round((r.y + r.h) * origH),
     ];
     if (Math.min(rectPx[2] - rectPx[0], rectPx[3] - rectPx[1]) < 16) {
       Store.toast("오릴 영역의 가로·세로는 최소 16px 이상이어야 합니다.", "err");
@@ -615,7 +624,6 @@ window.DPV2Overlays = (() => {
     const cropId = attachToCrop && cropSel ? cropSel.value : "";
     const rawRole = roleSel ? roleSel.value : "main";
     const role = rawRole === "aux" || rawRole === "sub" ? "aux" : "main";
-    const curSheet = (Store.state.sheets || []).find((s) => s.path === sheetState.sheetPath);
 
     try {
       const cutBody = {
@@ -662,10 +670,7 @@ window.DPV2Overlays = (() => {
 
       const saved = await sendSave(saveBody);
       if (saved && saved.cancelled) return;
-      if (cropId) {
-        const linkedPatch = Store.getPatch(cropId);
-        if (linkedPatch && linkedPatch.meta) linkedPatch.meta.specLoaded = false; // 레퍼런스 구성 변경 시 /spec seen 지문이 달라짐
-      }
+      Store.invalidateAllSpecs();
       closeSheetOverlay();
       Store.toast(cropId ? "시트 컷을 저장하고 선택한 영역에 연결했습니다." : "시트 컷을 레퍼런스 보관함에 저장했습니다.", "ok");
       await Store.refreshAll(true);
@@ -1001,13 +1006,24 @@ window.DPV2Overlays = (() => {
 
     const actions = [{ label: "닫기", cls: "btn-secondary", onClick: closeModal }];
     if (Api.can("forge_save")) {
+      const S = Store.state.S;
+      const canSaveForge = !!(S && S.canvas && !S.running && S.export_state !== "none");
       actions.push({
         label: "Forge 자료함에 저장", cls: "btn-secondary",
+        disabled: !canSaveForge,
+        title: canSaveForge ? "합성 이미지를 Forge 내 자료에 저장" : "생성 중이거나 내보낼 수 있는 합성 결과가 없을 때는 저장할 수 없습니다.",
         onClick: async () => {
+          // #C08-4: v1(forge_import.js saveButton)과 동일하게 저장 전 확인 상자를 띄운다
+          const ok = await Data.askDialogConfirm(
+            "합성 그림을 Forge 내 자료에 저장합니다. 계속할까요?",
+            { ok: "저장", cancel: "취소" }
+          );
+          if (!ok) return;
           closeModal();
           try {
-            await Api.saveToForge(Store.state.root);
-            Store.toast("합성 결과를 Forge 자료함에 저장했습니다.", "ok");
+            const data = await Api.saveToForge(Store.state.root);
+            const assetName = data && data.asset && data.asset.name ? `: ${data.asset.name}` : "";
+            Store.toast((data && data.already ? "이미 저장한 그림입니다" : "Forge 내 자료에 저장했습니다") + assetName, "ok");
           } catch (err) {
             Store.toast(`Forge 저장 실패: ${err.message}`, "err");
           }
@@ -1036,7 +1052,17 @@ window.DPV2Overlays = (() => {
           if (res && res.ok) {
             Store.toast("PSD 파일을 생성하는 중입니다…");
             const waited = await Api.waitJob(Store.state.root, res.prompt_id);
-            if (waited && waited.done && !waited.ok) {
+            // #C07-2: waited.done && waited.ok 일 때만 내려받기를 시작한다(옛 PSD 오다운로드 방지)
+            if (!waited || !waited.done) {
+              Store.toast(
+                waited && waited.reason === "timeout"
+                  ? "PSD 내보내기 대기 시간이 초과되었습니다 — 완료 후 다시 시도해 주세요."
+                  : "PSD 내보내기 완료 여부를 확인하지 못했습니다.",
+                "err"
+              );
+              return;
+            }
+            if (!waited.ok) {
               Store.toast("PSD 내보내기 작업이 실패했습니다.", "err");
               return;
             }
@@ -1835,7 +1861,8 @@ window.DPV2Overlays = (() => {
       const p = Store.primaryPatch();
       if (!p || !p.target || !cmpState.candKey) return;
       try {
-        await Api.pickCandidate(Store.state.root, { crop_id: p.id, tid: p.target.tid, key: cmpState.candKey, mode: "set" });
+        // #C07-4: 다중 채택 보존 — mode: "add" 사용
+        await Api.pickCandidate(Store.state.root, { crop_id: p.id, tid: p.target.tid, key: cmpState.candKey, mode: "add" });
         closeCompareOverlay();
         Store.toast(`"${p.name}"에 선택한 후보를 확정 적용했습니다 ★`, "ok");
         await Store.refreshAll(true);

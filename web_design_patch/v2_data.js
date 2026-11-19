@@ -4,7 +4,7 @@
 window.DPV2Data = (() => {
   const SVG_NS = "http://www.w3.org/2000/svg";
 
-  // Forge-latest 6종 테마 (다크 3 + 라이트 3)
+  // Forge 6종 테마 (다크 3 + 라이트 3)
   const THEMES = [
     {
       id: "graphite", name: "그래파이트", mode: "dark", desc: "기본 중립 다크",
@@ -56,7 +56,7 @@ window.DPV2Data = (() => {
     },
   ];
 
-  // Forge-latest 7종 포인트 컬러 (다크/라이트 모드별 최적 대비 자동 적응)
+  // Forge 7종 포인트 컬러 (다크/라이트 모드별 최적 대비 자동 적응)
   const POINT_COLORS = [
     { id: "lime", name: "라임 옐로우", dark: "#dfe104", light: "#4f46e5", hex: "#dfe104", hover: "#c9cb03", on: "#09090b" },
     { id: "indigo", name: "인디고", dark: "#818cf8", light: "#4f46e5", hex: "#6366f1", hover: "#4f46e5", on: "#ffffff" },

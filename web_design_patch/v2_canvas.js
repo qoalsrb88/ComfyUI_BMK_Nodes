@@ -30,7 +30,7 @@ window.DPV2Canvas = (() => {
     const sc = patch.stateCrop || {};
     const region = Array.isArray(sc.region) && sc.region.length === 4 ? sc.region : patch.rect;
     if (!Array.isArray(region) || region.length !== 4) return null;
-    const isPicked = !!(patch.pickedCand && patch.pickedCand.key === cand.key);
+    const isPicked = !!(patch.target && Array.isArray(patch.target.pick_keys) && patch.target.pick_keys.includes(cand.key));
     const rel = isPicked
       ? (sc.region_url || cand.pick_url || cand.big_url || "")
       : (cand.pick_url || cand.big_url || "");
@@ -937,11 +937,16 @@ window.DPV2Canvas = (() => {
     if (hud) hud.classList.toggle("hidden", !showHud);
     const lbl = $("brush-mode-label");
     if (lbl) lbl.textContent = toolName === "eraser" ? "마스크 지우개" : "마스크 살리기 브러시";
-    if (showHud && !Store.state.mask) {
+    if (showHud) {
       const p = Store.primaryPatch();
       const cand = Store.currentCandidate(p);
-      if (cand) Store.openMaskSession(cand.key);
-      else Store.toast("먼저 생성된 후보가 있는 영역을 선택해 주세요.");
+      // #C07-5: 마스크 편집 세션은 현재 선택된 후보와 일치할 때만 유지하고 다르면 전환한다
+      if (!cand) {
+        Store.closeMaskSession();
+        Store.toast("먼저 생성된 후보가 있는 영역을 선택해 주세요.");
+      } else if (!Store.state.mask || Store.state.mask.key !== cand.key) {
+        Store.openMaskSession(cand.key);
+      }
     }
     renderFloatingBar();
     renderMaskPreview();
@@ -977,8 +982,15 @@ window.DPV2Canvas = (() => {
       }
 
       if (Store.state.tool === "brush" || Store.state.tool === "eraser") {
-        if (!Store.state.mask) {
-          Store.toast("후보가 생성된 영역을 먼저 선택한 뒤 브러시를 사용해 주세요.");
+        const curCand = Store.currentCandidate();
+        if (!curCand || !Store.state.mask || Store.state.mask.key !== curCand.key) {
+          if (curCand) {
+            Store.openMaskSession(curCand.key);
+            Store.toast("선택한 후보의 마스크를 불러오는 중입니다 — 잠시 후 다시 칠해 주세요.");
+          } else {
+            Store.closeMaskSession();
+            Store.toast("후보가 생성된 영역을 먼저 선택한 뒤 브러시를 사용해 주세요.");
+          }
           return;
         }
         view.drag = { type: "mask" };
@@ -1206,8 +1218,9 @@ window.DPV2Canvas = (() => {
       const cand = Store.currentCandidate(patch);
       if (!patch || !patch.target || !cand) return;
       try {
+        // #C07-4: 다중 채택 보존 — mode: "add" 사용
         await Api.pickCandidate(Store.state.root, {
-          crop_id: patch.id, tid: patch.target.tid, key: cand.key, mode: "set",
+          crop_id: patch.id, tid: patch.target.tid, key: cand.key, mode: "add",
         });
         Store.toast(`${patch.name}에 후보 #${cand.n || 1}을 확정 적용했습니다 ★`, "ok");
         await Store.refreshAll(true);
@@ -1415,8 +1428,8 @@ window.DPV2Canvas = (() => {
     });
   }
 
-  // 화살표 키 미세 이동 (현재 snapStep 연동 · Ctrl 1px · 디바운스 커밋)
-  let nudgeTimer = null;
+  // 화살표 키 미세 이동 (현재 snapStep 연동 · Ctrl 1px · #C08-8 패치별 독립 디바운스 커밋)
+  const nudgeTimers = new Map();
   function nudgeSelectedPatch(dx, dy, stepOrSnap = 16) {
     const selList = Store.selectedPatches();
     if (selList.length !== 1) return false;
@@ -1429,12 +1442,13 @@ window.DPV2Canvas = (() => {
     p.rect[0] = next[0]; p.rect[1] = next[1]; p.rect[2] = next[2]; p.rect[3] = next[3];
     renderOverlaySvg();
     updateFooterInfo();
-    if (nudgeTimer) clearTimeout(nudgeTimer);
     const id = p.id, name = p.name, rectCopy = next.slice();
-    nudgeTimer = setTimeout(() => {
-      nudgeTimer = null;
+    const prevTimer = nudgeTimers.get(id);
+    if (prevTimer) clearTimeout(prevTimer);
+    nudgeTimers.set(id, setTimeout(() => {
+      nudgeTimers.delete(id);
       Store.updateCrop(id, { rect: rectCopy }, `영역 이동 (${name})`);
-    }, 280);
+    }, 280));
     return true;
   }
 
