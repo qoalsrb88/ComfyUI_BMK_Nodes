@@ -62557,9 +62557,39 @@ def ux_v2b_invariant_unit():
               "V2BI12 로컬판 — 반영 보고에 사유(서버 모드에서만) · 「패치별 모델」 줄 없음")
         check(dump([j for j in m["jobs"] if j["crop_id"] == ids["004_panel"]]) == dump([j for j in m0["jobs"] if j["crop_id"] == ids["004_panel"]])
               and dump(m["prepare_settings"]) == dump(m0["prepare_settings"]), "V2BI12 로컬판 — 따르는 패치의 작업·기록은 바이트 그대로")
+        # 3차 리뷰: 로컬에서 만들지 않은 패치가 있으면 입력 지문을 올리지 않는다 — 같은 폴더를 서버 모드로 열면 「반영 필요」로 보여야 한다
+        check(m["prepare_inputs"] == m0["prepare_inputs"] != store.prepare_inputs_fp(root, m),
+              "V2BI12 로컬판 — 만들지 않은 패치가 있으면 입력 지문을 올리지 않음(서버에서 반영 필요)")
+        # 3차 리뷰: 서버에서 반영해 둔 작업(패치별 모델·장 수)이 매니페스트에 남은 폴더를 로컬로 가져와 Prepare 없이 Run 하면 멈춘다 —
+        # 로컬의 승인 창은 건수·예상 금액만 보이고 모델·장 수를 보이지 않는다
+        import asyncio
+        from unittest.mock import patch
+        run_node = dp.BMKDesignPatchRun()
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
+            sh, _, _ = pre.run(h, **largs)  # 서버 모드의 반영 — 패치별 작업이 매니페스트에 들어간다
+        server_jobs = store.load_manifest(root)["jobs"]
+        check({j["crop_id"] for j in server_jobs} == {ids["001_square"], ids["002_tall"], ids["004_panel"]}
+              and any(j["model"] == "gpt-image-2.5-flare" for j in server_jobs) and any(j["n"] == 5 for j in server_jobs),
+              "V2BI13 준비 — 서버 모드로 반영한 패치별 작업")
+        expect_raises(lambda: asyncio.run(run_node.run(sh, "", 64, 1, 25, False, False, "")),
+                      "V2BI13 로컬판 Run — 패치별 설정으로 만든 작업이 남아 있으면 멈춤(Prepare 를 먼저)", contains="Prepare")
+        # 3차 리뷰: 로컬의 전환 미리 보기도 다음 로컬 Prepare 가 만들지 않을 패치의 작업을 세지 않는다
+        lsettings = dict(pl.defaults(root), prepare=largs)
+        for job in server_jobs:
+            for rep in range(job["reps"]):
+                dp.runner._write_json(dp.runner._lpath(root, job["cell_key"], rep, "done"), {"slots": []})
+        ltarget = dict(largs, quality="low")  # 모델은 그대로(004 의 AI 작성본이 낡지 않게) — 품질만 바꾼다
+        lsw = pl.switch_preview(root, store.load_manifest(root), lsettings, prepare=ltarget)
+        lh2, _, _ = pre.run(sh, **ltarget)
+        lreal = dp.runner.split_approval(dp.runner.plan_calls(store.load_manifest(root), root), "", backend=dp.runner.backend_name(root))
+        check(lsw.get("exact") is True and lsw.get("need") == len(lreal["needs_approval"]) == 1,
+              f"V2BI13 로컬 전환 미리 보기 = 실제 로컬 반영의 승인 필요 건수: {lsw.get('need')} vs {len(lreal['needs_approval'])}")
+        out_run = asyncio.run(run_node.run(lh2, "", 64, 1, 25, False, False, ""))
+        check(out_run is not None, "V2BI13 로컬에서 반영한 뒤에는 Run 이 그대로 돈다(드라이런)")
         put(root, {})
-        h, _, _ = pre.run(h, **largs)
-        check(dump(store.load_manifest(root)["jobs"]) == dump(m0["jobs"]), "V2BI12 로컬판 — 설정을 풀면 작업 목록이 처음과 같음")
+        h, _, _ = pre.run(lh2, **largs)
+        check(dump([{k: v for k, v in j.items()} for j in store.load_manifest(root)["jobs"]]) == dump(m0["jobs"]),
+              "V2BI12 로컬판 — 설정을 풀면 작업 목록이 처음과 같음")
 
 
 def ux_v2b_flow_unit():
@@ -62716,6 +62746,15 @@ def ux_v2b_flow_unit():
         row1 = by_id(view(wkey))[w]
         check(row1["ratio"]["ok"] is False and row1["ratio"]["nearest"] != row0["ratio"]["nearest"] and row1["applied"] is False,
               f"V2BF8 가장 가까운 비율이 달라진 영역은 반영 전: {row0['ratio']} → {row1['ratio']} applied {row1['applied']}")
+        # 3차 리뷰: 작업에 크기 기록(size_info)이 없으면 가장 가까운 비율을 확인할 수 없다 — 반영 전으로 본다
+        Path(wide_root, store.LAYOUT_NAME).unlink()
+
+        def drop_info(mm):
+            for job in mm["jobs"]:
+                if job["crop_id"] == w:
+                    job.pop("size_info", None)
+        store.update_manifest(wide_root, drop_info)
+        check(by_id(view(wkey))[w]["applied"] is False, "V2BF8 크기 기록이 없는 작업(맞는 비율 없음)은 반영 전으로")
 
         # ── 리뷰(통합) 3: 프로젝트 모델이 비율 목록 모델이어도 크기 규칙을 쓰는 패치(모델을 따로 정한 GPT)가 있으면 크기 규칙 변경은 갈라짐이다
         nano = "nano-banana-2.1"
@@ -63139,7 +63178,8 @@ def ux_v2b_route_unit():
         opts = by_id(saved)[square]["effective"]["opts"]
         job = {"model": nano, "quality": models.FIXED_QUALITY, "n": prepare["n"]}
         m.update(prepare_settings=prepare, jobs=[dict(job, crop_id=square, opts=dict(opts, aspect_ratio="1:1")),
-                                                 dict(job, crop_id=wide, opts=opts)])
+                                                 # 맞는 비율이 없는 작업에는 Prepare 가 가장 가까운 비율을 크기 기록에 남긴다(3차 리뷰 — 기록이 없으면 반영 전)
+                                                 dict(job, crop_id=wide, opts=opts, size_info={"nearest": models.nearest_ratio(nano, 300, 100)})])
         store.save_manifest(root, m)
         layout = store.layout_from_manifest(m)
         layout_path = str(Path(root, store.LAYOUT_NAME))
@@ -63147,6 +63187,7 @@ def ux_v2b_route_unit():
         rows = by_id(await get())
         check(rows[square]["ratio"]["matched"] == "1:1" and rows[square]["applied"], "V2BR 같은 사각형의 작업 비율 일치")
         check(rows[wide]["ratio"]["matched"] is None and rows[wide]["applied"], "V2BR 비율을 맞출 수 없는 사각형과 비율 키 없는 작업")
+        check(rows[wide]["ratio"]["nearest"] == models.nearest_ratio(nano, 300, 100), "V2BR (준비) 넓은 영역의 가장 가까운 비율")
         next(c for c in layout["crops"] if c["id"] == square)["rect"] = [0, 0, 192, 344]
         store.write_json_atomic(layout_path, layout)
         moved = by_id(await get())[square]

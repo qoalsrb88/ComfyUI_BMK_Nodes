@@ -162,7 +162,8 @@ def _job_matches(job, effective, ratio):
         return False
     # 맞는 비율이 없는 사각형끼리도 가장 가까운 비율이 다르면 요청 크기가 달라진다(작업의 size_info.nearest 와 대조)
     info = job.get("size_info")
-    return ratio["matched"] is not None or not isinstance(info, dict) or info.get("nearest") == ratio["nearest"]
+    # 크기 기록이 없는 작업은 확인할 수 없다 — 반영 전으로 본다
+    return ratio["matched"] is not None or (isinstance(info, dict) and info.get("nearest") == ratio["nearest"])
 
 
 def _crop_row(rect, cid, entry, prepare, jobs, inputs_applied, rows):

@@ -1011,6 +1011,8 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
                 eff = models.effective_gen(target, entries.get(crop_id))
             except models.GenError:
                 continue
+            if crop_id in entries and os.environ.get("BMK_DP_SERVER_MODE") != "1":
+                continue  # 로컬판의 Prepare 는 패치별 설정이 있는 패치의 작업을 만들지 않는다 — 미리 보기도 세지 않는다
             if not all(k in job for k in ("prompt", "template_version", "variant", "size")):
                 return {"prepare": target, "error": "작업에 생성 조건 기록이 부족합니다 — 먼저 Prepare 를 반영하세요", "uncertain": True}
             forge_only = models.is_forge_only(eff["model"])
