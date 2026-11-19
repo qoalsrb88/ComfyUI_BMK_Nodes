@@ -320,16 +320,19 @@ window.DPLayoutEdit = (() => {
 
     function ratioModel() {
       const model = SM() && opts.savedModel?.();
-      return model?.ratios?.length ? model : null;
+      return model?.ratios?.length && model.ratios.every((label) => {
+        const size = model.ratio_sizes?.[label];
+        return Array.isArray(size) && size.length === 2 && size.every((v) => Number.isInteger(v) && v > 0);
+      }) ? model : null;
     }
 
     function ratioWrong(c) {
       const model = ratioModel(), rect = rectOf(c);
-      return !!model && !G.ratioMatch(rect[2] - rect[0], rect[3] - rect[1], model.ratios, model.ratio_tolerance);
+      return !!model && !G.ratioMatch(rect[2] - rect[0], rect[3] - rect[1], model.ratios, model.ratio_tolerance, model.ratio_sizes);
     }
 
     function modelChanged() {
-      const model = ratioModel(), key = JSON.stringify(model ? [model.name, model.ratios, model.ratio_tolerance] : null);
+      const model = ratioModel(), key = JSON.stringify(model ? [model.name, model.ratios, model.ratio_tolerance, model.ratio_sizes] : null);
       if (key === ratioModelKey) return;
       ratioModelKey = key;
       if (proposal?.ratioModel && proposal.ratioModel !== key) proposal = null;
@@ -1324,13 +1327,13 @@ window.DPLayoutEdit = (() => {
 
     function proposeRatio() {
       const c = S.crop(sel), model = ratioModel();
-      if (!c || !model || !editable() || S.err || S.stale || S.busy || drag || nudge || lockedNow(c.id) || !ratioWrong(c)) return;
-      const fit = G.ratioFitRect(c.rect, S.L.canvas, model.ratios, model.ratio_tolerance);
+      if (!c || !model || !editable() || S.err || S.stale || S.busy || drag || nudge || lockedNow(c.id)) return;
+      const fit = G.ratioFitRect(c.rect, S.L.canvas, model.ratios, model.ratio_tolerance, model.ratio_sizes);
       if (!fit) {
         opts.toast("캔버스 안에서 이 모델의 비율로 넓힐 수 없습니다", "warn");
         return;
       }
-      if (badRect(fit.rect)) return;
+      if (sameRect(c.rect, fit.rect) || badRect(fit.rect)) return;
       modelChanged();
       proposal = { id: c.id, rect: fit.rect, base: c.rect.slice(), since: S.remote, grow: true,
         ratioModel: ratioModelKey, note: `모델 비율로 넓히기 · ${fit.ratio}` };
@@ -1952,7 +1955,8 @@ window.DPLayoutEdit = (() => {
       b.append(button("상자에 크롭 맞추기", "부품 상자 합집합 ÷ 0.7 → 128 배수 → 비 ≤ 3 → 캔버스 안(미리보기, Enter 적용)", propose));
       if (ratioModel()) {
         const fit = button("모델 비율로 넓히기", "가까운 모델 비율로 크롭을 넓히는 제안 — 확인 뒤 저장", proposeRatio);
-        fit.disabled = !ratioWrong(c) || !editable() || !!S.err || S.stale || S.busy || !!drag || !!nudge;
+        fit.disabled = (!ratioWrong(c) && G.rectProblem(rectOf(c), S.L.canvas) !== "outside")
+          || !editable() || !!S.err || S.stale || S.busy || !!drag || !!nudge;
         b.append(fit);
       }
       if (proposal && proposal.id === c.id) b.append(button("제안 적용", "Enter", applyProposal, "primary"));

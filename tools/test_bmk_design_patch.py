@@ -61484,9 +61484,10 @@ def forge_models2_js_unit():
     catalog = [models.describe(name) for name in models.MODELS]
     nano = [m for m in catalog if m["family"] == "nano-banana"]
     # 서버 식과 직접 대조: 명시된 경계 양쪽 + 모든 비율의 경계 근처·임의 크기.
-    sizes = [(807, 1000), (809, 1000), (793, 1000), (791, 1000), (815, 1000), (300, 900), (0, 1000)]
+    sizes = [(800, 1000), (813, 1000), (815, 1000), (798, 1000), (796, 1000), (1920, 1080),
+             (2122, 900), (2100, 900), (750, 1000), (1000, 1000), (300, 900), (0, 1000)]
     for ratio in nano[0]["ratios"]:
-        a, b = map(int, ratio.split(":"))
+        a, b = nano[0]["ratio_sizes"][ratio]
         for h in (128, 999, 4096):
             sizes.extend((round(h * a / b * scale), h) for scale in (.989, .990, .991, 1, 1.009, 1.010, 1.011))
     rng = random.Random(49)
@@ -61494,7 +61495,7 @@ def forge_models2_js_unit():
     data = {"api": _pl_api(), "forge": _server_api(), "models": catalog,
             "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"),
             "dialog": (web / "dialog.js").read_text(encoding="utf-8"),
-            "ratios": nano[0]["ratios"], "tolerance": nano[0]["ratio_tolerance"],
+            "ratios": nano[0]["ratios"], "ratio_sizes": nano[0]["ratio_sizes"], "tolerance": nano[0]["ratio_tolerance"],
             "matches": [[w, h, models.match_ratio(nano[0]["name"], w, h)] for w, h in sizes],
             "problem": models.ratio_problem(nano[0]["name"])}
     h = _PL_JS_HARNESS
@@ -61511,7 +61512,7 @@ function dialog(){
   ctx.window.removeEventListener=(t,f)=>events.set(t,(events.get(t)||[]).filter(x=>x!==f));
   El.prototype.appendChild=function(x){this.append(x);return x;};vm.runInContext(IN.dialog,ctx);
 }
-async function studio({server=true,models=catalog,prepare={},plan=null}={}){
+async function studio({server=true,models=catalog,prepare={},plan=null,absent=[]}={}){
   mode(server,models);
   const e=await mkStudio({P:b=>{
     Object.assign(b.settings.prepare,{model:nano[0].name,quality:"standard",n:2,image_size:"2K",thinking_level:"medium"},prepare);
@@ -61519,6 +61520,7 @@ async function studio({server=true,models=catalog,prepare={},plan=null}={}){
     for(const [key,choices] of Object.entries({image_size:["1K","2K","4K"],thinking_level:["minimal","medium","high"]})){
       b.widgets.prepare[key]={type:"COMBO",choices};b.derived.from["prepare."+key]="manifest";
     }
+    for(const key of absent){delete b.settings.prepare[key];delete b.derived.settings.prepare[key];}
   },plan:p=>{p.run.backend="forge";p.run.pre=0;if(plan)plan(p);}});
   dialog();e.h=e.pipe._models2;
   e.field=k=>e.panel.querySelectorAll(".pp-sec").find(x=>x.children[0].textContent==="Prepare")?.children
@@ -61586,7 +61588,53 @@ await scenario("FM2J 퇴역 모델 전환은 선택만 바꾼 뒤 확인 저장"
   e.srv.route.pipeline=()=>[200,saved];const pending=e.h.saveSection("prepare");await until(()=>!!e.box());
   r.confirm=e.box().textContent.includes(nano[1].label)&&e.box().textContent.includes("추론 간단히");
   e.B("확인",e.box()).onclick({isTrusted:true});await pending;
-  r.saved=e.pipe.savedModel().name===nano[1].name&&saved.settings.prepare.thinking_level==="minimal";e.stop();return r;
+  r.saved=e.pipe.savedModel().name===nano[1].name&&saved.settings.prepare.thinking_level==="medium";e.stop();return r;
+});
+function persist(e){
+  const saved=clone(e.h.PS.P);e.srv.route.settings=(q,b)=>{saved.settings.prepare=clone(b.values);saved.rev++;return [200,saved];};
+  e.srv.route.pipeline=()=>[200,saved];return saved;
+}
+async function save(e){
+  e.doc.activeElement.blur();const before=e.srv.count("pipeline/settings","POST"),pending=e.h.saveSection("prepare");
+  await until(()=>!!e.box()||e.srv.count("pipeline/settings","POST")>before);const asked=!!e.box();
+  if(asked)e.B("확인",e.box()).onclick({isTrusted:true});await pending;return asked;
+}
+await scenario("U2 저장한 모델 왕복은 옵션 원래 값 보존",async()=>{
+  const e=await studio({prepare:{image_size:"4K"}}),saved=persist(e);await e.h.openSettings();await e.change("model",nano[1].name);
+  const r={shown:e.input("thinking_level").value==="minimal",firstConfirm:await save(e),
+    firstRaw:saved.settings.prepare.thinking_level==="medium"&&saved.settings.prepare.image_size==="4K"};
+  await e.h.openSettings();await e.change("model",nano[0].name);r.secondConfirm=await save(e);await e.h.openSettings();
+  r.returned=saved.settings.prepare.thinking_level==="medium"&&e.input("thinking_level").value==="medium";
+  e.stop();return r;
+});
+await scenario("U2 나노바나나 2 직접 고른 추론은 저장",async()=>{
+  const e=await studio({prepare:{model:nano[1].name}}),saved=persist(e);await e.h.openSettings();await e.change("thinking_level","high");
+  const r={confirm:await save(e),raw:saved.settings.prepare.thinking_level==="high"};e.stop();return r;
+});
+await scenario("U2 같은 유효 값은 미저장 경고·새 생성 조건 아님",async()=>{
+  const e=await studio({prepare:{model:nano[1].name}}),saved=persist(e);await e.h.openSettings();
+  await e.change("thinking_level","high");const r={changed:!!e.pipe.canLeave().confirm};await e.change("thinking_level","minimal");
+  r.effectiveClean=!e.pipe.canLeave().confirm;r.noConfirm=!await save(e);r.directRaw=saved.settings.prepare.thinking_level==="minimal";
+  e.stop();return r;
+});
+await scenario("U2 GPT의 숨은 옵션 편집은 경고·전환 차단·새 생성 조건 아님",async()=>{
+  const e=await studio({prepare:{model:gpt.name,quality:gpt.default_quality}}),saved=persist(e);await e.h.openSettings();
+  await e.change("model",nano[0].name);await e.change("image_size","4K");await e.change("thinking_level","high");await e.change("model",gpt.name);
+  const r={clean:!e.pipe.canLeave().confirm,switchEnabled:!e.B("2.6 으로 전환").disabled,
+    noNewCondition:!await save(e),raw:saved.settings.prepare.image_size==="4K"&&saved.settings.prepare.thinking_level==="high",
+    noPreview:!e.srv.log.some(x=>x.path==="pipeline"&&x.q.prepare)};e.stop();return r;
+});
+for(const server of [true,false])await scenario("U2 설정에 없는 옵션은 숨기고 전송하지 않음 "+server,async()=>{
+  const e=await studio({server,prepare:{model:server?nano[0].name:gpt.name},absent:["image_size","thinking_level"]}),saved=persist(e);
+  await e.h.openSettings();const r={hidden:!e.field("image_size")&&!e.field("thinking_level")};await save(e);
+  r.absent=!["image_size","thinking_level"].some(k=>Object.hasOwn(saved.settings.prepare,k));e.stop();return r;
+});
+await scenario("U2 비율 목록 모델의 size_rule 변경은 새 생성 조건 아님",async()=>{
+  const e=await studio(),saved=persist(e);await e.h.openSettings();
+  const old=saved.settings.prepare.size_rule,next=e.input("size_rule").children.map(x=>x.value).find(v=>v!==old);await e.change("size_rule",next);
+  const r={savedWithoutPreview:!await save(e),saved:saved.settings.prepare.size_rule===next,
+    gptStillChanges:e.h.prepareChanged({model:gpt.name,size_rule:old},{model:gpt.name,size_rule:next}),
+    modelStillChanges:e.h.prepareChanged({model:nano[0].name,size_rule:old},{model:nano[1].name,size_rule:next})};e.stop();return r;
 });
 for(const m of nano)await scenario("FM2J 승인·진행의 작업 옵션 "+m.name,async()=>{
   const opts={image_size:"4K",...(m.opts.thinking_level?{thinking_level:"high"}:{})};
@@ -61604,12 +61652,13 @@ await scenario("FM2J 비율 차단 사유는 받은 문구 그대로",async()=>{
   e.h.PS.last.run={state:"done",report};await e.pipe.showTab("generate");
   const r={report:report==="발사 못 함 — "+IN.problem,dom:e.panel.textContent.includes(report),noGeneration:!e.tab.got.length};e.stop();return r;
 });
-await scenario("FM2J 후보 옵션·프롬프트 원문·옛 기록·로컬",async()=>{
-  mode();const doc=new Doc(),nodes={},candidate={key:"one",n:1,model:nano[0].name,quality:"standard",origin:"run",label:"후보",
-    origin_info:{opts:{image_size:"2K",thinking_level:"medium"}},prompt_rewritten:true,prompt_used:"<img src=x onerror=bad()>\n원문 & 그대로"};
+function review(reply){
+  mode();const doc=new Doc(),nodes={},calls=[],candidate={key:"one",n:1,model:nano[0].name,quality:"standard",origin:"run",label:"후보",
+    origin_info:{opts:{image_size:"2K",thinking_level:"medium"}},prompt_rewritten:true,prompt_used:true,call_id:"call/one&test",slot:0};
   const target={size:[512,512],focus_box:[0,0,512,512],cells:[],refs:[],candidates:[candidate]},crop={calls:0,dup_picks:[],stale_picked:[]};
   El.prototype.querySelector=function(){return null;};
-  const c=vm.createContext({window:ctx.window,document:doc,$:id=>nodes[id]??=doc.createElement("div"),
+  const c=vm.createContext({window:ctx.window,document:doc,URLSearchParams,ROOT:KEY,apiUrl:A,promptCache:new Map(),
+    fetch:async(url,init)=>{calls.push({url,init});return reply(url,init);},$:id=>nodes[id]??=doc.createElement("div"),
     el:(tag,cls="",text="")=>{const n=doc.createElement(tag);n.className=cls;n.textContent=text;return n;},
     chip:(text,cls)=>{const n=doc.createElement("span");n.className="chip "+cls;n.textContent=text;return n;},
     curTarget:()=>target,curCand:()=>candidate,cropOf:()=>crop,targetTitle:()=>"타깃",refIdx:0,qHeld:false,view:"cand",cKey:null,pad:String,
@@ -61617,58 +61666,99 @@ await scenario("FM2J 후보 옵션·프롬프트 원문·옛 기록·로컬",asy
   for(const name of ["promptWarning","candidateModel","row","tookText","tookSummary","tookRow","renderCompare","renderGrid","renderDetail"])vm.runInContext(boardFn(name),c);
   const draw=()=>{c.renderCompare();c.renderGrid();c.renderDetail();};draw();
   const chips=()=>nodes.grid.all().filter(x=>x.classList.contains("dp-prompt-changed")),toggle=()=>nodes.detail.all().find(x=>x.tagName==="BUTTON"&&x.textContent==="서버가 쓴 프롬프트 보기");
+  return {candidate,c,nodes,calls,draw,chips,toggle,text:()=>nodes.detail.all().find(x=>x.tagName==="PRE")};
+}
+await scenario("U3 후보 옵션·프롬프트 지연 조회·재사용·옛 기록·로컬",async()=>{
+  const raw="<img src=x onerror=bad()>\n원문 & 그대로",e=review(async()=>({ok:true,json:async()=>({prompt_used:raw})}));
+  const {candidate,c,nodes,calls,draw,chips,toggle}=e;
   const text=nodes.detail.all().find(x=>x.tagName==="PRE"),b=toggle();
   const r={model:nodes.detail.textContent.includes(nano[0].label+" · 해상도 2K · 추론 보통"),
     rewritten:nodes.detail.textContent.includes("공급자가 프롬프트를 고쳐 씀")&&!chips().length,
-    safe:text.hidden&&text.textContent===candidate.prompt_used&&!text.children.length};
-  b.fire("click");r.open=!text.hidden&&b.attrs["aria-expanded"]==="true";b.fire("click");r.close=text.hidden&&b.attrs["aria-expanded"]==="false";
+    button:!!b,lazy:calls.length===0};if(!b)return r;
+  r.empty=text.hidden&&!text.textContent;b.fire("click");await sleep(5);
+  r.safe=text.textContent===raw&&!text.children.length;r.open=!text.hidden&&b.attrs["aria-expanded"]==="true";
+  const url=new URL(calls[0].url);r.route=url.pathname.endsWith("/prompt")&&eq(Object.fromEntries(url.searchParams),{root:KEY,call:candidate.call_id,slot:"0"});
+  b.fire("click");r.close=text.hidden&&b.attrs["aria-expanded"]==="false";b.fire("click");await sleep(5);r.cached=calls.length===1&&text.textContent===raw;
+  draw();toggle().fire("click");await sleep(5);r.redrawCached=calls.length===1&&e.text().textContent===raw;
+  candidate.slot=1;draw();toggle().fire("click");await sleep(5);r.slot=calls.length===2&&new URL(calls[1].url).searchParams.get("slot")==="1";
   delete candidate.prompt_used;draw();r.oldRecord=!toggle()&&nodes.detail.textContent.includes("공급자가 프롬프트를 고쳐 씀");
-  candidate.prompt_rewritten=false;candidate.prompt_changed=true;candidate.prompt_used="changed";draw();
+  candidate.prompt_rewritten=false;candidate.prompt_changed=true;candidate.prompt_used=true;draw();
   r.changed=chips().length===1&&!!toggle();
+  candidate.prompt_used="old inline text";draw();r.onlyBoolean=!toggle();
   candidate.model=nano[2].name;candidate.opts={image_size:"1K"};draw();r.pro=c.candidateModel(candidate)===nano[2].label+" · 해상도 1K";
   delete candidate.opts;delete candidate.origin_info;candidate.prompt_changed=false;delete candidate.prompt_used;draw();
   r.legacy=!nodes.detail.textContent.includes("해상도")&&!toggle();
-  candidate.prompt_changed=true;candidate.prompt_rewritten=true;candidate.prompt_used="hidden";mode(false);draw();
-  r.local=!nodes.detail.textContent.includes("프롬프트")&&!chips().length&&!toggle();return r;
+  candidate.prompt_changed=true;candidate.prompt_rewritten=true;candidate.prompt_used=true;mode(false);draw();
+  r.local=!nodes.detail.textContent.includes("프롬프트")&&!chips().length&&!toggle()&&calls.length===2;return r;
+});
+for(const failure of ["null","http","network","json"])await scenario("U3 원문 조회 실패 "+failure,async()=>{
+  const e=review(async()=>{if(failure==="network")throw Error("offline");return {ok:failure!=="http",json:async()=>{
+    if(failure==="json")throw Error("bad json");return {prompt_used:null};}};});
+  const b=e.toggle();if(!b)return {button:false};b.fire("click");await sleep(5);
+  return {message:e.text()?.textContent==="프롬프트를 불러오지 못했습니다",visible:e.text()?.hidden===false};
+});
+await scenario("U3 받는 중 접기·중복 요청·다른 후보 격리",async()=>{
+  let resolve;const e=review(()=>new Promise(r=>resolve=r)),b=e.toggle();if(!b)return {button:false};
+  b.fire("click");b.fire("click");b.fire("click");await sleep(5);const old=e.text(),r={oneRequest:e.calls.length===1};
+  b.fire("click");e.candidate.slot=1;e.draw();resolve({ok:true,json:async()=>({prompt_used:"첫 슬롯의 글"})});await sleep(5);
+  r.closed=old.hidden;r.isolated=e.text().hidden&&!e.text().textContent;r.noAutoRequest=e.calls.length===1;return r;
 });
 console.log(JSON.stringify(out));process.exit(0);
 '''
     hook = '.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _models2: { PS, openSettings, saveSection, prepareChanged, editState: () => ({ form, edits }) }, stateChanged, enter, leave, select, queue: boardQueue")'
     ui = ui.replace('fs.readFileSync(IN.pipelineJs, "utf8")', 'fs.readFileSync(IN.pipelineJs, "utf8")' + hook)
     layout = _LAYOUT_EDIT_HARNESS.split('// 배치 3-1(F17):', 1)[0] + r'''
-const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b),ratios=IN.ratios,tolerance=IN.tolerance;
-for(const [w,h,want] of IN.matches)await scenario(`FM2J ratioMatch ${w}x${h}`,async()=>G.ratioMatch(w,h,ratios,tolerance)===want);
+const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b),ratios=IN.ratios,tolerance=IN.tolerance,sizes=IN.ratio_sizes;
+const match=(w,h,labels=ratios)=>G.ratioMatch(w,h,labels,tolerance,sizes);
+const fit=(rect,bounds,labels=ratios)=>G.ratioFitRect(rect,bounds,labels,tolerance,sizes);
+for(const [w,h,want] of IN.matches)await scenario(`FM2J ratioMatch ${w}x${h}`,async()=>match(w,h)===want);
+await scenario("U1 예상 출력 크기의 비율·옛 서버",async()=>{
+  const expected=[[800,1000,"4:5"],[813,1000,"4:5"],[815,1000,null],[798,1000,"4:5"],[796,1000,null],
+    [1920,1080,"16:9"],[2122,900,"21:9"],[2100,900,null],[750,1000,"3:4"],[1000,1000,"1:1"]];
+  return {examples:expected.every(([w,h,label])=>match(w,h)===label),
+    wide:eq(fit([0,0,2100,900],[3000,2000]),{rect:[0,0,2122,900],ratio:"21:9"}),
+    noSizes:G.ratioMatch(800,1000,ratios,tolerance)===null&&G.ratioFitRect([0,0,815,1000],[2000,2000],ratios,tolerance)===null};
+});
 await scenario("FM2J ratioFitRect 예·가장자리·불가능·다음 비율",async()=>{
-  const a=G.ratioFitRect([100,100,915,1100],[2000,2000],ratios,tolerance),b=G.ratioFitRect([0,0,300,900],[1000,1000],ratios,tolerance);
-  const r={first:eq(a,{rect:[100,91,915,1110],ratio:"4:5"}),second:eq(b,{rect:[0,0,507,900],ratio:"9:16"})};
-  r.corner=eq(G.ratioFitRect([1185,1000,2000,2000],[2000,2000],["4:5"],tolerance),{rect:[1185,981,2000,2000],ratio:"4:5"});
-  r.impossible=G.ratioFitRect([0,0,815,1000],[815,1000],ratios,tolerance)===null;
-  r.next=eq(G.ratioFitRect([0,0,815,1000],[1000,1000],ratios,tolerance),{rect:[0,0,1000,1000],ratio:"1:1"});
-  const rect=[10,20,810,1020],before=rect.slice();r.matched=eq(G.ratioFitRect(rect,[2000,2000],ratios,tolerance),{rect:before,ratio:"4:5"})&&eq(rect,before);
-  r.offset=eq(G.ratioFitRect([10,20,310,920],[10,20,1010,1020],["9:16"],tolerance),{rect:[10,20,517,920],ratio:"9:16"});
-  r.small=eq(G.ratioFitRect([0,0,7,4],[14,6],["21:9"],tolerance),{rect:[0,0,14,6],ratio:"21:9"});
-  r.rounding=eq(G.ratioFitRect([0,0,100,50],[104,60],["16:9"],tolerance),{rect:[0,0,100,56],ratio:"16:9"});
-  r.invalid=G.ratioFitRect([-1,0,500,700],[1000,1000],ratios,tolerance)===null&&G.ratioMatch(1.2,1,ratios,tolerance)===null;
+  const a=fit([100,100,915,1100],[2000,2000]),b=fit([0,0,300,900],[1000,1000]);
+  const r={first:eq(a,{rect:[100,94,915,1106],ratio:"4:5"}),second:eq(b,{rect:[0,0,503,900],ratio:"9:16"})};
+  r.corner=eq(fit([1185,1000,2000,2000],[2000,2000],["4:5"]),{rect:[1185,988,2000,2000],ratio:"4:5"});
+  r.impossible=fit([0,0,815,1000],[815,1000])===null;
+  r.next=eq(fit([0,0,815,1000],[1000,1000]),{rect:[0,0,1000,1000],ratio:"1:1"});
+  const rect=[10,20,810,1020],before=rect.slice();r.matched=eq(fit(rect,[2000,2000]),{rect:before,ratio:"4:5"})&&eq(rect,before);
+  r.offset=eq(fit([10,20,310,920],[10,20,1010,1020],["9:16"]),{rect:[10,20,513,920],ratio:"9:16"});
+  r.small=eq(fit([0,0,7,4],[19,8],["21:9"]),{rect:[0,0,19,8],ratio:"21:9"});
+  r.rounding=eq(fit([0,0,100,50],[104,60],["16:9"]),{rect:[0,0,100,56],ratio:"16:9"});
+  r.invalid=fit([-1,0,500,700],[1000,1000])===null&&match(1.2,1)===null;
   return r;
 });
 await scenario("FM2J 확장 불변 조건",async()=>{
   let checked=0;
   for(const [w,h] of IN.matches){if(w<1||h<1)continue;
-    const rect=[31,47,31+w,47+h],before=rect.slice(),bounds=[w+2000,h+2000],fit=G.ratioFitRect(rect,bounds,ratios,tolerance);
+    const rect=[31,47,31+w,47+h],before=rect.slice(),bounds=[w+2000,h+2000],fit=G.ratioFitRect(rect,bounds,ratios,tolerance,sizes);
     if(!fit)continue;checked++;const [x0,y0,x1,y1]=fit.rect;
     if(!eq(rect,before)||!fit.rect.every(Number.isInteger)||x0>rect[0]||y0>rect[1]||x1<rect[2]||y1<rect[3]
-      ||x0<0||y0<0||x1>bounds[0]||y1>bounds[1]||G.ratioMatch(x1-x0,y1-y0,[fit.ratio],tolerance)!==fit.ratio)return false;
+      ||x0<0||y0<0||x1>bounds[0]||y1>bounds[1]||match(x1-x0,y1-y0,[fit.ratio])!==fit.ratio)return false;
   }return checked>200;
 });
 const nano=IN.models.find(m=>m.family==="nano-banana");
-async function open({rect=[100,100,915,1100],canvas=[2000,2000],model=nano,server=true,locked=false}={}){
+async function open({rect=[100,100,915,1100],canvas=[2000,2000],stateCanvas=canvas,model=nano,server=true,locked=false}={}){
   ctx.window.DPEnv={serverMode:server};let saved=model,resolve;
-  const c=crop("001_aaaaaa","001_모자",rect,{locked}),e=await editor([c],{canvas},{canvas,crops:[c]},{savedModel:()=>saved});
+  const c=crop("001_aaaaaa","001_모자",rect,{locked}),e=await editor([c],{canvas},{canvas:stateCanvas,crops:[c]},{savedModel:()=>saved});
   ctx.window.DPDialog={confirm:message=>{e.confirms.push(message);return new Promise(r=>resolve=r);}};
   e.answer=v=>resolve(v);e.saved=m=>{saved=m;e.ed.modelChanged();};await e.pick(c.name);e.ed.modelChanged();return e;
 }
 for(const options of [{server:false},{model:null},{model:IN.models.find(m=>!m.ratios.length)}])await scenario("FM2J 비율 UI 숨김 "+JSON.stringify(options),async()=>{
   const e=await open(options),r=!e.button(e.panel,"모델 비율로 넓히기")&&!e.list.textContent.includes("비율 안 맞음");e.ed.leave();return r;
+});
+await scenario("U1 ratio_sizes 없는 모델은 비율 UI 숨김",async()=>{
+  const model={...nano};delete model.ratio_sizes;const e=await open({model});
+  const r=!e.button(e.panel,"모델 비율로 넓히기")&&!e.list.textContent.includes("비율 안 맞음");e.ed.leave();return r;
+});
+await scenario("U1 출력 비율 표 변경은 옛 제안을 버림",async()=>{
+  const e=await open();e.button(e.panel,"모델 비율로 넓히기").fire("click");
+  e.saved({...nano,ratio_sizes:{...nano.ratio_sizes,"4:5":[900,1200]}});
+  const r=!e.button(e.panel,"제안 적용")&&e.srv.log.length===0;e.ed.leave();return r;
 });
 await scenario("FM2J 크롭 제안·취소·확인·저장·실행 취소",async()=>{
   const e=await open(),b=e.button(e.panel,"모델 비율로 넓히기");
@@ -61677,7 +61767,7 @@ await scenario("FM2J 크롭 제안·취소·확인·저장·실행 취소",async
   e.button(e.panel,"제안 적용").fire("click");await sleep(5);r.confirm=e.confirms[0].includes("⑤ 생성에서 승인할 때만 유료")&&e.srv.log.length===0;
   e.answer(false);await sleep(5);r.cancel=e.srv.log.length===0&&!!e.button(e.panel,"제안 적용");
   e.button(e.panel,"제안 적용").fire("click");await sleep(5);e.answer(true);await sleep(30);
-  r.saved=e.srv.log.length===1&&e.srv.log[0].path==="layout/crop"&&eq(e.srv.log[0].rect,[100,91,915,1110])&&!e.queued.length;
+  r.saved=e.srv.log.length===1&&e.srv.log[0].path==="layout/crop"&&eq(e.srv.log[0].rect,[100,94,915,1106])&&!e.queued.length;
   r.fitted=!e.list.textContent.includes("비율 안 맞음")&&e.button(e.panel,"모델 비율로 넓히기").disabled;
   e.key("KeyZ",{key:"z",ctrlKey:true});await sleep(30);r.undo=eq(e.srv.lay.crops[0].rect,[100,100,915,1100]);e.ed.leave();return r;
 });
@@ -61686,6 +61776,36 @@ for(const kind of ["locked","matched","impossible"])await scenario("FM2J 크롭 
   const b=e.button(e.panel,"모델 비율로 넓히기"),r={disabled:b.disabled===(kind!=="impossible")};b.fire("click");
   r.noWrite=e.srv.log.length===0&&!e.button(e.panel,"제안 적용");
   if(kind==="impossible")r.notice=e.toasts.at(-1)==="warn:캔버스 안에서 이 모델의 비율로 넓힐 수 없습니다";
+  e.ed.leave();return r;
+});
+for(const [name,rect,canvas,stateCanvas,want,label] of [
+  ["오른쪽 아래 가장자리",[1185,1000,2000,2000],[2000,2000],[3000,3000],[1185,988,2000,2000],"4:5"],
+  ["왼쪽 위 가장자리",[0,0,300,900],[1000,1000],[100,100],[0,0,503,900],"9:16"],
+  ["다음 가까운 비율",[0,0,815,1000],[1000,1000],[3000,3000],[0,0,1000,1000],"1:1"],
+])await scenario("U4 기존 편집 경계로 제안·저장 "+name,async()=>{
+  const e=await open({rect,canvas,stateCanvas});e.button(e.panel,"모델 비율로 넓히기").fire("click");
+  const r={geometry:eq(fit(rect,canvas),{rect:want,ratio:label}),
+    preview:e.panel.textContent.includes(`[${want.join(", ")}]`)&&e.panel.textContent.includes("모델 비율로 넓히기 · "+label)&&e.srv.log.length===0};
+  const apply=e.button(e.panel,"제안 적용");if(!apply){e.ed.leave();return {...r,apply:false};}
+  apply.fire("click");await sleep(5);e.answer(true);await sleep(30);
+  r.saved=e.srv.log.length===1&&eq(e.srv.log[0].rect,want)&&!G.rectProblem(e.srv.log[0].rect,canvas);
+  e.ed.leave();return r;
+});
+for(const [name,rect,canvas] of [
+  ["어느 비율도 못 들어감",[0,0,815,1000],[815,1000]],
+  ["왼쪽 밖",[-1,0,814,1000],[1000,1000]],
+  ["위쪽 밖",[0,-1,815,999],[1000,1000]],
+  ["오른쪽 밖",[186,0,1001,1000],[1000,1000]],
+  ["아래쪽 밖",[0,1,815,1001],[1000,1000]],
+  ["비율이 맞아도 왼쪽 밖",[-1,0,799,1000],[1000,1000]],
+  ["비율이 맞아도 위쪽 밖",[0,-1,800,999],[1000,1000]],
+  ["비율이 맞아도 오른쪽 밖",[201,0,1001,1000],[1000,1000]],
+  ["비율이 맞아도 아래쪽 밖",[0,1,800,1001],[1000,1000]],
+])await scenario("U4 들어가지 않는 크롭은 제안 없이 안내 "+name,async()=>{
+  const before=rect.slice(),e=await open({rect,canvas,stateCanvas:[3000,3000]});
+  const b=e.button(e.panel,"모델 비율로 넓히기"),r={nullFit:fit(rect,canvas)===null,enabled:!b.disabled};b.fire("click");
+  r.notice=e.toasts.at(-1)==="warn:캔버스 안에서 이 모델의 비율로 넓힐 수 없습니다";
+  r.unchanged=e.srv.log.length===0&&!e.button(e.panel,"제안 적용")&&eq(e.srv.lay.crops[0].rect,before);
   e.ed.leave();return r;
 });
 await scenario("FM2J 확인 중 저장 모델 변경은 옛 제안을 쓰지 않음",async()=>{

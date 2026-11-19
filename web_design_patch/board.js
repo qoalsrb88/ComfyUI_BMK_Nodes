@@ -77,6 +77,7 @@
   let maskEd = null; // DPMaskEdit — 옛 서버는 mask_edit.js 를 주지 않아 null
   let maskOn = false;
   let seen = null; // Set — 본 후보 key(syncSeen 이 첫 state 에서 채움)
+  const promptCache = new Map();
 
   const $ = (id) => document.getElementById(id);
 
@@ -1421,19 +1422,35 @@
       + (ranText(c) ? ` · ${ranText(c)} 완료` : ""));
     const model = candidateModel(c);
     if (model) row(d, "모델", model).title = model;
-    if (SM() && (c.prompt_rewritten === true || typeof c.prompt_used === "string" && c.prompt_used.length)) {
+    if (SM() && (c.prompt_rewritten === true || c.prompt_used === true)) {
       const r = row(d, "프롬프트", c.prompt_rewritten === true ? "공급자가 프롬프트를 고쳐 씀" : "프롬프트가 서버에서 바뀜");
       r.classList.add("dp-prompt-detail");
-      if (typeof c.prompt_used === "string" && c.prompt_used.length) {
-        const text = el("pre", "pp-prompt dp-server-prompt", c.prompt_used);
+      if (c.prompt_used === true) {
+        const text = el("pre", "pp-prompt dp-server-prompt");
         text.hidden = true;
         text.tabIndex = 0;
         const b = el("button", "inline", "서버가 쓴 프롬프트 보기");
         b.type = "button";
         b.setAttribute("aria-expanded", "false");
-        b.addEventListener("click", () => {
+        const call = c.call_id, slot = c.slot, key = JSON.stringify([ROOT, call, slot]);
+        b.addEventListener("click", async () => {
           text.hidden = !text.hidden;
           b.setAttribute("aria-expanded", String(!text.hidden));
+          if (text.hidden) return;
+          if (!promptCache.has(key)) {
+            promptCache.set(key, (async () => {
+              try {
+                if (typeof call !== "string" || !call || !Number.isInteger(slot) || slot < 0) return null;
+                const res = await fetch(apiUrl("prompt?" + new URLSearchParams({ root: ROOT, call, slot })), { cache: "no-store" });
+                if (!res.ok) return null;
+                const data = await res.json();
+                return typeof data.prompt_used === "string" ? data.prompt_used : null;
+              } catch (_) { return null; }
+            })());
+          }
+          text.textContent = "불러오는 중…";
+          const prompt = await promptCache.get(key);
+          text.textContent = prompt === null ? "프롬프트를 불러오지 못했습니다" : prompt;
         });
         r.append(b);
         d.append(text);

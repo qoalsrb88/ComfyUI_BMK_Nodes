@@ -30,7 +30,7 @@ window.DPPipeline = (() => {
 
   function modelText(p) {
     const m = modelInfo(p.model);
-    const opts = p.opts || p;
+    const opts = p.opts || modelSettings(p);
     const thinking = { minimal: "간단히", medium: "보통", high: "깊게" };
     return `${modelLabel(p.model)}` + (m && !m.qualities.length ? "" : ` · 품질 ${p.quality}`)
       + (/^gpt-image-2\.6-/.test(p.model) ? ` · 복잡도 ${p.complexity || "high"}` : "")
@@ -46,7 +46,7 @@ window.DPPipeline = (() => {
     if (Number(next.n) > m.max_n) next.n = m.max_n;
     for (const key of ["image_size", "thinking_level"]) {
       const choices = m.opts?.[key];
-      if (choices?.length && !choices.includes(next[key])) next[key] = m.opt_defaults?.[key];
+      if (key in next && choices?.length && !choices.includes(next[key])) next[key] = m.opt_defaults?.[key];
     }
     return next;
   }
@@ -2441,10 +2441,21 @@ window.DPPipeline = (() => {
     }
 
     function prepareChanged(base, values) {
+      const ratioModel = (name) => {
+        const m = modelInfo(name);
+        return m?.ratios?.length && m.ratios.every((label) => m.ratio_sizes?.[label]?.length === 2);
+      };
       return ["model", "quality", "size_rule", "variants", "ref_style", "complexity"].some((k) =>
-        (k !== "complexity" || /^gpt-image-2\.6-/.test(values.model)) && !same(base[k], values[k]))
+        !same(base[k], values[k]) && (k !== "complexity" || /^gpt-image-2\.6-/.test(values.model))
+        && (k !== "size_rule" || !(ratioModel(base.model) && ratioModel(values.model))))
         || ["image_size", "thinking_level"].some((k) => !same(base[k], values[k]) && modelInfo(values.model)?.opts?.[k]?.length
           && !same(modelSettings(base)[k], modelSettings(values)[k]));
+    }
+
+    function hasPrepareEdits() {
+      const base = (PS.P?.settings || PS.P?.derived?.settings)?.prepare || {}, values = { ...base, ...form.prepare };
+      return Object.keys(form.prepare || {}).some((k) => !["image_size", "thinking_level"].includes(k)
+        || k in base && modelInfo(values.model)?.opts?.[k]?.length && !same(modelSettings(base)[k], modelSettings(values)[k]));
     }
 
     function prepareText(preview) {
@@ -2474,13 +2485,15 @@ window.DPPipeline = (() => {
     async function switchModel() {
       const p = PS.P;
       if (!p || !p.saved || p.error || confirmOf(p).some((c) => c.startsWith("prepare.")) || PS.busy) return;
-      if (Object.keys(form.prepare || {}).length) {
+      // GPT 2.5 → 2.6 전환에는 해상도·추론 옵션을 쓰지 않는다.
+      const edited = () => Object.keys(form.prepare || {}).some((k) => !["image_size", "thinking_level"].includes(k));
+      if (edited()) {
         opts.toast("편집 중인 준비 설정을 먼저 저장하세요", "err");
         return;
       }
       const values = modelSettings(Object.assign({}, p.settings.prepare, { model: p.settings.prepare.model.replace("2.5", "2.6") }));
       try {
-        if (!await askFree(await preparePreview(values, p), () => !Object.keys(form.prepare || {}).length && !!PS.P
+        if (!await askFree(await preparePreview(values, p), () => !edited() && !!PS.P
           && same(values, modelSettings(Object.assign({}, PS.P.settings.prepare, { model: PS.P.settings.prepare.model.replace("2.5", "2.6") }))))) return;
         await PS.save("prepare", values, p.rev);
         opts.toast("2.6 전환 설정 저장 — 다음 [반영] 뒤 생성 승인(승인 전에는 과금 없음)");
@@ -2498,13 +2511,18 @@ window.DPPipeline = (() => {
       const raw0 = Object.assign({}, base, sent);
       const raw = sec === "prepare" ? modelSettings(raw0) : raw0;
       const values = {};
-      for (const [k, spec] of Object.entries(w)) values[k] = hiddenPath(sec, k) ? base[k] : typed(spec, raw[k]);
+      for (const [k, spec] of Object.entries(w)) {
+        const option = sec === "prepare" && ["image_size", "thinking_level"].includes(k);
+        if (option && !(k in base)) continue;
+        // 옵션의 표시값은 모델별 기본값일 수 있다. 저장은 원래 값 + 직접 고른 값만 보낸다.
+        values[k] = hiddenPath(sec, k) ? base[k] : typed(spec, option ? raw0[k] : raw[k]);
+      }
       // 편집을 시작한 뒤·화면을 그린 뒤 다른 창이 이 절을 저장했으면 말없이 덮지 않고 묻는다(S1 편집기 since 와 같은 뜻): 손댄 키 = 다른 창 값을
       // 이 창 값으로 덮음, 손대지 않은 키 = 화면에 없던 다른 창 값이 이 저장(확인)에 그대로 실림
       const e0 = edits[sec] || {};
       const seen = drawn[sec] || base;
-      const over = Object.keys(sent).filter((k) => !hiddenPath(sec, k) && k in e0 && !same(base[k], e0[k]) && !same(base[k], values[k]));
-      const unseen = Object.keys(w).filter((k) => !hiddenPath(sec, k) && !(k in sent) && !same(base[k], seen[k]));
+      const over = Object.keys(sent).filter((k) => k in values && !hiddenPath(sec, k) && k in e0 && !same(base[k], e0[k]) && !same(base[k], values[k]));
+      const unseen = Object.keys(values).filter((k) => !hiddenPath(sec, k) && !(k in sent) && !same(base[k], seen[k]));
       if ((over.length || unseen.length) && !await askFree([`${SECTIONS[sec]}: 편집을 시작한 뒤 다른 창이 이 절을 저장했습니다(지금 rev ${PS.P.rev}).`,
         ...over.map((k) => ` · ${sec}.${k}: 다른 창이 쓴 ${shown(base[k])} 을 이 창 값 ${shown(values[k])} 로 덮어씀`),
         ...unseen.map((k) => ` · ${sec}.${k}: ${shown(seen[k])} → ${shown(base[k])} (화면에 없던 다른 창 값 — 그대로 저장)`),
@@ -3490,15 +3508,15 @@ window.DPPipeline = (() => {
         const need = confirmOf(P0).filter((c) => c.startsWith(sec + "."));
         if (sec === "prepare" && /^gpt-image-2\.5-/.test(base.model)) {
           const sw = button("2.6 으로 전환", "같은 계열의 2.6 으로 전환 — 예상 호출·비용을 확인한 뒤 저장", once(switchModel));
-          sw.disabled = PS.busy || !P0.saved || !!P0.error || !!need.length || !!Object.keys(form.prepare || {}).length;
+          sw.disabled = PS.busy || !P0.saved || !!P0.error || !!need.length || hasPrepareEdits();
           if (!P0.saved || P0.error || need.length) sw.title = "먼저 ① 준비 설정 확인";
-          else if (Object.keys(form.prepare || {}).length) sw.title = "편집 중인 준비 설정을 먼저 저장하세요";
+          else if (hasPrepareEdits()) sw.title = "편집 중인 준비 설정을 먼저 저장하세요";
           btns(box, el("span", "", `모델 ${modelLabel(base.model)} — `), sw);
           if (!P0.saved || P0.error || need.length) line(box, "먼저 ① 준비 설정 확인", "dim");
         }
         const model = sec === "prepare" && modelInfo((form.prepare || {}).model || base.model);
         for (const [k, spec] of Object.entries(ws)) {
-          if (sec === "prepare" && ["image_size", "thinking_level"].includes(k) && !model?.opts?.[k]?.length) continue;
+          if (sec === "prepare" && ["image_size", "thinking_level"].includes(k) && (!(k in base) || !model?.opts?.[k]?.length)) continue;
           if (!hiddenPath(sec, k)) box.append(field(sec, k, spec, base[k], need.includes(`${sec}.${k}`)));
         }
         const sb = button(need.length ? "확인·저장" : "저장", need.length ? `확인 필요: ${need.join(", ")} — 이 값으로 저장하면 확인됨` : "이 절을 저장",
@@ -3904,7 +3922,7 @@ window.DPPipeline = (() => {
       if (asking || paying || PS.sending) return { ok: false, why: "승인·반영 응답을 기다리는 중 — 끝난 뒤 프로젝트 이동" };
       const pending = [];
       if (text !== null) pending.push("채택 [수정] 입력");
-      if (Object.keys(form).length) pending.push("저장하지 않은 실행 설정");
+      if (Object.keys(form).some((sec) => sec === "prepare" ? hasPrepareEdits() : Object.keys(form[sec]).length)) pending.push("저장하지 않은 실행 설정");
       if (opts.maskPending && opts.maskPending()) pending.push("적용하지 않은 마스크 획");
       if (pending.length) return { ok: true, confirm: `${pending.join(" · ")}이 있습니다. 프로젝트를 이동하면 저장하지 않은 내용이 사라집니다. 이동할까요?` };
       return { ok: true };
