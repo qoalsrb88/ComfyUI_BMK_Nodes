@@ -1993,6 +1993,10 @@ class BMKDesignPatchPrepare:
                 eff, gen_error = models.effective_gen(prepare, gen_entries.get(crop["id"])), None
             except models.GenError as exc:
                 eff, gen_error = None, exc
+            if gen_error is None and crop["id"] in gen_entries and not compat.server_mode():
+                # 로컬판(ComfyUI 탭)의 승인 창은 프로젝트 값 한 벌(모델·장 수)만 보인다 — 패치별 설정이 있는 패치를 만들면 보인 것과 다른
+                # 모델·장 수로 나간다. 그 패치는 만들지 않는다(서버에서 만든 프로젝트 폴더를 로컬로 가져온 경우 — 설정을 고르는 화면은 서버 모드에만 있다)
+                gen_error = "패치별 생성 설정이 있는 패치는 서버 모드에서만 생성합니다"
             ov = store.load_spec_override(root, crop["id"])
             spec = dprompt.spec_from_manifest(crop, None, refs_dir, glossary, ov)
             v2 = dprompt.v2_of(ov)

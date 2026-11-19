@@ -994,7 +994,15 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
         mm = copy.deepcopy(m)
         old_jobs = {j["cell_key"]: j for j in m.get("jobs") or []}
         size_rule_changed = target["size_rule"] != rec.get("size_rule", before["size_rule"])
-        kept_overrides = set()
+        # 모델을 따로 정한 패치의 수 — 작업이 없는 패치(프롬프트 미준비 등)도 센다(v1 의 「패치 k개는 따로 정한 모델을 씁니다」와 같은 기준:
+        # 지금 매니페스트·레이아웃에 있는 크롭의 읽을 수 있는 모델 묶음)
+        try:
+            lay = store.load_layout(root)
+        except ValueError:
+            lay = None
+        live = {c.get("id") for c in m.get("crops") or []} | {c.get("id") for c in (lay or {}).get("crops") or []}
+        kept_overrides = {cid for cid, entry in entries.items()
+                          if cid in live and "model" in entry and models.gen_entry_problem(entry) is None}
         reset = set()
         preview_jobs = []
         for job in mm.get("jobs") or []:
@@ -1003,8 +1011,6 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
                 eff = models.effective_gen(target, entries.get(crop_id))
             except models.GenError:
                 continue
-            if not eff["inherit"]["model"]:
-                kept_overrides.add(crop_id)
             if not all(k in job for k in ("prompt", "template_version", "variant", "size")):
                 return {"prepare": target, "error": "작업에 생성 조건 기록이 부족합니다 — 먼저 Prepare 를 반영하세요", "uncertain": True}
             forge_only = models.is_forge_only(eff["model"])

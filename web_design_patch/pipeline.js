@@ -2424,7 +2424,8 @@ window.DPPipeline = (() => {
       };
       return ["model", "quality", "size_rule", "variants", "ref_style", "complexity"].some((k) =>
         !same(base[k], values[k]) && (k !== "complexity" || /^gpt-image-2\.6-/.test(values.model))
-        && (k !== "size_rule" || !ratioModel(values.model)))
+        // 프로젝트 모델이 비율 목록 모델이어도 모델을 따로 정한 패치가 있으면 크기 규칙이 그 패치의 생성 조건을 바꾼다(서버의 갈라짐 판정과 같게)
+        && (k !== "size_rule" || !ratioModel(values.model) || PS.P?.crop_overrides?.model > 0))
         || ["image_size", "thinking_level"].some((k) => !same(base[k], values[k]) && modelInfo(values.model)?.opts?.[k]?.length
           && !same(modelSettings(base)[k], modelSettings(values)[k]));
     }

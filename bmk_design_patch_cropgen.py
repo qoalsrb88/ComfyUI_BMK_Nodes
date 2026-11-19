@@ -154,7 +154,15 @@ def _job_matches(job, effective, ratio):
         opts = {k: v for k, v in opts.items() if k != models.RATIO_OPT} or None
     else:
         job_ratio = None
-    return opts == effective.get("opts") and (ratio is None or job_ratio == ratio["matched"])
+    if opts != effective.get("opts"):
+        return False
+    if ratio is None:
+        return True
+    if job_ratio != ratio["matched"]:
+        return False
+    # 맞는 비율이 없는 사각형끼리도 가장 가까운 비율이 다르면 요청 크기가 달라진다(작업의 size_info.nearest 와 대조)
+    info = job.get("size_info")
+    return ratio["matched"] is not None or not isinstance(info, dict) or info.get("nearest") == ratio["nearest"]
 
 
 def _crop_row(rect, cid, entry, prepare, jobs, inputs_applied, rows):

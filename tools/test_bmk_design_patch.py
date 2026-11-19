@@ -62538,6 +62538,29 @@ def ux_v2b_invariant_unit():
         spec_path.write_bytes(b"{")
         expect_raises(lambda: pre.run(h, **args), "V2BI11 스펙 JSON 이 깨진 크롭은 항목을 읽지 못해도 반영 전체 실패(지금 그대로)")
 
+    # ── 재리뷰: 로컬판(ComfyUI 탭)은 패치별 설정이 있는 패치의 작업을 만들지 않는다 — 로컬의 승인 창은 프로젝트 값 한 벌만 보이므로
+    #    다른 모델·장 수의 작업이 섞이면 보인 것과 나가는 것이 달라진다. 따르는 패치의 작업은 파일이 없을 때와 바이트가 같다.
+    with _v2b_env(dp, out, server=False):
+        lname = "gpt-image-2.5-sunburst"
+        largs = _v2b_args(pl, lname)
+        h, root, ids = _v2b_project(dp, out, "local-entries", lname)
+        h, _, report0 = pre.run(h, **largs)
+        m0 = store.load_manifest(root)
+        put(root, {ids["001_square"]: models.gen_bundle("gpt-image-2.5-flare"), ids["002_tall"]: {"n": 5}})
+        h, _, report = pre.run(h, **largs)
+        m = store.load_manifest(root)
+        left = {j["crop_id"] for j in m["jobs"]}
+        check(left == {ids["004_panel"]} and all(j["model"] == lname and j["n"] == largs["n"] for j in m["jobs"]),
+              f"V2BI12 로컬판 — 패치별 설정이 있는 패치는 작업 없음(모델 묶음·장 수 모두): {sorted(left)}")
+        check(sum(1 for line in report.splitlines() if "작업 없음" in line and "서버 모드에서만" in line
+                  and (ids["001_square"] in line or ids["002_tall"] in line)) == 2 and "패치별 모델" not in report,
+              "V2BI12 로컬판 — 반영 보고에 사유(서버 모드에서만) · 「패치별 모델」 줄 없음")
+        check(dump([j for j in m["jobs"] if j["crop_id"] == ids["004_panel"]]) == dump([j for j in m0["jobs"] if j["crop_id"] == ids["004_panel"]])
+              and dump(m["prepare_settings"]) == dump(m0["prepare_settings"]), "V2BI12 로컬판 — 따르는 패치의 작업·기록은 바이트 그대로")
+        put(root, {})
+        h, _, _ = pre.run(h, **largs)
+        check(dump(store.load_manifest(root)["jobs"]) == dump(m0["jobs"]), "V2BI12 로컬판 — 설정을 풀면 작업 목록이 처음과 같음")
+
 
 def ux_v2b_flow_unit():
     """UX v2-B 갈래를 이은 흐름(감독관 — 통합 뒤): 라우트로 쓴 패치별 설정 → 「반영 필요」 → Prepare → 목록의 applied · 실행 설정 유도는
@@ -62636,6 +62659,13 @@ def ux_v2b_flow_unit():
               f"V2BF6 전환 미리 보기 — 덮어쓴 둘은 그대로, 따르는 하나만 승인 필요: {dict((k, sw.get(k)) for k in ('exact', 'kept_overrides', 'need', 'error'))}")
         same = pl.switch_preview(root, m2, settings, prepare=args)
         check(same.get("exact") is True and same.get("need") == 0 and same.get("kept_overrides") == 2, "V2BF6 같은 설정의 미리 보기 0건")
+        # 재리뷰: kept_overrides 는 작업이 없는 패치(프롬프트 미준비 등)의 모델 묶음도 센다 — v1 의 「패치 k개는 따로 정한 모델을 씁니다」
+        # (GET /pipeline 의 crop_overrides.model)와 같은 수여야 한다
+        view(key, {"root": key, "seen": 2, "changes": [{"crop_ids": [c], "patch": {"model_id": "seedream-5.5"}}]})
+        kept3 = pl.switch_preview(root, m2, settings, prepare=target)
+        check(kept3.get("kept_overrides") == 3 == bd._crop_override_counts(root)["model"],
+              f"V2BF6 kept_overrides 는 작업 없는 패치의 모델 묶음도 셈: {kept3.get('kept_overrides')} vs {bd._crop_override_counts(root)}")
+        view(key, {"root": key, "seen": 3, "changes": [{"crop_ids": [c], "patch": {"inherit_model": True}}]})
         # 리뷰(통합): 미리 보기의 건수를 정답으로 고정하지 않고 실제로 그 설정으로 반영한 계획과 대조한다
         h, _, _ = pre.run(h, **target)
         real = rn.split_approval(rn.plan_calls(store.load_manifest(root), root), "", backend=rn.backend_name(root))
@@ -62670,6 +62700,22 @@ def ux_v2b_flow_unit():
               f"V2BF8 비율이 달라진 영역은 반영 전(applied false): {moved['ratio']} {moved['applied']}")
         Path(root, store.LAYOUT_NAME).unlink()
         check(by_id(view(key))[b]["applied"] is True, "V2BF8 레이아웃이 매니페스트와 같으면 다시 applied")
+        # 재리뷰: 맞는 비율이 없는 사각형(3:1)으로 반영된 나노바나나 패치 — 레이아웃에서 1:3 으로 바꾸면 둘 다 「맞는 비율 없음」이지만
+        # 가장 가까운 비율(요청 크기)이 달라지므로 반영 전이다
+        wide_h, wide_root, wide_ids = _v2b_project(dp, scope["input"], "ratio-none", project)
+        Path(wide_root, "specs", wide_ids["003_wide"] + ".json").unlink()  # 3:1 영역을 템플릿 패치로(작업이 생기게)
+        pl.update(wide_root, 0, "prepare", args)
+        store.update_crop_gen(wide_root, lambda crops: crops.update({wide_ids["003_wide"]: models.gen_bundle("nano-banana-2.1")}), expect_rev=0)
+        wide_h, _, _ = pre.run(wide_h, **args)
+        wkey, w = store.root_key(wide_root), wide_ids["003_wide"]
+        row0 = by_id(view(wkey))[w]
+        check(row0["ratio"]["ok"] is False and row0["applied"] is True, f"V2BF8 맞는 비율이 없는 채 반영된 패치 = applied(같은 사각형): {row0['ratio']}")
+        layout = store.layout_from_manifest(store.load_manifest(wide_root))
+        next(cr for cr in layout["crops"] if cr["id"] == w)["rect"] = [448, 0, 548, 300]  # 300×100 → 100×300
+        store.write_json_atomic(str(Path(wide_root, store.LAYOUT_NAME)), layout)
+        row1 = by_id(view(wkey))[w]
+        check(row1["ratio"]["ok"] is False and row1["ratio"]["nearest"] != row0["ratio"]["nearest"] and row1["applied"] is False,
+              f"V2BF8 가장 가까운 비율이 달라진 영역은 반영 전: {row0['ratio']} → {row1['ratio']} applied {row1['applied']}")
 
         # ── 리뷰(통합) 3: 프로젝트 모델이 비율 목록 모델이어도 크기 규칙을 쓰는 패치(모델을 따로 정한 GPT)가 있으면 크기 규칙 변경은 갈라짐이다
         nano = "nano-banana-2.1"
@@ -62740,14 +62786,12 @@ def ux_v2b_gen_unit():
         bundle = dp.models.gen_bundle("nano-banana-2.1", opts={"image_size": "1K", "thinking_level": "high"})
         store.update_crop_gen(root, lambda crops: crops.update({own: bundle | {"n": 3}, counted: {"n": 5},
                                                                 "absent": bundle}), expect_rev=0)
-        with patch.dict(os.environ):
-            os.environ.pop("BMK_DP_SERVER_MODE", None)
-            _, _, report = pre.run(h, **args)
+        _, _, report = pre.run(h, **args)
         m = store.load_manifest(root)
         jobs = {j["crop_id"]: j for j in m["jobs"]}
         check(jobs[own]["model"] == bundle["model"] and jobs[own]["n"] == 3 and jobs[counted]["n"] == 5
               and jobs[inherited]["n"] == 2 and "예상 후보 20장" in report.splitlines()[0]
-              and "패치별 모델 1개 크롭" in report.splitlines(), "V2BG2 로컬 Prepare도 패치 설정을 읽고 혼합 장 수 × 호출 수를 합산")
+              and "패치별 모델 1개 크롭" in report.splitlines(), "V2BG2 Prepare 는 패치 설정을 읽고 혼합 장 수 × 호출 수를 합산")
         for job in m["jobs"]:
             for rep in range(job["reps"]):
                 rn._write_json(rn._lpath(root, job["cell_key"], rep, "done"), {"slots": []})
