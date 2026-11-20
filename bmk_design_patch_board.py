@@ -7081,6 +7081,16 @@ def static_type(name) -> str | None:
     return ctype
 
 
+def default_ui(request, fallback: str = "v1") -> str:
+    """ui 쿼리가 없을 때의 화면("v1"·"v2") — 요청이 속한 앱의 설정(DEFAULT_UI). 그 키가 없는 앱(로컬판)이나 앱을 알 수 없는
+    요청(라우터를 거치지 않고 만든 요청)은 fallback."""
+    try:
+        value = request.app.get(DEFAULT_UI, fallback)
+    except Exception:  # 앱이 붙지 않은 요청은 aiohttp 판에 따라 AssertionError·RuntimeError·AttributeError 를 낸다
+        return fallback
+    return value if value in ("v1", "v2") else fallback
+
+
 def v2_available() -> bool:
     """GET /env 의 caps.ui_v2 와 ?ui=v2 분기가 같이 보는 값: 서버 모드이고 v2.html 이 실제로 있다."""
     return server_mode() and os.path.isfile(os.path.join(WEB_DIR, V2_ENTRY))
@@ -7092,7 +7102,7 @@ async def board_static(request: web.Request) -> web.StreamResponse:
     if not name:  # 화면 주소: ui=v1·ui=v2 는 그 화면, 없거나 다른 값이면 서버 설정(DEFAULT_UI — 로컬판·기본은 v1). v2 는 화면 파일이 있을 때만
         ui = request.query.get("ui")
         if ui not in ("v1", "v2"):
-            ui = request.app.get(DEFAULT_UI, "v1")
+            ui = default_ui(request)
         name = V2_ENTRY if ui == "v2" and await asyncio.to_thread(v2_available) else "board.html"
     ctype = static_type(name)
     if ctype is None:

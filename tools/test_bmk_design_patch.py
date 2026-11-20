@@ -49981,8 +49981,8 @@ def forge_f2_session_unit():
         async with serving(http, forge=False) as (app, call):
             response, value = await call(bd.API + "/env")
             legacy = {"server_mode": True, "session": False, "account": None, "session_url": "/api/session", "prefs_url": "/api/preferences",
-                      "caps": {name: name in srv.SERVER_CAPS for name in bd.LOCAL_CAPS}, "backend": "mock"}
-            legacy = _env_ui_v2(legacy, bd)  # 키 순서는 그대로 — 아래의 바이트 비교도 같은 순서로 본다
+                      "caps": {**{name: name in srv.SERVER_CAPS for name in bd.LOCAL_CAPS}, "ui_default": "v1"}, "backend": "mock"}
+            legacy = _env_ui_v2(legacy, bd)  # 키 순서는 그대로 — 아래의 바이트 비교도 같은 순서로 본다(ui_default 는 불리언 표의 그 자리에 글자값)
             check(value == legacy and responses[-1].startswith(json.dumps(legacy)), "F2S Forge 없는 env 기존 바이트")
             response, _ = await call("/api/session/token", "POST", {})
             check(response.status == 404, "F2S Forge 없는 갱신 라우트 404")
@@ -60418,6 +60418,8 @@ def ux_v2a_entry_unit():
                     ("?ui=v2x", default, 1), ("?ui=", default, 1), ("?ui=v2", default, 1),
                     ("?ui=v1", "v1", 0), ("?ui=v1&root=abc", "v1", 0), ("board.html", "v1", 0),
                     ("board.html?ui=v2", "v1", 0), ("v2.html?ui=v1", "v2" if has_v2 else None, 0),
+                    # 같은 쿼리가 두 번 오면 첫 값(화면의 URLSearchParams.get 과 같은 판정) · 퍼센트 인코딩은 풀어서 본다
+                    ("?ui=v1&ui=v2", "v1", 0), ("?ui=v2&ui=v1", default, 1), ("?ui=%76%32", default, 1), ("?ui=%76%31", "v1", 0),
                 ):
                     url = bd.API + "/board/" + suffix
                     with patch.object(bd, "v2_available", wraps=bd.v2_available) as probe:
@@ -60431,6 +60433,9 @@ def ux_v2a_entry_unit():
                           and response.headers.get("Cache-Control") == "no-store"
                           and response.headers.get("X-Content-Type-Options") == "nosniff",
                           f"V2E {web_dir.name} {url} → {entry} 본문·헤더")
+                response = await client.head(bd.API + "/board/")
+                check(response.status == 200 and response.headers["Content-Type"].startswith("text/html"),
+                      f"V2E 설정 v2·{web_dir.name} HEAD 도 같은 처리기")
                 for path, query in (("/", "parent_origin=x"), (bd.API + "/board", "root=abc")):
                     response = await client.get(path + "?" + query, allow_redirects=False)
                     check(response.status == 302 and response.headers["Location"] == bd.API + "/board/?" + query,
