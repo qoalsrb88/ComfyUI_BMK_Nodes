@@ -1888,6 +1888,8 @@ def export_state_sig(m: dict) -> str:
         payload["cand_adjust"] = adjustments
     if stacks := picked_stacks(m):
         payload["mask_stack"] = stacks
+    if posts := picked_posts(m):
+        payload["cand_post"] = posts
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 

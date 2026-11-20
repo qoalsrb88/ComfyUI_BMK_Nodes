@@ -1615,11 +1615,18 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
     if adjustments:
         extra.append({"cand_adjust": adjustments})
     # 교체 가정에서는 그 후보의 탈락도 풀린다(_star_plan 과 같은 집합).
-    stack_manifest = m
+    picked_manifest = m
+    keys = {c["key"] for c in picks}
     if swap and swap[2] in (m.get("rejects") or {}):
-        stack_manifest = dict(m, rejects={k: v for k, v in m["rejects"].items() if k != swap[2]})
-    if stacks := store.picked_stacks(stack_manifest, {c["key"] for c in picks}):
+        picked_manifest = dict(m, rejects={k: v for k, v in m["rejects"].items() if k != swap[2]})
+    if stacks := store.picked_stacks(picked_manifest, keys):
         extra.append({"mask_stack": stacks})
+    if posts := store.picked_posts(picked_manifest, keys):
+        for c in picks:
+            key = c["key"]
+            if key in posts and store.cand_effective(picked_manifest, dict(c, picked=True), root).get("lost"):
+                posts[key] = [posts[key], "unusable"]
+        extra.append({"cand_post": posts})
     tie_order = [[cid, [t["tid"] for t in crop["targets"] if t["tid"] in first[cid]]]
                  for cid, crop in crops.items() if cid in first]
     if tie_order != [[cid, tids] for cid, tids in first.items()]:
@@ -2722,6 +2729,9 @@ def mask_stack(root: str, data: dict) -> dict:
 def _server_mask_view(root, key, enabled):
     m = store.load_manifest(root)
     view = mask_view(root, key, m)  # 같은 판으로 — 따로 읽으면 그 사이의 쓰기 때문에 두 값이 다른 판을 볼 수 있다
+    post = store.cand_post_record(m, key)
+    view["post"] = (dict(on=post["on"], tool=post["tool"], model=post["model"], size=post["size"],
+                         label=store.post_label(post), at=post["at"]) if post else None)
     view["stack_fx"] = store.mask_stack_applied(m, key)
     if enabled:
         view["stack"] = store.mask_stack_record(m, key)
@@ -3029,6 +3039,9 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                 edit = _edit_rec(m, c["key"])
                 adjust = store.cand_adjust(m, c["key"])
                 candidate_flags = _forge_candidate_flags(root, info)
+                if server_mode() and (post := store.cand_post_record(m, c["key"])):
+                    candidate_flags["post"] = {"on": post["on"], "tool": post["tool"], "label": store.post_label(post),
+                                               "v": _sig(post["at"], post["file"])}
                 if _forge_ratio_changed(root, c, crop["rect"], ck, rep):
                     candidate_flags["ratio_changed"] = True
                 cands.append({

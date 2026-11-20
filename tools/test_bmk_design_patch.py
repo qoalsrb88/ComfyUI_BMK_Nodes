@@ -64013,8 +64013,250 @@ def ux_v2b_dev_unit():
 # UX v2 Phase V2-C 2차(후보정 브릿지) — 갈래마다 자기 묶음 안만 채운다(서로의 묶음·1차 묶음을 고치지 않는다)
 # ══════════════════════════════════════════════════════════════════════
 def ux_v2c_post_pixels_unit():
-    """UX v2-C 갈래 S2(명세 D576–D578·D585) — 합성·Export 가 읽는 효과 그림(파생본)·세 서명의 cand_post 행·사이드카·레이어 이름. 갈래 S2 가 채운다."""
+    """★ 후보정 파생본의 풀해상도 픽셀, 원본 분석 캐시, 합성 서명과 PSD 왕복."""
     section("UX v2-C — 후보정 파생본의 합성·Export (ux_v2c_post_pixels_unit)")
+    from tempfile import mkdtemp
+    from unittest.mock import patch
+
+    dp = _dp_package()
+    st, bd = dp.store, dp.board
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="v2c_pix_", dir=OUT_ROOT.resolve()))
+    root, m, keys = _v2c_project(dp, out, "post")
+    a, c = keys["a1"], keys["c"]
+    del m["cand_adjust"][c]
+    dp._ensure_analysis(root, m, [cand for cand in m["candidates"] if cand["picked"]])
+    originals = copy.deepcopy(m["candidates"])
+    source = bd._cand(m, c)
+    original_image = dp._decode(Path(root, source["file"]).read_bytes())
+    entry = next(iter(m["analysis"][a].values()))
+    cache = st.save_png_ca(root, "derived", np.full((64, 64, 3), [6, 224, 19], np.uint8), prefix="toned_")
+    entry["tone"]["full"] = cache
+    cache_bytes = Path(root, cache).read_bytes()
+    analysis = copy.deepcopy(m["analysis"])
+
+    def write_post(root, cand, pix, n, tool="upscale", scale=2, ext="png"):
+        call = f"{n:024x}"
+        file = f"post/{call}/out.{ext}"
+        path = Path(root, file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(pix).save(path)
+        return {"on": True, "file": file, "size": [pix.shape[1], pix.shape[0]], "tool": tool,
+                "model": "pid_upscale" if tool == "upscale" else "RMBG-2.0",
+                "opts": {"scale": scale} if tool == "upscale" else {}, "call": call, "at": V2C_AT, "hist": [],
+                "input": {"file": cand["file"], "sha": hashlib.sha256(Path(root, cand["file"]).read_bytes()).hexdigest()}}
+
+    def items(mm):
+        plan = bd._star_plan(root, mm, None)[0]
+        return {it["cand"]["key"]: it for _, _, it in dp._slices_in_order(plan)}
+
+    def sigs(mm):
+        return bd._composite_sig(root, mm, None), dp._export_hash(mm, {}, {}, {}), st.export_state_sig(mm)
+
+    def pixels(mm):
+        return bd._compose_full(root, mm, None)[0]
+
+    def export(mm, prefix):
+        st.save_manifest(root, mm)
+        with (patch.object(dp.folder_paths, "get_output_directory", return_value=str(out)),
+              patch.object(dp, "_analyze_one", side_effect=AssertionError("후보정 뒤 재분석"))):
+            handle, image, _, _ = dp.BMKDesignPatchCompose().run(dp._handle(root, mm), "hand_else_auto", True, True, "auto_small_on_top")
+            result = dp.BMKDesignPatchExportPSD().run(handle, prefix, "smart_object", "none", "toned", "hand_else_auto", True, False)
+        path = Path(result["result"][0])
+        snap = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        rows = {row["key"]: row for row in snap["export_layers"]}
+        saved = st.load_manifest(root)
+        composed = np.rint(image[0].cpu().numpy() * 255).astype(np.uint8)
+        doc = PSDImage.open(path)
+        check(saved["exports"][-1]["problems"] == 0 and saved["analysis"] == analysis and saved["candidates"] == originals,
+              f"후보정 {prefix}: Export 검사 문제 0 · 분석 항목과 원본 후보 보존")
+        check(np.array_equal(composed, pixels(saved)) and np.array_equal(composed, np.asarray(doc.topil())),
+              f"후보정 {prefix}: Compose 노드·보드·PSD 병합 픽셀 일치")
+        return path, rows, {layer.name: layer.smart_object for layer in doc.descendants() if layer.kind == "smartobject"}, composed
+
+    base = dp._load_rgb(root, m["base"])
+    initial = pixels(m)
+    rect = m["crops"][1]["rect"]
+    x0, y0, x1, y1 = rect
+    region = np.s_[y0:y1, x0:x1]
+    mask = dp._load_l(root, next(iter(m["analysis"][c].values()))["automask"]).astype(np.float32) / 255
+
+    def expected(pix):
+        # 둘째 크롭은 다른 ★와 겹치지 않는다. SO 알파와 원본 자동 마스크로 독립 합성한다.
+        rgb, alpha, left, top = dpsd.render_so_cache(pix, source["quad"])
+        check((left, top) == (x0, y0), "후보정은 원본 quad에 배치")
+        weight = mask if alpha is None else (alpha.astype(np.float32) / 255) * mask
+        result = initial.copy()
+        under = base[region].astype(np.float32)
+        result[region] = np.rint(under + (rgb - under) * weight[..., None]).astype(np.uint8)
+        return result
+
+    scaled = {}
+    for scale in (2, 4):
+        pix = np.repeat(np.repeat(original_image, scale, axis=0), scale, axis=1)
+        rec = write_post(root, source, pix, scale, scale=scale)
+        scaled[scale] = rec
+        active = dict(m, cand_post={c: rec})
+        path, rows, objects, composed = export(active, f"scale{scale}")
+        row = rows[c]
+        check(items(active)[c].get("post") == st.cand_post_effect(rec) and np.array_equal(composed, expected(pix)),
+              f"{scale}배 파생본 계획·직접 quad 렌더 후 마스크 합성")
+        check(row["name"].endswith(" ★ · 후보정") and row["src_size"] == rec["size"]
+              and row.get("post") == {k: rec[k] for k in ("file", "tool", "model")}
+              and objects[row["name"]].data == Path(root, rec["file"]).read_bytes(),
+              f"{scale}배 SO 원본 바이트·실제 해상도·사이드카·레이어 이름")
+    harvested = dp.BMKDesignPatchCandidateIn._harvest(root, m, str(path), "03.수정", {}, True, [])
+    hit = next(cand for cand in harvested if cand["origin_info"]["layer"] == row["name"])
+    check(hit["key"] != c and hit["picked"] and hit["src_size"] == rec["size"]
+          and Path(root, hit["file"]).read_bytes() == Path(root, rec["file"]).read_bytes(), "후보정 PSD 재수확은 내장 그림의 후보를 등록")
+    with patch.object(bd, "output_dir", return_value=str(out)):
+        dry = bd.mask_ps_import(root, {"psd": str(path), "dry_run": True})
+    check(all(entry["key"] != c for entry in dry["skipped"] + dry["changed"]), "후보정 꼬리표로 PS 그룹 마스크 일치")
+
+    rgb2 = dp._load_rgb(root, scaled[2]["file"])
+    for n, (ext, filetype) in enumerate((("jpeg", "jpg"), ("webp", "webp")), 10):
+        record = write_post(root, source, rgb2, n, ext=ext)
+        mm = dict(m, cand_post={c: record})
+        it = items(mm)[c]
+        raw = Path(root, record["file"]).read_bytes()
+        decoded = dp._decode(raw)
+        check(dp.BMKDesignPatchExportPSD._so_bytes(root, it, decoded, False) == (raw, filetype),
+              f"{ext} 파생본은 파일 바이트와 형식 그대로 PSD 작성기에 전달")
+        _, rows, objects, _ = export(mm, ext)
+        check(np.array_equal(dp._decode(objects[rows[c]["name"]].data), decoded), f"{ext} 파생본의 PSD 내장 픽셀 왕복")
+
+    # 가운데만 보이는 배경 제거 결과. 마스크 창의 patch는 자동 마스크를 곱하기 전 RGBA다.
+    cut = _v2c_pat(80, 80, 3, 17, 5, 3)
+    alpha = np.zeros(cut.shape[:2], np.uint8)
+    alpha[12:68, 8:70] = 255
+    cut = np.dstack([cut, alpha])
+    rec = write_post(root, source, cut, 5, "bg_removal")
+    active = dict(m, cand_post={c: rec})
+    view = bd.mask_view(root, c, active)
+    box = view["layers"]["box"]
+    rgb, al, left, top = dpsd.render_so_cache(cut, source["quad"])
+    patch_pixels = bd._mask_layers(root, active, None, c, box)[1]
+    patch_ref = np.zeros_like(patch_pixels)
+    patch_ref[top - box[1]:y1 - box[1], left - box[0]:x1 - box[0]] = np.dstack([rgb, al])
+    check(np.array_equal(pixels(active), expected(cut)) and np.array_equal(patch_pixels, patch_ref)
+          and view["layers"]["sig"] != bd.mask_view(root, c, m)["layers"]["sig"], "배경 제거 알파 × 마스크·3층 patch와 layers.sig")
+
+    toned = write_post(root, bd._cand(m, a), cut, 6, "bg_removal")
+    with_tone = dict(m, cand_post={a: toned})
+    it = items(with_tone)[a]
+    delta = dp.an.warp_affine(dp._load_delta(root, entry["tone"]), entry["reg"]["matrix"], inverse=True)
+    want = dp.an.apply_delta(cut, delta, out_size=(80, 80))
+    got, applied = dp._cand_pixels(root, it, True)
+    check(applied and np.array_equal(got, want) and np.array_equal(got[..., 3], alpha), "원본 톤 캐시를 건너뛰고 역변환한 톤 보정장 적용·알파 보존")
+    _, rows, objects, _ = export(with_tone, "tone")
+    baked = objects[rows[a]["name"]].data
+    check(rows[a]["toned"] and np.array_equal(dp._decode(baked), want)
+          and any(p.read_bytes() == baked for p in Path(root, "derived").glob("*ptoned_*.png"))
+          and Path(root, cache).read_bytes() == cache_bytes
+          and np.array_equal(pixels(dict(m, cand_post={a: dict(toned, on=False)})), initial),
+          "후보정 톤 SO 전용 캐시·원본 캐시 파일 보존·끄면 원래 합성")
+
+    adj = dict(st.CAND_XFORM_DEFAULTS, blur=2., invert=False, base_quad=None, at=V2C_AT, hist=[])
+    blur = dict(m, cand_adjust=m["cand_adjust"] | {c: adj})
+    blur2 = dict(blur, cand_post={c: scaled[2]})
+    diff = np.abs(pixels(blur2)[region].astype(np.float32) - pixels(blur)[region])
+    check(diff.mean() < 1.0, f"2배 파생본의 캔버스 기준 블러 평균 오차 < 1 (실제 {diff.mean():.3f})")
+    flipped = dict(active, cand_adjust=m["cand_adjust"] | {c: dict(adj, blur=0., invert=True, flip_h=True)})
+    want = cut[:, ::-1].copy()
+    want[..., :3] = 255 - want[..., :3]
+    _, rows, objects, composed = export(flipped, "flip")
+    check(rows[c]["name"].endswith(" ★ · 보정 · 후보정") and np.array_equal(dp._decode(objects[rows[c]["name"]].data), want)
+          and np.array_equal(composed, expected(want)), "파생본 뒤집기·색반전 → 보정 꼬리표·구운 SO 바이트")
+
+    stack = dict(st.mask_stack_defaults(), off=["transform"], opacity=57, at=V2C_AT, hist=[])
+    stack["edge"]["feather"] = 3.
+    stacked = dict(m, mask_stack={c: stack}, cand_adjust=m["cand_adjust"] | {c: dict(adj, blur=0., dx=4, flip_v=True)})
+    before, after = items(stacked)[c], items(dict(stacked, cand_post={c: rec}))[c]
+    check(after["mask_stacked"] and after["stack_off"] == ["transform"] and after["mask_fx"] == before["mask_fx"]
+          and after["quad"] == before["quad"] == before["base_quad"] and np.array_equal(after["mask"]["arr"], before["mask"]["arr"])
+          and np.array_equal(dp._cand_pixels(root, after, True)[0], cut), "후보정과 스택을 함께 써도 경계·불투명도·변형 끔 유지")
+    for manual in ({}, m["z_order"]):
+        orders = [[(k, it["area"]) for k, it in items(dict(mm, z_order=manual)).items()] for mm in (m, active)]
+        check(orders[0] == orders[1], "파생본을 켜도 원본 마스크 기준 넓이와 z 순서 보존")
+
+    signatures = sigs(active)
+    check(all(x != y for x, y in zip(signatures, sigs(m))) and
+          all(x != y for x, y in zip(signatures, sigs(dict(m, cand_post={c: scaled[2]})))), "후보정 켜기·다른 파일 선택 시 세 서명 변경")
+    hist = [{k: v for k, v in scaled[2].items() if k != "hist"}]
+    chain = dict(m, cand_post={c: dict(rec, at=V2C_AT + ".1", hist=hist, input={"file": hist[0]["file"], "sha": "f" * 64})})
+    check(sigs(chain) == signatures and np.array_equal(pixels(chain), expected(cut)), "시각·이력·입력은 서명에 영향 없음·연쇄 기록의 머리만 렌더")
+    file = Path(root, rec["file"])
+    data = file.read_bytes()
+    file.unlink()
+    warns = bd._star_plan(root, active, None)[-1]
+    check(sigs(active)[0] != signatures[0] and np.array_equal(pixels(active), initial) and "post" not in items(active)[c]
+          and warns.count(f"{c} ({m['crops'][1]['name']}): 후보정 결과 파일 없음 → 원본 그림으로") == 1, "파생본 파일 소실 시 경고·원본 합성·별도 서명")
+    file.write_bytes(data)
+    check(sigs(active) == signatures and np.array_equal(pixels(active), expected(cut)), "파일 복구 시 원래 서명·합성")
+    broken = dict(m, cand_post={c: dict(rec, size=[0, 0])})
+    check(sigs(broken) == sigs(m) and np.array_equal(pixels(broken), initial) and "post" not in items(broken)[c]
+          and bd._star_plan(root, broken, None)[-1].count(f"{c} ({m['crops'][1]['name']}): 후보정 기록을 읽지 못함 → 원본 그림으로") == 1,
+          "깨진 기록 경고·원본 합성")
+    unpicked = copy.deepcopy(active)
+    bd._cand(unpicked, c)["picked"] = False
+    dp._sync_picks(unpicked)
+    check(sigs(unpicked) == sigs(dict(unpicked, cand_post={})) and c not in items(unpicked), "★를 풀면 파생본 효과 없음")
+    bd._cand(unpicked, c)["picked"] = True
+    dp._sync_picks(unpicked)
+    check(sigs(unpicked) == signatures and np.array_equal(pixels(unpicked), expected(cut)), "다시 ★하면 저장된 파생본 복원")
+    for alt in (keys["d"], keys["e"]):
+        swapped = dict(m, cand_post={alt: rec})
+        swap = (source["crop_id"], source["tid"], alt)
+        check(sigs(swapped) == sigs(m) and bd._composite_sig(root, swapped, None, swap) != bd._composite_sig(root, m, None, swap)
+              and not np.array_equal(bd._compose_full(root, swapped, None, swap)[0], bd._compose_full(root, m, None, swap)[0]),
+              "숨김·탈락 후보의 파생본은 그 후보의 ★ 교체 가정에서 적용")
+
+    def state_rows():
+        return {row["key"]: row for target in bd.build_state(root)["targets"] for row in target["candidates"]}
+
+    st.save_manifest(root, m)
+    original_row = state_rows()[c]
+    for enabled in (True, False):
+        record = dict(rec, on=enabled)
+        rev = st.save_manifest(root, dict(m, cand_post={c: record}))
+        local = state_rows()
+        check(all("post" not in row for row in local.values()) and "post" not in bd.mask_view(root, c), "로컬 state·mask 응답 칸 보존")
+        spec = _pl_api()["state"]
+        check(not _pl_shape(spec["unchanged"], bd.build_state(root, since_rev=rev), spec, "unchanged"), "로컬 state 폴링 정본 보존")
+        token = bd.set_scope(_fj_scope(out))
+        try:
+            with patch.dict(os.environ, {bd.SERVER_ENV: "1"}):
+                server = state_rows()
+                post = server[c]["post"]
+                check(post == {"on": enabled, "tool": rec["tool"], "label": st.post_label(rec), "v": bd._sig(rec["at"], rec["file"])}
+                      and "post" not in server[a] and server[c]["thumb_url"] == local[c]["thumb_url"] == original_row["thumb_url"],
+                      "서버 후보 줄은 켬·끔 표시·원본 타일 유지")
+                details = {k: record[k] for k in ("at", "size", "on", "tool", "model")}
+                check(bd._server_mask_view(root, c, False)["post"] == dict(details, label=st.post_label(rec))
+                      and bd._server_mask_view(root, a, True)["post"] is None, "서버 mask의 후보정 세부 정보·기록 없으면 null")
+        finally:
+            bd.reset_scope(token)
+
+    def toggle(folder, keys):
+        mm = st.load_manifest(folder)
+        candidate = bd._cand(mm, keys["a1"])
+        record = write_post(folder, candidate, cut, 1, "bg_removal")
+        mm["cand_post"] = {candidate["key"]: record}
+        st.save_manifest(folder, mm)
+        on_pixels = bd._compose_full(folder, mm, None)[0]
+        record["on"] = False
+        st.save_manifest(folder, mm)
+        check(not np.array_equal(on_pixels, bd._compose_full(folder, mm, None)[0]), "다이제스트 비교 전 켬·끔의 합성 변화 확인")
+
+    base_text, base_pixel, _ = _v2c_digests(dp, out, "no-post")
+    off_text, off_pixel, _ = _v2c_digests(dp, out, "post-off", after=toggle)
+    check((off_text, off_pixel) == (base_text, base_pixel), "파생본을 켰다가 끄면 서명·PSD·사이드카 등 모든 다이제스트 복원")
+    for height in ((1024,) if QUICK else (1024, 4096)):
+        large = np.full((height, 4096, 3), (83, 32, 185), np.uint8)
+        record = write_post(root, source, large, height)
+        path, rows, _, _ = export(dict(m, cand_post={c: record}), f"large{height}")
+        check(rows[c]["src_size"] == [4096, height] and dpsd.verify_saved(str(path), deep=True) == [],
+              f"4096×{height} 후보정 SO의 PSD 심층 검사 문제 0")
 
 
 # (갈래 S2 ↑ · 갈래 P ↓)
