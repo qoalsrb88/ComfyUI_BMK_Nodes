@@ -2120,11 +2120,11 @@ def _edit_view(rk: str, key: str, rec: dict | None, fp: dict, rect: list[int] | 
             "stale": _edit_stale(rec, fp, rect), "url": _murl(rk, key, "edit", _edit_sig(rec, rect, fp, placement))}
 
 
-def mask_view(root: str, key) -> dict:
+def mask_view(root: str, key, m: dict | None = None) -> dict:
     """GET /mask — 편집 대상·기준·편집·3층 URL·이 크롭 이음매(지금 ★ 합성 캐시가 있을 때만, 없으면 null)·z(layers.box 와 겹치는 다른 ★,
     합성 순서 아래 → 위)·경고(이 후보의 _plan 경고 + 분석 없음). 파일을 쓰지 않는다. 편집 파일을 읽지 못하면(_plan 이 경고하고 기준을 씀)
     edit.url = 기준 url — Studio 가 _plan 이 쓰는 마스크로 열고 [적용]·[편집 지우기]로 나갈 수 있게. 형식이 깨진 기록은 edit null(_edit_rec)."""
-    m = store.load_manifest(root)
+    m = store.load_manifest(root) if m is None else m
     rk = store.root_key(root)
     pref = _PREF.get(rk)
     cand = _mask_cand(m, key)
@@ -2227,7 +2227,10 @@ def _brush_mask(root: str, rec: dict | None, it: dict, rect: list[int]) -> dict 
     계획 항목의 mask 는 붓 층을 껐으면 기준이고 경계·불투명도가 걸렸으면 구운 창 래스터라, 편집 창에 내주거나(/mask/img edit)
     다음 저장의 창 밖 획 보존(mask_save)에 쓰면 획을 잃거나 구운 경계가 붓 래스터에 들어간다. 편집을 읽지 못하면 None."""
     if "brush" in it.get("stack_off", []) or it.get("mask_stacked"):
-        mask, _why = dmask.edit_mask(root, rec) if rec else (None, None)
+        try:
+            mask, _why = dmask.edit_mask(root, rec) if rec else (None, None)
+        except OSError as e:  # 잠김·권한 — 계획이 편집을 읽다 실패할 때(_mask_target)와 같은 422
+            raise _Reject(422, f"편집 대상을 계산할 수 없습니다: {e}") from e
         return None if mask is None else dmask.expand_edit_mask(mask, it["base_mask"], rect)
     return it["mask"] if it["mask_edit"] is not None else None
 
@@ -2495,7 +2498,7 @@ def mask_ps_import(root: str, data: dict) -> dict:
                                      use_registration=bool((export.get("compose") or {}).get("use_registration", True)))
         return {"rect": rect, "quad": it["quad"], "fp": dmask.base_fp(cand, it["entry"], cs["mask_source"]),
                 "mask": _window_l(it["mask"], rect), "export_mask": _window_l(old_mask, rect),
-                "preserve_mask": it["mask"] if it["mask_edit"] else None,
+                "preserve_mask": _brush_mask(root, _edit_rec(m, cand["key"]), it, rect),
                 "crop": p["crop"]["name"], "group": group}
 
     def placed(mm, key, fp):
@@ -2718,11 +2721,7 @@ def mask_stack(root: str, data: dict) -> dict:
 
 def _server_mask_view(root, key, enabled):
     m = store.load_manifest(root)
-    view = mask_view(root, key)
-    if view["z"]["rev"] != m["rev"]:
-        m = store.load_manifest(root)
-        if view["z"]["rev"] != m["rev"]:
-            raise _Reject(409, "★ 합성·마스크가 그 사이 바뀌었습니다 — 다시 받기", reason="stale")
+    view = mask_view(root, key, m)  # 같은 판으로 — 따로 읽으면 그 사이의 쓰기 때문에 두 값이 다른 판을 볼 수 있다
     view["stack_fx"] = store.mask_stack_applied(m, key)
     if enabled:
         view["stack"] = store.mask_stack_record(m, key)
