@@ -7677,11 +7677,18 @@ def _project_adoption(root: str) -> dict:
     return {"adoptable": True, "files": sorted(files, key=str.casefold)[:50]}
 
 
+class _ProjectNameExists(_Reject):
+    def __init__(self, root: str):
+        super().__init__(409, "같은 이름의 프로젝트가 있습니다 — 폴더 목록을 확인하세요")
+        self.root = root
+
+
+def _project_name_is_archived(root: str) -> bool:
+    return (in_scope(root) and not _is_link(root) and os.path.isfile(os.path.join(root, store.MANIFEST_NAME))
+            and store.read_project_meta(root)[0]["archived"] is not None)
+
+
 def _project_new_begin(data: dict, upload: bool) -> dict:
-    return _project_new_begin_for_home(data, upload, False)
-
-
-def _project_new_begin_for_home(data: dict, upload: bool, project_home: bool) -> dict:
     base_dir = project_input()
     if server_mode() and not upload and ("path" in data or "adopt" in data):
         raise _Reject(400, "서버 모드에서는 그림 파일을 올려 주세요")
@@ -7713,10 +7720,7 @@ def _project_new_begin_for_home(data: dict, upload: bool, project_home: bool) ->
         source = os.path.join(root, filename)
     else:
         if os.path.lexists(root):
-            if (project_home and in_scope(root) and os.path.isfile(os.path.join(root, store.MANIFEST_NAME))
-                    and store.read_project_meta(root)[0]["archived"] is not None):
-                raise _Reject(409, "보관함에 같은 이름의 프로젝트가 있습니다 — 다른 이름을 쓰거나 보관함에서 되돌리세요", reason="archived_name")
-            raise _Reject(409, "같은 이름의 프로젝트가 있습니다 — 폴더 목록을 확인하세요")
+            raise _ProjectNameExists(root)
         if upload:
             source, filename = None, check_upload_name(data.get("filename"))
         else:
@@ -7901,7 +7905,12 @@ async def _project_new_request(request):
         upload = is_octet_stream(request)
         data = dict(request.query) if upload else await _body(request)
         # begin 은 작은 메타데이터 작업뿐. 상태를 받은 뒤부터 취소 시 정리할 수 있다.
-        state = _project_new_begin_for_home(data, upload, _project_home_enabled(request))
+        try:
+            state = _project_new_begin(data, upload)
+        except _ProjectNameExists as exc:
+            if _project_home_enabled(request) and await asyncio.to_thread(_project_name_is_archived, exc.root):
+                raise _Reject(409, "보관함에 같은 이름의 프로젝트가 있습니다 — 다른 이름을 쓰거나 보관함에서 되돌리세요", reason="archived_name") from None
+            raise
         part = None
         if not state["adopt"]:
             part = await recv_upload(request, state["tmp"]) if upload else await _project_new_thread(copy_in, state["source"], state["tmp"])
@@ -7996,9 +8005,8 @@ def _project_home_enabled(request) -> bool:
     return server_mode() and app_setting(request, PROJECT_HOME_ENABLED, False) is True
 
 
-@functools.lru_cache(maxsize=512)
-def _cached_project_title(root: str, mtime_ns: int, size: int) -> str | None:
-    return store.read_project_meta(root)[0]["title"]
+_PROJECT_TITLES = {}
+_PROJECT_TITLES_LOCK = threading.Lock()
 
 
 def _project_state_title(root: str) -> str | None:
@@ -8006,7 +8014,18 @@ def _project_state_title(root: str) -> str | None:
         stat = os.stat(os.path.join(root, store.PROJECT_META_NAME), follow_symlinks=False)
     except OSError:
         return None
-    return _cached_project_title(root, stat.st_mtime_ns, stat.st_size)
+    stamp = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+    with _PROJECT_TITLES_LOCK:
+        cached = _PROJECT_TITLES.get(root)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+    doc, broken = store.read_project_meta(root)
+    if not broken:
+        with _PROJECT_TITLES_LOCK:
+            if len(_PROJECT_TITLES) >= 512 and root not in _PROJECT_TITLES:
+                _PROJECT_TITLES.clear()
+            _PROJECT_TITLES[root] = (stamp, doc["title"])
+    return doc["title"]
 
 
 def _project_records():
@@ -8376,7 +8395,7 @@ def _write_forge_source(root, image, source):
                 pass
 
 
-async def import_received(data: dict, raw: bytes, filename: str, source=None) -> web.StreamResponse:
+async def import_received(data: dict, raw: bytes, filename: str, source=None, *, app=None) -> web.StreamResponse:
     """Forge 바이트도 기존 업로드 처리기로 보낸다. 검증·잠금·임시 파일 정리·응답은 파일 업로드와 같다."""
     from types import SimpleNamespace
 
@@ -8388,7 +8407,7 @@ async def import_received(data: dict, raw: bytes, filename: str, source=None) ->
     target = data.get("into") == "target"
     query = {"name": data.get("name"), "filename": filename} if target else {
         "root": data.get("root"), "op": "sheet_add", "filename": filename}
-    request = SimpleNamespace(query=query, content=Content(), content_length=len(raw),
+    request = SimpleNamespace(app=app, query=query, content=Content(), content_length=len(raw),
                               content_type="application/octet-stream", headers={"Content-Type": "application/octet-stream"},
                               path=API + ("/projects/new" if target else "/refs/pool"))
     response = await (projects_new_handler(request) if target else refs_pool_post_handler(request))

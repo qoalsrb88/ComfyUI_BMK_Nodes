@@ -67126,6 +67126,7 @@ def ux_v2_home_unit():
     from aiohttp.test_utils import make_mocked_request
     import bmk_design_patch_board as bd
     import bmk_design_patch_home as home
+    import bmk_design_patch_jobs as jobs
     import bmk_design_patch_server as srv
 
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -67136,11 +67137,11 @@ def ux_v2_home_unit():
     runner.queue.return_value = queue
 
     @contextlib.asynccontextmanager
-    async def server(enabled):
-        config = srv.ServerConfig(str(out), dev_handoff=True, project_home=enabled)
-        jobs = types.SimpleNamespace(JobRunner=lambda **kw: runner, routes=lambda unused: ())
+    async def server(enabled, *, job_runner=runner, forge=None, transport=None):
+        config = srv.ServerConfig(str(out), dev_handoff=True, project_home=enabled, forge=forge)
+        jobs_module = types.SimpleNamespace(JobRunner=lambda **kw: job_runner, routes=lambda unused: ())
         with patch.object(srv, "_server_secret", return_value=bytes(32)):
-            app = srv.make_app(config, jobs_module=jobs)
+            app = srv.make_app(config, jobs_module=jobs_module, forge_transport=transport)
         app.freeze()
         try:
             yield app
@@ -67232,8 +67233,9 @@ def ux_v2_home_unit():
             finally:
                 orphan.rmdir()
             for account in (bob, other_org):
-                check(await post("archive", 0, account=account, status=404) == missing == api["projects_meta_not_found"]["response"],
-                      "홈 다른 계정·조직은 없는 키와 같은 응답")
+                for op, fields in (("archive", {}), ("rename", {"title": "다른 계정"}), ("restore", {})):
+                    check(await post(op, 0, account=account, status=404, **fields) == missing == api["projects_meta_not_found"]["response"],
+                          "홈 다른 계정·조직은 없는 키와 같은 응답 " + op)
             check(before == snapshot(root), "홈 거절은 프로젝트 파일 불변")
 
             for rev, supplied, saved in ((0, "a" * 64, "a" * 64), (1, "   ", None), (2, "OnlyBob", "OnlyBob"),
@@ -67279,6 +67281,9 @@ def ux_v2_home_unit():
             active, trash = await call("GET", "/projects"), await call("GET", "/projects?archived=1")
             check(active["archived_count"] == 1 and [r["id"] for r in active["projects"]] == [second_key]
                   and trash == {"projects": [arow], "archived_count": 1}, "홈 활성·보관 목록 분리")
+            for account in (bob, other_org):
+                check(await call("GET", "/projects?archived=1", account=account) == {"projects": [], "archived_count": 0},
+                      "홈 다른 계정·조직 보관 목록과 개수에서도 숨김")
             check((await call("GET", state_url))["title"] == title, "홈 보관 뒤에도 직접 연 상태 조회")
             check(await call("POST", "/projects/open", {"key": key}, 409) == api["projects_meta_archived"]["response"]
                   and await post("rename", 6, title="다른 이름", status=409) == api["projects_meta_archived"]["response"],
@@ -67286,8 +67291,18 @@ def ux_v2_home_unit():
             check(await post("archive", 6) == dict(archived, changed=False), "홈 반복 보관은 판·시각 그대로")
             check((await post("rename", 0, title=title, target=second_key, status=409))["reason"] == "name_taken", "홈 보관된 표시 이름도 중복")
             new_url = "/projects/new?name=" + root.name + "&filename=test.png"
-            check(await call("POST", new_url, b"", 409, mime="application/octet-stream") == api["projects_new_archived_name"]["response"],
-                  "홈 같은 폴더 새로 만들기에 보관함 안내")
+            loop_thread = threading.current_thread()
+            read_threads = []
+            read_meta = store.read_project_meta
+
+            def track_read(project):
+                read_threads.append(threading.current_thread())
+                return read_meta(project)
+
+            with patch.object(store, "read_project_meta", side_effect=track_read):
+                check(await call("POST", new_url, b"", 409, mime="application/octet-stream") == api["projects_new_archived_name"]["response"],
+                      "홈 같은 폴더 새로 만들기에 보관함 안내")
+            check(read_threads and all(t is not loop_thread for t in read_threads), "홈 새 프로젝트 보관 판정은 작업 스레드에서 읽기")
             token = bd.set_scope(scope)
             try:
                 imported = await bd.import_received({"into": "target", "name": root.name}, b"", "test.png")
@@ -67363,6 +67378,56 @@ def ux_v2_home_unit():
             with patch.object(store, "write_json_atomic", side_effect=OSError(str(out))):
                 check((await post("restore", valid["rev"] + 2, status=400))["reason"] == "bad_request", "홈 쓰기 오류 경로 가림")
 
+            probe, probe_key = seed(scope, "title_probe")
+            probe_path = probe / store.PROJECT_META_NAME
+            await post("rename", 0, target=probe_key, title="AAAA")
+            doc = store.load_project_meta(str(probe))
+            twin, _ = seed(scope, "alias_twin")
+            store.write_json_atomic(str(twin / store.PROJECT_META_NAME), doc)
+            before_retry = snapshot(probe)
+            retry = await post("rename", 1, target=probe_key, title="AAAA")
+            check(retry.get("changed") is False and retry["project"]["meta_rev"] == 1 and snapshot(probe) == before_retry,
+                  "홈 중복된 현재 표시 이름을 다시 저장하면 파일·판 그대로")
+            check((await post("rename", 1, target=probe_key, title=twin.name, status=409))["reason"] == "name_taken",
+                  "홈 겹친 이름에서 다른 겹친 이름으로 변경은 거절")
+
+            probe_state = "/state?root=" + probe_key
+            check((await call("GET", probe_state))["title"] == "AAAA", "홈 교체 전 표시 이름")
+            first = probe_path.stat()
+            store.write_json_atomic(str(probe_path), dict(doc, title="BBBB", rev=2))
+            os.utime(probe_path, ns=(first.st_atime_ns, first.st_mtime_ns))
+            replacement = probe_path.stat()
+            check((replacement.st_size, replacement.st_mtime_ns) == (first.st_size, first.st_mtime_ns), "홈 교체 파일 크기·수정 시각 일치")
+            if first.st_ino or replacement.st_ino:
+                check(replacement.st_ino != first.st_ino and (await call("GET", probe_state))["title"] == "BBBB",
+                      "홈 같은 크기·시각에 원자 교체된 파일은 새 표시 이름")
+            else:
+                skip("홈 파일 식별 번호가 0인 파일 시스템 — 같은 크기·시각의 교체 검사 생략")
+            store.write_json_atomic(str(probe_path), dict(doc, title="다시 읽기", rev=3))
+            with patch.object(store, "read_project_meta", return_value=(dict(doc, title=None), True)):
+                check((await call("GET", probe_state))["title"] is None, "홈 첫 메타 읽기 실패")
+            check((await call("GET", probe_state))["title"] == "다시 읽기", "홈 한 번 실패한 읽기는 다음 상태 조회에서 복구")
+
+            update = store.update_project_meta
+            for guard, rejected in (("in_scope", False), ("_is_link", True)):
+                def update_after_check(*args, **kwargs):
+                    with patch.object(bd, guard, return_value=rejected):
+                        return update(*args, **kwargs)
+
+                rev = store.load_project_meta(str(probe))["rev"]
+                untouched = snapshot(probe)
+                with patch.object(store, "update_project_meta", side_effect=update_after_check):
+                    reply = await post("rename", rev, target=probe_key, title="잠금 " + guard, status=404)
+                check(reply == missing and snapshot(probe) == untouched, "홈 잠금 전 통과·쓰기 직전 거절·파일 불변 " + guard)
+
+            rev = store.load_project_meta(str(probe))["rev"]
+            wide = await post("rename", rev, target=probe_key, title="ｓｕｍｍｅｒ_A", status=409)
+            check(wide.get("reason") == "name_taken", "홈 전각 표시 이름과 기존 폴더 이름의 중복 거절")
+            mixed = "Ａ" + unicodedata.normalize("NFD", "여름")
+            rev = store.load_project_meta(str(probe))["rev"]
+            await post("rename", rev, target=probe_key, title=mixed)
+            check(store.load_project_meta(str(probe))["title"] == "Ａ여름", "홈 중복 비교와 별도로 저장은 NFC")
+
         async with server(False) as app:
             alice, _ = await login(app, "alice", "one")
             check(not any(r.resource.canonical == bd.API + "/projects/meta" for r in app.router.routes())
@@ -67375,6 +67440,37 @@ def ux_v2_home_unit():
             check((await call("POST", "/projects/open", {"key": key}))["ok"]
                   and await call("POST", new_url, b"", 409, mime="application/octet-stream")
                   == {"error": "같은 이름의 프로젝트가 있습니다 — 폴더 목록을 확인하세요"}, "홈 꺼진 서버 열기·새로 만들기")
+
+        # 일꾼은 실제로 시작하되 대기 작업을 가져가지 못하게 한다. 제출·조회·취소·종료는 실제 큐를 쓴다.
+        with patch.object(jobs.JobRunner, "_take", return_value=None):
+            real = jobs.JobRunner()
+            async with server(True, job_runner=real) as app:
+                alice, scope = await login(app, "alice", "one")
+                _, bob_scope = await login(app, "bob", "one")
+                queued, queued_key = seed(scope, "queued")
+                real.submit(scope, str(second), "apply", {})
+                real.submit(bob_scope, str(foreign), "apply", {})
+                mine = real.submit(scope, str(queued), "apply", {})
+                check((await post("archive", 0, target=queued_key, status=409)).get("reason") == "busy",
+                      "홈 실제 큐의 이 프로젝트 대기 작업이 보관 차단")
+                real.delete(scope, str(queued), [mine["prompt_id"]])
+                result = await post("archive", 0, target=queued_key)
+                check(result.get("changed") is True, "홈 실제 큐에 다른 프로젝트·계정만 대기하면 보관 허용")
+
+        import bmk_design_patch_forge as fg
+        import bmk_design_patch_forge_dev as dev
+        fake = dev.FakeForge()
+        forge_config = fg.ForgeConfig(fake.media_origin, (fake.media_origin,), allow_http=True)
+        for enabled in (True, False):
+            async with server(enabled, forge=forge_config, transport=fake.handle) as app:
+                alice, forge_scope = await login(app, "alice", "org1")
+                forge_root, _ = seed(forge_scope, "forge_archive")
+                store.write_json_atomic(str(forge_root / store.PROJECT_META_NAME), dict(doc, archived={"at": "2026-11-21 10:00:00"}))
+                asset = (await call("GET", "/forge/assets"))["items"][0]
+                imported = await call("POST", "/forge/import", {"into": "target", "name": forge_root.name,
+                                      "source": "asset", "id": asset["id"]}, 409)
+                expected = api["projects_new_archived_name"]["response"] if enabled else {"error": "같은 이름의 프로젝트가 있습니다 — 폴더 목록을 확인하세요"}
+                check(imported == expected, f"홈 Forge 가져오기 요청 앱의 보관함 안내 (플래그 {enabled})")
 
         with patch.object(bd, "_PROJECT_INPUT", scope["input"]), patch.object(store, "known_roots", return_value=[]), \
                 patch.object(store, "resolve_board_root", return_value=str(root)), \
@@ -67401,12 +67497,12 @@ document.getElementById = id => elements[id] ||= document.createElement("div");
 const window = {DPEnv:{serverMode:true, can:()=>false}}, location = new URL("http://localhost/bmk/design_patch/board/");
 const rows = [{id:"0123456789ab", name:"folder", title:"표시 이름", openable:true, thumb_url:"thumb"},
               {id:"123456789abc", name:"원래 이름", openable:false}];
-let finishOpen;
+let finishOpen, tick;
 const fetch = async (url, options) => options.method === "POST" ? new Promise(resolve => {finishOpen=resolve;})
-  : ({ok:true, status:200, json:async () => ({projects:rows})});
+  : ({ok:true, status:200, json:async () => new URL(url).pathname.endsWith("/state") ? tick : {projects:rows}});
 const ctx = vm.createContext({document, window, location, URL, URLSearchParams, fetch, console});
 const source = fs.readFileSync(process.argv[2], "utf8").replace("  main();",
-    "globalThis.view = {showProjects, header(state) { S=state; renderHeader(); }};");
+    "globalThis.view = {showProjects, refresh, header(state) { S=state; renderHeader(); }};");
 vm.runInContext(source, ctx);
 (async () => {
   await ctx.view.showProjects();
@@ -67423,6 +67519,13 @@ vm.runInContext(source, ctx);
     ctx.view.header({title,project:"folder",crops:[],counts:{},cost:{},canvas:{}});
     assert.ok(document.title.startsWith((title || "folder") + " ·"));
     assert.ok(elements.proj.textContent.startsWith((title || "folder") + " ·"));
+  }
+  ctx.view.header({title:"A", project:"folder", rev:1, crops:[], counts:{}, cost:{}, canvas:{}});
+  for (const [fields, expected] of [[{title:"B"},"B"], [{},"B"], [{title:null},"folder"]]) {
+    tick = {unchanged:true, rev:1, ...fields};
+    await ctx.view.refresh();
+    assert.equal(document.title, expected + " · 디자인 패치 스튜디오");
+    assert.ok(elements.proj.textContent.startsWith(expected + " ·"));
   }
   search.value="표시"; search.fire("input");
   const opened = byClass("projects-open")[0].on.click[0]();

@@ -41,7 +41,7 @@ def _check_target(root):
 
 
 def _name_key(name):
-    return unicodedata.normalize("NFC", name).casefold()
+    return unicodedata.normalize("NFKC", name).casefold()
 
 
 def _name_taken(key, title):
@@ -88,7 +88,7 @@ def _change(doc, data, pre, root):
             raise board._Reject(409, "보관된 프로젝트입니다 — 먼저 되돌려 주세요", reason="archived")
         if "error" in pre:
             raise pre["error"]
-        if pre["taken"]:
+        if pre["title"] != doc["title"] and pre["taken"]:
             raise board._Reject(409, "같은 이름의 프로젝트가 있습니다 — 다른 이름을 써 주세요", reason="name_taken")
         doc["title"] = pre["title"]
     elif op == "restore":

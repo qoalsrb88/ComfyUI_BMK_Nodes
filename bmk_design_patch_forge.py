@@ -1137,7 +1137,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
             raw = await ctx["client"].fetch_media(row["url"])
         except ForgeError as error:
             media_error(error)
-        return await board.import_received(data, raw, filename(raw, row, token), provenance(row, token))
+        return await getattr(accounts, "import_received", board.import_received)(data, raw, filename(raw, row, token), provenance(row, token))
 
     async def import_many(data, scope, state, ctx):
         done, failed = [], []

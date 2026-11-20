@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import functools
 import hashlib
 import hmac
 import html
@@ -1051,8 +1052,11 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                               handler_args={"access_log": None})
         app[_SESSION_KEY], app[_RUNNER_KEY] = sessions, runner
         app[_LOGIN_FAILURES_KEY] = login_failures
-        forge_routes = forge.routes(accounts) if accounts is not None else ()
+        forge_routes = ()
         if accounts is not None:
+            # Forge 라우트는 이 앱 전용이다. 내부 업로드 요청에도 같은 앱 설정을 전달한다.
+            accounts.import_received = functools.partial(board.import_received, app=app)
+            forge_routes = forge.routes(accounts)
             try:
                 from . import bmk_design_patch_assist as assist
             except ImportError:
