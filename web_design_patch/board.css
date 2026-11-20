@@ -244,6 +244,7 @@ button.inline { margin-left: 8px; min-height: 24px; padding: 0 8px; font-size: 1
 /* 그림 위에 얹는 배지만 어두운 받침을 둔다. */
 .tile .tb .badge { padding: 0 4px; border-radius: 4px; background: rgba(9, 9, 11, .8); font-size: 11px; line-height: 16px; color: var(--text); }
 .tile .tb .badge.b-star { color: var(--star); }
+.tile .tb .badge.b-post { pointer-events: auto; }
 .tile .tb .badge.b-bad { color: var(--bad); }
 .tile.picked { border-color: var(--star); }
 .tile.slice { border-color: var(--slice); border-style: dashed; }
