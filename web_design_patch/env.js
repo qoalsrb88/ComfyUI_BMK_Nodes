@@ -9,7 +9,7 @@ window.DPEnv = (() => {
     path_input: true, ps_mask: true, agent_approve: true, ui_default: "v1",
     // UX v2 기능 플래그(로컬판은 모두 false — 서버 모드의 GET ../env 가 열린 것만 true 로 준다)
     ui_v2: false, v2_spec_edit: false, v2_forge_prompt: false, v2_auto_prepare: false, v2_crop_model: false, v2_postprocess: false,
-    v2_psd_reimport: false, v2_mask_stack: false };
+    v2_psd_reimport: false, v2_mask_stack: false, v2_project_home: false };
   // 옛 서버는 기본 화면과 v2 플래그를 주지 않는다. 필수 기능만 검사하고 나머지는 로컬 기본값으로 채운다.
   const v2Flags = Object.keys(LOCAL_CAPS).filter((key) => key === "ui_v2" || key.startsWith("v2_"));
   const REQUIRED_CAPS = Object.keys(LOCAL_CAPS).filter((key) => key !== "ui_default" && !v2Flags.includes(key));

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import functools
 import hashlib
 import hmac
 import html
@@ -110,6 +111,8 @@ def _validate_config(config):
         raise ValueError("개발 모드 밖에서는 public_origin 이 필요합니다")
     if config.default_ui not in ("v1", "v2"):
         raise ValueError("default_ui 는 v1 또는 v2 여야 합니다")
+    if type(config.project_home) is not bool:  # 라우트 등록(참·거짓)과 목록 쪽 판정(is True)이 갈리지 않게
+        raise ValueError("project_home 은 true 또는 false 여야 합니다")
     origin = _origin(config.public_origin) if config.public_origin else None
     if config.cookie_samesite not in ("Lax", "Strict", "None"):
         raise ValueError("cookie_samesite 는 Lax·Strict·None 중 하나여야 합니다")
@@ -650,6 +653,7 @@ class ServerConfig:
     mask_stack: bool = False                   # 새 화면이 마스크 필터 계약에 맞춘 뒤 켠다.
     postprocess: bool = False                  # 새 화면이 후보정 계약에 맞춘 뒤 켠다.
     default_ui: str = "v1"                     # ui 쿼리가 없을 때 주는 화면("v1"·"v2"). v2 여도 화면 파일이 없으면 v1 을 준다.
+    project_home: bool = False
 
 
 class DevVerifier:
@@ -851,6 +855,8 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             default_ui = board.default_ui(request, config.default_ui)
             result["caps"]["ui_default"] = default_ui if result["caps"]["ui_v2"] else "v1"
             result["caps"]["v2_crop_model"] = config.crop_model
+            # 목록·열기 라우트(board._project_home_enabled)와 같은 값: 요청이 속한 앱의 설정
+            result["caps"]["v2_project_home"] = board.app_setting(request, board.PROJECT_HOME_ENABLED, config.project_home) is True
             result["caps"]["v2_mask_stack"] = config.mask_stack
             result["caps"]["v2_postprocess"] = config.postprocess and result["backend"] == "forge"
             if accounts is not None:
@@ -1049,8 +1055,11 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                               handler_args={"access_log": None})
         app[_SESSION_KEY], app[_RUNNER_KEY] = sessions, runner
         app[_LOGIN_FAILURES_KEY] = login_failures
-        forge_routes = forge.routes(accounts) if accounts is not None else ()
+        forge_routes = ()
         if accounts is not None:
+            # Forge 라우트는 이 앱 전용이다. 내부 업로드 요청에도 같은 앱 설정을 전달한다.
+            accounts.import_received = functools.partial(board.import_received, app=app)
+            forge_routes = forge.routes(accounts)
             try:
                 from . import bmk_design_patch_assist as assist
             except ImportError:
@@ -1070,6 +1079,14 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             app[cropgen.MODEL_ROWS] = model_rows
             crop_routes = cropgen.routes()
         app[board.MASK_STACK_ENABLED] = config.mask_stack
+        app[board.PROJECT_HOME_ENABLED] = config.project_home
+        home_routes = ()
+        if config.project_home:
+            try:
+                from . import bmk_design_patch_home as home
+            except ImportError:
+                import bmk_design_patch_home as home
+            home_routes = home.routes(runner)
         app[board.DEFAULT_UI] = config.default_ui
         stack_routes = board.MASK_STACK_ROUTES if config.mask_stack else ()
         post_routes = ()
@@ -1079,7 +1096,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             except ImportError:
                 import bmk_design_patch_post as post
             post_routes = post.routes(runner, accounts)
-        for method, path, handler in (*jobs_module.routes(runner), *v2.routes(), *crop_routes, *stack_routes, *post_routes):
+        for method, path, handler in (*jobs_module.routes(runner), *v2.routes(), *crop_routes, *stack_routes, *post_routes, *home_routes):
             app.router.add_route(method, path, handler)
         app.add_routes([web.get("/", index), web.get("/api/session", session_get), web.post("/api/session", session_post),
                         web.post("/api/session/logout", logout), web.get("/api/preferences", preferences),
@@ -1190,6 +1207,7 @@ def main(argv=None) -> int:
     parser.add_argument("--forge-api")
     parser.add_argument("--assist-model")
     parser.add_argument("--crop-model", action="store_true")
+    parser.add_argument("--project-home", action="store_true")
     parser.add_argument("--mask-stack", action="store_true")
     parser.add_argument("--postprocess", action="store_true")
     parser.add_argument("--default-ui", choices=("v1", "v2"), default="v1")
@@ -1229,6 +1247,7 @@ def main(argv=None) -> int:
                           dev_handoff=args.dev_handoff, dev_parent_port=args.dev_parent_port,
                           cookie_samesite=args.cookie_samesite, workers=args.workers, trusted_proxies=tuple(args.trusted_proxy),
                           forge=forge_config, assist_model=args.assist_model, crop_model=args.crop_model,
+                          project_home=args.project_home,
                           mask_stack=args.mask_stack, postprocess=args.postprocess, default_ui=args.default_ui)
     try:
         config = _validate_config(config)
