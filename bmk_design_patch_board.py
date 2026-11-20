@@ -1593,7 +1593,8 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
     parts = []
     adjustments = {}
     first = {}
-    for c in _composite_picks(m, swap):
+    picks = _composite_picks(m, swap)
+    for c in picks:
         tids = first.setdefault(c["crop_id"], [])
         if c["tid"] not in tids:
             tids.append(c["tid"])
@@ -1611,6 +1612,12 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
     extra = [{"z_order": manual}] if manual else []
     if adjustments:
         extra.append({"cand_adjust": adjustments})
+    # 교체 가정에서는 그 후보의 탈락도 풀린다(_star_plan 과 같은 집합).
+    stack_manifest = m
+    if swap and swap[2] in (m.get("rejects") or {}):
+        stack_manifest = dict(m, rejects={k: v for k, v in m["rejects"].items() if k != swap[2]})
+    if stacks := store.picked_stacks(stack_manifest, {c["key"] for c in picks}):
+        extra.append({"mask_stack": stacks})
     tie_order = [[cid, [t["tid"] for t in crop["targets"] if t["tid"] in first[cid]]]
                  for cid, crop in crops.items() if cid in first]
     if tie_order != [[cid, tids] for cid, tids in first.items()]:
@@ -1969,7 +1976,7 @@ def _edit_window(m: dict, cand: dict, entry: dict | None, use_registration: bool
     quad = _adjust_base_quad(cand, entry, use_registration)
     on = dmask.star_cand(m, cand["key"]) if picked is None else picked
     adj = store.cand_adjust_effect(store.cand_adjust(m, cand["key"])) if on else None
-    if adj:
+    if adj and "transform" not in (store.mask_stack_applied(m, cand["key"]) or {}).get("off", []):
         quad = an.xform_quad(quad, **{k: adj[k] for k in ("dx", "dy", "rot", "sx", "sy") if k in adj})
     return dmask.edit_rect(dpsd.quad_bbox(quad), [int(v) for v in m["canvas"]])
 
@@ -2004,7 +2011,13 @@ def _layers_sig(root: str, m: dict, pref: dict | None, key: str, box: list[int],
             near.add(c["crop_id"])
     mv = dict(m, candidates=[c for c in m["candidates"] if c.get("crop_id") in near],
               mask_edits={k: v for k, v in (m.get("mask_edits") or {}).items() if k != key})
-    order_args = []
+    extra = []
+    stacks = m.get("mask_stack")
+    if isinstance(stacks, dict) and key in stacks:
+        mv["mask_stack"] = {k: v for k, v in stacks.items() if k != key}
+        # 자기 패치에는 마스크를 씌우지 않지만 위치와 뒤집기는 3층 픽셀에 반영된다.
+        if "transform" in (store.mask_stack_applied(m, key) or {}).get("off", []):
+            extra.append({"off": ["transform"]})
     if store.z_order(m):
         def effective_order():
             items = order if order is not None else _node()._slices_in_order(_star_plan(root, m, pref)[0])
@@ -2024,8 +2037,8 @@ def _layers_sig(root: str, m: dict, pref: dict | None, key: str, box: list[int],
                     effective = cached[1]
         else:
             effective = effective_order()
-        order_args.append(effective)
-    return _sig("masklayers", _composite_sig(root, mv, pref), box, key, *order_args)
+        extra.append(effective)
+    return _sig("masklayers", _composite_sig(root, mv, pref), box, key, *extra)
 
 
 def _murl(rk: str, key: str, kind: str, v: str) -> str:
@@ -2135,7 +2148,7 @@ def mask_view(root: str, key) -> dict:
         warns.insert(0, "분석 없음 — 반영(Analyze) 뒤 편집 권장")
     base = {"src": t["it"]["base_msrc"], "sig": t["base_sig"], "url": _murl(rk, key, "base", t["base_sig"])}
     edit = _edit_view(rk, key, _edit_rec(m, key), t["fp"], t["rect"], _edit_placement(m, cand, t["it"]["entry"], t["fp"]))
-    if edit is not None and t["it"]["mask_edit"] is None:
+    if edit is not None and t["it"]["mask_edit"] is None and "brush" not in t["it"].get("stack_off", []):
         edit["url"] = base["url"]
     adjust = store.cand_adjust_record(m, key)
     effect = store.cand_adjust_effect(adjust)
@@ -2208,9 +2221,9 @@ def _layer_png(root: str, m: dict, pref: dict | None, key: str, box: list[int], 
 
 
 def mask_image(root: str, key, kind, v) -> tuple[bytes, str]:
-    """GET /mask/img → (PNG, 서명). v ≠ 지금 서명이면 409 stale(낡은 요청에 계산하지 않음). base = 기준 마스크(편집 창 L), edit = _plan 이
-    쓰는 편집 래스터(기록 창의 캔버스 자리)를 지금 편집 창으로 옮긴 L(v = _edit_sig — 창이 그대로면 기록 파일과 같은 픽셀. 정합·
-    use_registration 이 바뀌어 창이 달라져도 미리보기 = Compose·PSD), under·patch·over = 3층(v = layers.sig — 계획 없이 서명만 보고, 없을 때만 계산)."""
+    """GET /mask/img → (PNG, 서명). v ≠ 지금 서명이면 409 stale. base = 기준 마스크(편집 창 L), edit = 저장한 붓 래스터를 지금
+    창으로 옮긴 L(v = _edit_sig, 기록 창 밖은 기준). 붓 층을 끄거나 경계·불투명도를 바꿔도 저장된 획을 편집한다.
+    under·patch·over = 3층(v = layers.sig — 계획 없이 서명만 보고, 없을 때만 계산)."""
     if kind not in _MASK_KINDS:
         raise _Reject(400, f"kind 는 {' · '.join(_MASK_KINDS)} 중 하나여야 합니다")
     if not isinstance(v, str) or not _MASK_V_RE.fullmatch(v):
@@ -2230,9 +2243,18 @@ def mask_image(root: str, key, kind, v) -> tuple[bytes, str]:
             raise _Reject(404, "마스크 편집이 없습니다")
         t = _mask_target(root, m, cand, pref)
         sig = fresh(_edit_sig(rec, t["rect"], t["fp"], _edit_placement(m, cand, t["it"]["entry"], t["fp"])))
-        if t["it"]["mask_edit"] is None:  # _plan 이 편집을 읽지 못해 기준을 씀(GET /mask 의 edit.url 은 그때 기준 url)
+        it = t["it"]
+        mask = it["mask"]
+        if "brush" in it.get("stack_off", []) or it.get("mask_stacked"):
+            # 편집 창에는 저장된 획을 내준다. 합성용 경계·불투명도를 붓 래스터에 다시 굽지 않는다.
+            mask, _why = dmask.edit_mask(root, rec)
+            if mask is not None:
+                mask = dmask.expand_edit_mask(mask, it["base_mask"], t["rect"])
+        elif it["mask_edit"] is None:
+            mask = None
+        if mask is None:
             raise _Reject(404, f"마스크 편집 파일을 읽지 못했습니다: {rec['file']}")
-        return _png(_window_l(t["it"]["mask"], t["rect"])), sig
+        return _png(_window_l(mask, t["rect"])), sig
     if kind == "base":
         t = _mask_target(root, m, cand, pref)
         sig = fresh(t["base_sig"])
