@@ -28,13 +28,22 @@ window.DPSubmit = (() => {
       const postprocess = path === "postprocess/run";
       if (response.ok && (!postprocess || result?.ok === true) && typeof result?.prompt_id === "string" && result.prompt_id) {
         const job = { ok: true, prompt_id: result.prompt_id };
-        if (postprocess) job.number = result.number;
+        if (postprocess) {
+          const { number, summary } = result;
+          job.number = number;
+          if (["new", "reuse", "recover", "blocked"].every(key => Number.isSafeInteger(summary?.[key]) && summary[key] >= 0)) {
+            job.summary = summary;
+          }
+        }
         return job;
       }
-      const unreachable = postprocess && response.status === 503 && result?.reason === "forge_unreachable";
-      if (((response.status >= 400 && response.status < 500) || unreachable) && typeof result?.reason === "string" && result.reason) {
-        const rejection = failed(result.reason, result.error || `HTTP ${response.status}`);
-        return postprocess ? rejection : { ...rejection, hash: result.hash, pending: result.pending };
+      const clientError = response.status >= 400 && response.status < 500;
+      const error = result?.error || `HTTP ${response.status}`;
+      if (postprocess && (clientError || (response.status === 503 && result?.reason === "forge_unreachable"))) {
+        return failed(result?.reason || `http_${response.status}`, error);
+      }
+      if (clientError && typeof result?.reason === "string" && result.reason) {
+        return { ...failed(result.reason, error), hash: result.hash, pending: result.pending };
       }
       return failed("unknown", result?.error || `작업 응답을 확인하지 못했습니다(HTTP ${response.status})`);
     } catch (e) { return failed("unknown", e?.message || String(e)); }
@@ -272,6 +281,10 @@ window.DPSubmit = (() => {
     return lines;
   }
 
+  function blockedItems(plan) {
+    return plan.items.filter(item => item.state === "blocked").map(({ key, crop, why }) => ({ key, crop, why }));
+  }
+
   async function submitPostprocess({ root, tool, keys, model, scale, opts }) {
     if (window.DPEnv.caps?.v2_postprocess !== true) return failed("disabled", "후보정 기능이 아직 켜져 있지 않습니다");
     if (window.DPEnv.backend !== "forge") return failed("no_backend", "후보정은 Forge 백엔드에서만 됩니다");
@@ -283,14 +296,20 @@ window.DPSubmit = (() => {
     if (paying) return failed("busy", "앞선 제출을 처리하는 중입니다");
     paying = true;
     try {
-      const body = { root, tool, keys }, query = { root, tool, keys: keys.join(",") };
+      const query = { root, tool, keys: keys.join(",") };
       if (tool === "upscale") {
-        if (model != null) body.model = query.model = model;
-        if (scale != null) body.scale = query.scale = scale;
-      } else if (opts) {
-        body.opts = {};
-        if (opts.mask_offset != null) body.opts.mask_offset = query.offset = opts.mask_offset;
-        if (opts.mask_blur != null) body.opts.mask_blur = query.blur = opts.mask_blur;
+        if ((model !== undefined && (typeof model !== "string" || !model.trim())) || (scale !== undefined && !Number.isFinite(scale))) {
+          return failed("plan_error", "후보정 옵션을 읽지 못했습니다");
+        }
+        if (model !== undefined) query.model = model;
+        if (scale !== undefined) query.scale = scale;
+      } else if (opts !== undefined) {
+        if (!opts || typeof opts !== "object" || Array.isArray(opts)
+            || [opts.mask_offset, opts.mask_blur].some(value => value !== undefined && !Number.isFinite(value))) {
+          return failed("plan_error", "후보정 옵션을 읽지 못했습니다");
+        }
+        if (opts.mask_offset !== undefined) query.offset = opts.mask_offset;
+        if (opts.mask_blur !== undefined) query.blur = opts.mask_blur;
       }
       async function readPlan() {
         const response = await request("postprocess/plan", query);
@@ -305,9 +324,10 @@ window.DPSubmit = (() => {
       }
       const current = await readPlan();
       if (!current.ok) return current;
-      const { counts, items, hash, expect } = current.plan;
-      const blocked = items.filter(i => i.state === "blocked").map(({ key, crop, why }) => ({ key, crop, why }));
+      const approved = current.plan;
+      const { counts, hash, expect } = approved;
       if (!counts.new && !counts.reuse && !counts.recover) {
+        const blocked = blockedItems(approved);
         return blocked.length ? { ...failed("blocked", blocked[0].why), blocked } : failed("nothing_to_do", "후보정할 것이 없습니다");
       }
       if (counts.new && !await ask(current.lines, [], "후보정 승인")) return failed("cancelled", "승인을 취소했습니다");
@@ -317,8 +337,12 @@ window.DPSubmit = (() => {
           || window.DPEnv.backend !== "forge" || window.DPEnv.caps?.v2_postprocess !== true) {
         return failed("stale", "계획이 바뀌었습니다 — 다시 눌러 주세요");
       }
-      const job = await postJob("postprocess/run", { ...body, expect, approve: counts.new ? hash : "" });
-      return job.ok ? { ...job, summary: { new: counts.new, reuse: counts.reuse, recover: counts.recover, blocked } } : job;
+      const options = tool === "upscale" ? { model: approved.model.id, scale: approved.opts.scale }
+        : { opts: { mask_offset: approved.opts.mask_offset, mask_blur: approved.opts.mask_blur } };
+      const job = await postJob("postprocess/run", { root, tool, keys, ...options, expect, approve: counts.new ? hash : "" });
+      if (!job.ok) return job;
+      const totals = job.summary || latest.plan.counts;
+      return { ...job, summary: { new: totals.new, reuse: totals.reuse, recover: totals.recover, blocked: blockedItems(latest.plan) } };
     } catch (e) { return failed("plan_error", e?.message || String(e)); }
     finally { paying = false; }
   }
