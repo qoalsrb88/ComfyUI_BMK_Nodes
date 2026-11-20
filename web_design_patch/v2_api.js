@@ -302,6 +302,21 @@ window.DPV2Api = (() => {
     return { ok: false, reason: "unsupported", message: "이 단계에서 지원되지 않는 제출 유형입니다." };
   }
 
+  async function applyChecked(root) {
+    const mod = submitAdapter();
+    if (!mod) {
+      return {
+        ok: false,
+        pendingIntegration: true,
+        message: "실행 제출 공용 모듈(Phase V2-A submit.js · DPSubmit)이 연결되면 v2에서 바로 실행됩니다. 지금은 우측 상단 [기존 화면(v1)]에서 동일 프로젝트로 실행할 수 있습니다.",
+      };
+    }
+    if (typeof mod.applyChecked === "function") {
+      return mod.applyChecked({ root });
+    }
+    return { ok: false, reason: "unsupported", error: "확인하는 무료 반영(DPSubmit.applyChecked)을 사용할 수 없습니다." };
+  }
+
   async function waitJob(root, promptId, opts) {
     const mod = submitAdapter();
     if (mod && typeof mod.wait === "function" && promptId) {
@@ -323,6 +338,6 @@ window.DPV2Api = (() => {
     pickCandidate, rejectCandidate, drainRun,
     getSeams, saveToForge, exportDownloadUrl,
     getMask, adjustMask, fetchImageRgba, encodePngL, saveMaskPng,
-    getSpec, saveSpec, assistPrompt, batchUpdateCrops, submitAdapter, submitStage, waitJob, getJobQueue,
+    getSpec, saveSpec, assistPrompt, batchUpdateCrops, submitAdapter, submitStage, applyChecked, waitJob, getJobQueue,
   };
 })();
