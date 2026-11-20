@@ -64660,8 +64660,213 @@ def ux_v2c_stack_unit():
 
 
 def ux_v2c_route_unit():
-    """UX v2-C 갈래 M(명세 D615·D618·D620 · §3.6) — POST /mask/stack · GET /mask 의 stack · 기능 플래그 · v1 칩. 갈래 M 이 채운다."""
+    """서버 라우트 표·실제 처리기·합성 계획·v1 후보 줄을 소켓 없이 확인한다."""
     section("UX v2-C — 마스크 필터 스택 라우트 (ux_v2c_route_unit)")
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, Mock, patch
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+
+    dp = _dp_package()
+    bd, st = dp.board, dp.store
+    srv = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_server")
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="v2_mask_stack_", dir=OUT_ROOT.resolve()))
+    scope, other = _fj_scope(out / "home"), dict(_fj_scope(out / "other"), account="b")
+    root, _, keys = _v2c_project(dp, scope["input"], "stack")
+    rk, key = st.root_key(root), keys["a1"]
+    path = f"/mask?root={rk}&key={key}"
+    doc = json.loads(_MASK_API.read_text(encoding="utf-8"))
+    local_contract = doc["routes"]["GET /mask"]
+    contracts = doc["_doc"]["server_routes"]
+    post_contract = contracts["POST /mask/stack"]
+
+    async def call(app, method, path, data=None, *, status=200, account=scope, content_type="application/json"):
+        request = make_mocked_request(method, bd.API + path, headers={"Content-Type": content_type}, app=app)
+        request.read = AsyncMock(return_value=data if isinstance(data, bytes) else json.dumps(data).encode())
+        route = await app.router.resolve(request)
+        scope_token = bd.set_scope(account)
+        try:
+            if route.http_exception is not None:
+                check(route.http_exception.status == status, f"V2CM {method} {path} 라우트 표 {status}")
+                return None
+            response = await route.handler(request)
+        finally:
+            bd.reset_scope(scope_token)
+        body = response.body if response.content_type == "image/png" else json.loads(response.body)
+        check(response.status == status, f"V2CM {method} {path.split('?')[0]} → {status} (실제 {response.status})")
+        return body
+
+    @contextlib.asynccontextmanager
+    async def server(**options):
+        jobs = types.SimpleNamespace(JobRunner=Mock, routes=lambda runner: ())
+        cfg = srv.ServerConfig(str(out / "data"), dev_handoff=True, **options)
+        with patch.object(srv, "_server_secret", return_value=bytes(32)):
+            app = srv.make_app(cfg, jobs_module=jobs)
+        app.freeze()
+        try:
+            yield app
+        finally:
+            await app.cleanup()
+
+    async def write_cases(app):
+        async def post(op="set", seen="", status=200, **fields):
+            data = {"root": rk, "key": key, "op": op, "seen": seen, **fields}
+            return await call(app, "POST", "/mask/stack", data, status=status)
+
+        initial = await call(app, "GET", path)
+        get_contract = contracts["GET /mask"]
+        extras = {k: initial[k] for k in ("stack", "stack_fx", "final")}
+        check(not _pl_shape(get_contract["ok"], extras, get_contract) and initial["stack"] is initial["stack_fx"] is None,
+              "V2CM 새 서버 마스크 정본·기록 없음")
+        first = await post(edge={"feather": 6})
+        rec = first["stack"]
+        defaults = st.mask_stack_defaults()
+        check(rec == {**defaults, "edge": dict(defaults["edge"], feather=6.), "at": rec["at"], "hist": []}
+              and not _pl_shape(post_contract["ok"], first, post_contract), "V2CM 첫 기록은 기본값에 준 칸만 변경·POST 정본")
+        changed = await post(seen=rec["at"], edge={"fade": {"bottom": 48}})
+        second = changed["stack"]
+        check(second["edge"]["feather"] == 6 and second["edge"]["fade"] == dict(defaults["edge"]["fade"], bottom=48)
+              and second["hist"] == [{k: v for k, v in rec.items() if k != "hist"}], "V2CM fade 아래 한 변만 변경·이력 사본")
+        check(await post(seen=second["at"], edge={"fade": {"bottom": 48}}) == changed, "V2CM 같은 set은 rev·at·이력 그대로")
+        check((await post(seen=rec["at"], status=409)) == {"reason": "changed", "stack": second,
+              "error": post_contract["errors"]["409"][1]["error"]}, "V2CM 낡은 seen은 현재 기록과 changed")
+        current = await call(app, "GET", path)
+        check(current["final"] == changed["final"] and current["final"]["sig"] != initial["final"]["sig"]
+              and current["stack_fx"] == {"edge": second["edge"]} and current["composite_sig"] == changed["composite_sig"],
+              "V2CM GET·쓰기 응답의 현재 서명·스택 효과")
+        old_img = "/" + initial["final"]["url"]
+        with patch.object(bd, "_mask_target", side_effect=AssertionError("낡은 PNG의 합성 계획")):
+            check((await call(app, "GET", old_img, status=409))["reason"] == "stale", "V2CM 낡은 최종 그림은 계획 전에 거절")
+        img_path = "/" + current["final"]["url"]
+        png = await call(app, "GET", img_path)
+        manifest = st.load_manifest(root)
+        t = bd._mask_target(root, manifest, bd._cand(manifest, key), None)
+        with Image.open(io.BytesIO(png)) as im:
+            check(im.format == "PNG" and im.mode == contracts["GET /mask/stack/img"]["ok"]["mode"]
+                  and np.array_equal(np.asarray(im), bd._window_l(t["it"]["mask"], current["rect"])),
+                  "V2CM 최종 그림의 L 픽셀·크기 = 합성 계획의 마스크를 편집 창으로 자른 값")
+        other_mask = await call(app, "GET", path, status=404, account=other)
+        check(other_mask == await call(app, "GET", img_path, status=404, account=other)
+              == await call(app, "POST", "/mask/stack", {"root": rk, "key": key, "op": "reset", "seen": second["at"]},
+                            status=404, account=other), "V2CM 다른 계정의 프로젝트는 기존 마스크와 같은 404")
+        prev = (await post("undo", second["at"]))["stack"]
+        check(prev == dict(rec, at=prev["at"]) and prev["at"] > second["at"] > rec["at"], "V2CM undo는 앞 판 값·새 시각")
+        await post("undo", prev["at"], status=400)
+        neutral = (await post(seen=prev["at"], edge={"feather": 0}))["stack"]
+        check(neutral["hist"] and neutral["at"] > prev["at"] and (await call(app, "GET", path))["stack_fx"] is None,
+              "V2CM 기본값 복귀 뒤에도 표지·이력 보존")
+        cleared = await post("reset", neutral["at"])
+        check(cleared["stack"] is None and key not in st.load_manifest(root)["mask_stack"] and await post("reset") == cleared,
+              "V2CM reset 삭제·빈 reset은 같은 rev")
+
+        for bad, name in (({"extra": 1}, "extra"), ({"edge": {"alien": 0}}, "alien"),
+                          ({"edge": {"fade": {"north": 0}}}, "north")):
+            check(name in (await post(status=400, **bad))["error"], f"V2CM 모르는 칸 이름 {name}")
+        for op in ("undo", "reset"):
+            for field in ("off", "edge", "opacity"):
+                check(field in (await post(op, status=400, **{field: None}))["error"], f"V2CM {op}에서 {field} 거절")
+        for field, value, message in (
+            ("off", "brush", "off 는"), ("off", ["brush", "brush"], "off 는"), ("off", ["extra"], "off 는"),
+            ("edge", None, "edge 는"), ("edge", {"fade": []}, "페이드는"), ("edge", {"fade": {"left": 257}}, "페이드는"),
+            ("edge", {"fade": {"right": 0.5}}, "페이드는"), ("edge", {"feather": True}, "페더는"),
+            ("edge", {"feather": 33}, "페더는"), ("opacity", False, "불투명도는"), ("opacity", -1, "불투명도는")):
+            check((await post(status=400, **{field: value}))["error"].startswith(message), f"V2CM {field} 범위·타입 검사 {value!r}")
+        await post(seen="bad", status=400)
+        await post(key="?", status=400)
+        await post(key="r_000000000000_0_0", status=404)
+        check((await post(key=keys["d"], status=409))["reason"] == "not_picked", "V2CM ★ 아닌 후보 거절")
+        for raw, mime, code in ((b"?", "application/json", 400), (b"[]", "application/json", 400), (b"{}", "text/plain", 415)):
+            await call(app, "POST", "/mask/stack", raw, content_type=mime, status=code)
+
+        st.update_manifest(root, lambda m: m["mask_stack"].update({key: {"bad": True}}))
+        saved = (await post(off=["brush", "transform"]))["stack"]
+        check(saved["hist"] == [] and saved["off"] == ["brush", "transform"], "V2CM 깨진 기록 위에 처음 쓰기")
+        saved = (await post(seen=saved["at"], off=["brush"]))["stack"]
+        check(saved["off"] == ["brush"], "V2CM off는 준 목록으로 교체")
+        # 나노초 끝에서 시계가 뒤로 간 경우·같은 시각 연속 저장을 함께 확인한다.
+        fixed = dict(saved, at="2090-01-31 23:59:59.999999999", hist=[])
+        st.update_manifest(root, lambda m: m["mask_stack"].update({key: fixed}))
+        seen = fixed["at"]
+        for opacity in range(21):
+            saved = (await post(seen=seen, opacity=opacity))["stack"]
+            check(saved["at"] > seen and (opacity > 0 or saved["at"] == "2090-02-01 00:00:00.000000000"),
+                  f"V2CM 연속 쓰기 시각 증가 {opacity}")
+            seen = saved["at"]
+        check(len(saved["hist"]) == st.RECORD_HIST_KEEP and [v["opacity"] for v in saved["hist"]] == list(reversed(range(20)))
+              and all("hist" not in v for v in saved["hist"]), "V2CM 최신 이전 판 20개만 보존")
+        update = st.update_manifest
+        for conflict in ("changed", "not_picked"):
+            def intervene(m):
+                if conflict == "changed":
+                    m["mask_stack"][key] = dict(saved, at="2091-01-01 00:00:00.000000001")
+                else:
+                    bd._cand(m, key)["picked"] = False
+            def race(folder, fn):
+                update(folder, intervene)
+                return update(folder, fn)
+            with patch.object(st, "update_manifest", side_effect=race):
+                error = await post("reset", seen, status=409)
+            check(error["reason"] == conflict and (conflict != "changed" or error["stack"]["at"] != seen),
+                  f"V2CM 쓰기 직전 경합은 잠금 안에서 {conflict}")
+        update(root, lambda m: bd._cand(m, key).update(picked=True))
+
+    async def run():
+        local = web.Application()
+        table = web.RouteTableDef()
+        bd.register_routes(table)
+        local.add_routes(table)
+        local.freeze()
+        check(await call(local, "GET", "/env") == _server_api()["env_local"]["response"], "V2CM 로컬 env 정본")
+        local_view = await call(local, "GET", path)
+        check(not _pl_shape(local_contract["ok"], local_view, local_contract)
+              and local_view == bd.mask_view(root, key) and "stack_fx" not in local_view, "V2CM 로컬 GET /mask 정본·내용 보존")
+        for method, p in (("POST", "/mask/stack"), ("GET", "/mask/stack/img")):
+            await call(local, method, p, status=404)
+        async with server(mask_stack=True) as app:
+            check((await call(app, "GET", "/env"))["caps"]["v2_mask_stack"] is True, "V2CM 서버 플래그 켬")
+            await write_cases(app)
+        async with server() as app:
+            check(await call(app, "GET", "/env") == _env_ui_v2(_server_api()["env_server_no_session"]["response"], bd),
+                  "V2CM 기본 서버 env 정본")
+            for method, p in (("POST", "/mask/stack"), ("GET", "/mask/stack/img")):
+                await call(app, method, p, status=404)
+            d = await call(app, "GET", path)
+            check(d["stack_fx"] == {"off": ["brush"], "opacity": 20} and set(d) == set(local_view) | {"stack_fx"},
+                  "V2CM 꺼진 서버는 저장된 효과만 제공")
+
+    asyncio.run(run())
+
+    node = shutil.which("node")
+    if not node:
+        skip("V2CM node 없음 — v1 후보 칩 DOM 검사 생략")
+        return
+    source = (PKG / "web_design_patch/mask_edit.js").read_text(encoding="utf-8")
+    funcs = "\n".join(_layout_js_fn(source, name, indent="    ") + "\n}" for name in ("el", "chip", "cur", "stackChips", "renderList"))
+    dom = _PL_JS_HARNESS.split("class El {", 1)[1].split("async function mouse(", 1)[0]
+    harness = "class El {" + dom + funcs + r"""
+const document = new Doc(), window = {}, list = document.createElement("ul");
+const M = {key: "a", pending: () => false}, S = {crops:[{id:"c"}], targets:[]};
+const held = false, fadeStroke = () => false, opts = {seams: () => null}, expanded = new Set();
+const detailRows = () => {}, candOf = () => null, pad = String;
+const results = [];
+for (const keys of [["a"], ["a", "b"]]) {
+  S.targets = [{crop_id:"c", tid:"A", pick_keys:keys, candidates:keys.map(key => ({key}))}];
+  for (const fx of [undefined, null, {opacity:0}, {edge:{}}, {off:["brush"]}, {off:["transform"]}, {edge:{},off:["brush","transform"]}]) {
+    M.info = {key:"a", crop_id:"c", stack_fx:fx};
+    renderList();
+    const chips = list.all().filter(e => e.classList.contains("chip"));
+    results.push(chips.map(e => [e.textContent, e.title, e.tagName, keys.length === 1 || e.parent.classList.contains("sel")]));
+  }
+}
+console.log(JSON.stringify(results));
+"""
+    proc = subprocess.run([node, "-"], input=harness, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    filter_chip = ["새 화면 필터 적용 중", "새 화면에서 저장한 경계 부드럽게·불투명도가 ★ 합성과 Export 에 적용됩니다. 이 화면의 미리 보기에는 보이지 않습니다 — 결과는 ★ 합성에서 확인하세요. 여기서 페이드·페더를 더하면 두 번 부드러워집니다.", "SPAN", True]
+    def hidden(names):
+        return ["새 화면에서 끔: " + names, "새 화면에서 이 층을 꺼 두었습니다. 여기서 저장한 값은 남지만 ★ 합성에는 보이지 않습니다 — 새 화면에서 다시 켭니다.", "SPAN", True]
+    expected = [[], [], [filter_chip], [filter_chip], [hidden("브러시")], [hidden("변형")], [filter_chip, hidden("브러시·변형")]]
+    check(proc.returncode == 0 and json.loads(proc.stdout) == expected * 2, "V2CM v1 후보 줄·복수 ★ 줄 읽기 전용 칩·설명 " + proc.stderr[-350:])
 
 
 def want(name: str) -> bool:

@@ -251,6 +251,7 @@ import sys
 import threading
 import time
 import unicodedata
+from datetime import datetime, timedelta
 from typing import Callable
 from urllib.parse import urlencode
 
@@ -400,6 +401,7 @@ LOCAL_CAPS = {"jobs": False, "export_download": False, "sam3": True, "local_qwen
 V2_CAPS = ("ui_v2", "v2_spec_edit", "v2_forge_prompt", "v2_auto_prepare", "v2_crop_model", "v2_postprocess", "v2_psd_reimport",
            "v2_mask_stack")
 LOCAL_CAPS.update({name: False for name in V2_CAPS})
+MASK_STACK_ENABLED = web.AppKey("bmk_dp_mask_stack", bool)
 _SCOPE: contextvars.ContextVar = contextvars.ContextVar("bmk_dp_scope", default=None)
 _ENV_PROVIDER: list = []           # set_env_provider — 서버 모드의 GET /env 본문을 만드는 함수(request → dict)
 _SCOPE_ROOTS: dict = {}            # 정규화한 계정 프로젝트 폴더 → (mtime_ns, {key: root}), 최근 256개
@@ -2609,6 +2611,134 @@ def mask_adjust(root: str, data: dict) -> dict:
     rec, rev = store.update_manifest(root, mutate)
     return {"ok": True, "adjust": rec, "rev": rev,
             "composite_sig": _composite_sig(root, store.load_manifest(root), _PREF.get(store.root_key(root)))}
+
+
+def _stack_fields(fields, allowed):
+    unknown = fields.keys() - allowed
+    if unknown:
+        raise _Reject(400, "허용되지 않은 칸: " + ", ".join(sorted(unknown)))
+
+
+def _stack_values(data, old):
+    base = old or store.mask_stack_defaults()
+    edge = data.get("edge", base["edge"])
+    if isinstance(edge, dict):
+        _stack_fields(edge, {"feather", "fade"})
+        fade = edge.get("fade", base["edge"]["fade"])
+        if isinstance(fade, dict):
+            _stack_fields(fade, set(store.MASK_STACK_SIDES))
+            fade = {**base["edge"]["fade"], **fade}
+        edge = {"feather": edge.get("feather", base["edge"]["feather"]), "fade": fade}
+    return store.mask_stack_values(data.get("off", base["off"]), edge, data.get("opacity", base["opacity"]))
+
+
+def _stack_at(seen: str) -> str:
+    ns = time.time_ns()
+    seconds = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ns // 1_000_000_000))
+    now = f"{seconds}.{ns % 1_000_000_000:09d}"
+    if not seen:
+        return now
+    seconds, _, fraction = seen.partition(".")
+    fraction = fraction.ljust(9, "0")
+    if now > f"{seconds}.{fraction}":
+        return now
+    # 시계가 돌아갔거나 같은 나노초면 앞 판의 현지 시각에서 한 나노초 전진한다.
+    nanos = int(fraction) + 1
+    if nanos == 1_000_000_000:
+        try:
+            seconds = (datetime.fromisoformat(seconds) + timedelta(seconds=1)).isoformat(" ")
+        except (OverflowError, ValueError) as e:
+            raise _Reject(400, "스택 시각을 늘릴 수 없습니다 — 기록을 초기화하세요") from e
+        nanos = 0
+    return f"{seconds}.{nanos:09d}"
+
+
+def _stack_final(root, m, cand, pref):
+    """계획을 그리기 전, 편집 창과 실제 효과 값만으로 최종 PNG의 주소를 만든다."""
+    key = cand["key"]
+    cs = _compose_settings(root, m)
+    entry = _entry_for(m, key, pref)
+    rect = _edit_window(m, cand, entry, cs["use_registration"], picked=True)
+    if not rect or (rect[2] - rect[0]) * (rect[3] - rect[1]) > dmask.MAX_PIXELS:
+        return None
+    fp = dmask.base_fp(cand, entry, cs["mask_source"])
+    base_sig = _sig("maskbase", rect, fp, _edit_placement(m, cand, entry, fp))
+    fx = store.mask_stack_applied(m, key)
+    rec = _edit_rec(m, key) if "brush" not in (fx or {}).get("off", ()) else None
+    edit = [rec["file"], rec["rect"]] if rec and _edit_usable(root, rec) else None
+    adjust = store.cand_adjust_effect(store.cand_adjust_record(m, key))
+    sig = _sig("maskstack", rect, base_sig, edit, fx, adjust)
+    return {"sig": sig, "url": "mask/stack/img?" + urlencode({"root": store.root_key(root), "key": key, "v": sig})}
+
+
+def mask_stack(root: str, data: dict) -> dict:
+    key = _field(data, "key", _KEY_RE)
+    op, seen = data.get("op"), data.get("seen")
+    if op not in ("set", "undo", "reset"):
+        raise _Reject(400, "op 는 set · undo · reset 중 하나여야 합니다")
+    fields = {"root", "key", "seen", "op"}
+    _stack_fields(data, fields | {"off", "edge", "opacity"} if op == "set" else fields)
+    if not isinstance(seen, str) or not (seen == "" or re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{1,9})?", seen)):
+        raise _Reject(400, "seen 은 이 창에서 받은 스택 시각 또는 빈 문자열이어야 합니다")
+
+    def mutate(m):
+        cand = _mask_cand(m, key)
+        old = store.mask_stack_record(m, key)
+        if seen != (old["at"] if old else ""):
+            raise _Reject(409, "마스크 스택이 다른 창에서 바뀌었습니다 — 다시 받기", reason="changed", stack=old)
+        records = m.get("mask_stack")
+        if op == "reset":
+            if isinstance(records, dict):
+                records.pop(key, None)
+            return m, cand, None
+        hist = old["hist"] if old else []
+        if op == "undo":
+            if not hist:
+                raise _Reject(400, "되돌릴 이전 스택이 없습니다")
+            new, hist = hist[0], hist[1:]
+        else:
+            new = _stack_values(data, old)
+            if old and all(old[k] == v for k, v in new.items()):
+                return m, cand, old
+            if old:
+                hist = [{k: v for k, v in old.items() if k != "hist"}, *hist][:store.RECORD_HIST_KEEP]
+        rec = dict(new, at=_stack_at(seen), hist=hist)
+        if not isinstance(records, dict):
+            records = m["mask_stack"] = {}
+        records[key] = rec
+        return m, cand, rec
+
+    (m, cand, rec), rev = store.update_manifest(root, mutate)
+    pref = _PREF.get(store.root_key(root))
+    return {"ok": True, "stack": rec, "rev": rev, "composite_sig": _composite_sig(root, m, pref),
+            "final": _stack_final(root, m, cand, pref)}
+
+
+def _server_mask_view(root, key, enabled):
+    m = store.load_manifest(root)
+    view = mask_view(root, key)
+    if view["z"]["rev"] != m["rev"]:
+        m = store.load_manifest(root)
+        if view["z"]["rev"] != m["rev"]:
+            raise _Reject(409, "★ 합성·마스크가 그 사이 바뀌었습니다 — 다시 받기", reason="stale")
+    view["stack_fx"] = store.mask_stack_applied(m, key)
+    if enabled:
+        view["stack"] = store.mask_stack_record(m, key)
+        view["final"] = _stack_final(root, m, _mask_cand(m, key), _PREF.get(store.root_key(root)))
+    return view
+
+
+def mask_stack_image(root, key, v):
+    if not isinstance(v, str) or not _MASK_V_RE.fullmatch(v):
+        raise _Reject(400, "v 형식이 잘못되었습니다")
+    m = store.load_manifest(root)
+    pref = _PREF.get(store.root_key(root))
+    cand = _mask_cand(m, key)
+    final = _stack_final(root, m, cand, pref)
+    if not final or v != final["sig"]:
+        raise _Reject(409, "★ 합성·마스크가 그 사이 바뀌었습니다 — 다시 받기", reason="stale")
+    t = _mask_target(root, m, cand, pref)
+    return _png(_window_l(t["it"]["mask"], t["rect"])), v
 
 
 def mask_alts(root: str, key) -> dict | None:
@@ -7372,7 +7502,25 @@ async def draft_adopt_handler(request: web.Request) -> web.StreamResponse:
 @_guard
 async def mask_handler(request: web.Request) -> web.StreamResponse:
     root = _root_param(request.query.get("root"))
-    return _json(await asyncio.to_thread(mask_view, root, request.query.get("key")))
+    key = request.query.get("key")
+    if server_mode():
+        return _json(await asyncio.to_thread(_server_mask_view, root, key, request.app.get(MASK_STACK_ENABLED, False)))
+    return _json(await asyncio.to_thread(mask_view, root, key))
+
+
+@_guard
+async def mask_stack_handler(request: web.Request) -> web.StreamResponse:
+    data = await _body(request)
+    root = _root_param(data.get("root"))
+    return _json(await asyncio.to_thread(mask_stack, root, data))
+
+
+@_guard
+async def mask_stack_img_handler(request: web.Request) -> web.StreamResponse:
+    q = request.query
+    root = _root_param(q.get("root"))
+    data, sig = await asyncio.to_thread(mask_stack_image, root, q.get("key"), q.get("v"))
+    return _image_response(data, "image/png", sig, q.get("v"))
 
 
 @_guard
@@ -8163,6 +8311,12 @@ async def import_received(data: dict, raw: bytes, filename: str, source=None) ->
                 logger.warning("Forge 출처 기록을 저장하지 못했습니다.")
         await _project_new_thread(record)
     return response
+
+
+MASK_STACK_ROUTES = (
+    ("POST", f"{API}/mask/stack", mask_stack_handler),
+    ("GET", f"{API}/mask/stack/img", mask_stack_img_handler),
+)
 
 
 _ROUTES = (
