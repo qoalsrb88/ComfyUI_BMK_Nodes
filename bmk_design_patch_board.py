@@ -1615,11 +1615,14 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
     if adjustments:
         extra.append({"cand_adjust": adjustments})
     # 교체 가정에서는 그 후보의 탈락도 풀린다(_star_plan 과 같은 집합).
-    stack_manifest = m
+    picked_manifest = m
+    keys = {c["key"] for c in picks}
     if swap and swap[2] in (m.get("rejects") or {}):
-        stack_manifest = dict(m, rejects={k: v for k, v in m["rejects"].items() if k != swap[2]})
-    if stacks := store.picked_stacks(stack_manifest, {c["key"] for c in picks}):
+        picked_manifest = dict(m, rejects={k: v for k, v in m["rejects"].items() if k != swap[2]})
+    if stacks := store.picked_stacks(picked_manifest, keys):
         extra.append({"mask_stack": stacks})
+    if posts := store.applied_posts(picked_manifest, root, keys):
+        extra.append({"cand_post": posts})
     tie_order = [[cid, [t["tid"] for t in crop["targets"] if t["tid"] in first[cid]]]
                  for cid, crop in crops.items() if cid in first]
     if tie_order != [[cid, tids] for cid, tids in first.items()]:
@@ -2722,6 +2725,9 @@ def mask_stack(root: str, data: dict) -> dict:
 def _server_mask_view(root, key, enabled):
     m = store.load_manifest(root)
     view = mask_view(root, key, m)  # 같은 판으로 — 따로 읽으면 그 사이의 쓰기 때문에 두 값이 다른 판을 볼 수 있다
+    post = store.cand_post_record(m, key)
+    view["post"] = (dict(on=post["on"], tool=post["tool"], model=post["model"], size=post["size"],
+                         label=store.post_label(post), at=post["at"]) if post else None)
     view["stack_fx"] = store.mask_stack_applied(m, key)
     if enabled:
         view["stack"] = store.mask_stack_record(m, key)
@@ -2964,7 +2970,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     export_state = None if ex is None else "unknown"
     if ex is not None and ex.get("state_sig"):
         try:
-            export_state = "same" if ex["state_sig"] == store.export_state_sig(m) else "changed"
+            export_state = "same" if ex["state_sig"] == store.export_state_sig(m, root) else "changed"
         except Exception:  # 점검표 서명 오류가 state 폴링을 중단시키지 않게
             pass
     flags = {"running": running, "drain": running and drain_requested(root), "drafting": drafting, "agent_approve": _agent_state(root),
@@ -3029,6 +3035,9 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                 edit = _edit_rec(m, c["key"])
                 adjust = store.cand_adjust(m, c["key"])
                 candidate_flags = _forge_candidate_flags(root, info)
+                if server_mode() and (post := store.cand_post_record(m, c["key"])):
+                    candidate_flags["post"] = {"on": post["on"], "tool": post["tool"], "label": store.post_label(post),
+                                               "v": _sig(post["at"], post["file"])}
                 if _forge_ratio_changed(root, c, crop["rect"], ck, rep):
                     candidate_flags["ratio_changed"] = True
                 cands.append({
@@ -7941,11 +7950,13 @@ def _project_summary(root: str) -> dict:
     ex = store.last_export(root, m)
     state = None if ex is None else "unknown"
     if ex is not None and ex.get("state_sig"):
-        state = "same" if ex["state_sig"] == store.export_state_sig(m) else "changed"
+        state = "same" if ex["state_sig"] == store.export_state_sig(m, root) else "changed"
     last = {"rev": ex.get("rev") if type(ex.get("rev")) is int else None, "time": _project_time(ex.get("time"))} if ex else None
     row = {"openable": True, "crops": len(m["crops"]), "stars": stars, "candidates": len(m["candidates"]),
            "before_import": not bool(m.get("base")), "export_last": last, "export_state": state,
            "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))}
+    if state in ("same", "changed") and store.picked_posts(m):
+        return row  # 파생본 파일만 바뀌면 매니페스트·설정의 시각이 그대로여도 최신 판정이 달라진다.
     with _PROJECT_MEMO_LOCK:
         if len(_PROJECT_MEMO) >= 512:
             _PROJECT_MEMO.clear()
