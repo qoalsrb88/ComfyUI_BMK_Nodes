@@ -1761,7 +1761,7 @@ class BMKDesignPatchCandidateIn:
         m["candidates"] = _plain(merged)
         for k in removed:
             m["analysis"].pop(k, None)
-            for field in ("mask_edits", "cand_adjust"):  # 탈락·★ 해제는 기록을 둠 — 사라진 후보만
+            for field in ("mask_edits", "cand_adjust", "mask_stack", "cand_post"):  # 탈락·★ 해제는 기록을 둠 — 사라진 후보만
                 records = m.get(field)
                 if isinstance(records, dict):
                     records.pop(k, None)

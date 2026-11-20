@@ -2222,6 +2222,16 @@ def _layer_png(root: str, m: dict, pref: dict | None, key: str, box: list[int], 
     return data
 
 
+def _brush_mask(root: str, rec: dict | None, it: dict, rect: list[int]) -> dict | None:
+    """붓 층의 래스터 = 저장된 편집을 지금 편집 창으로 옮긴 것(기록 창 밖은 기준) — 마스크 필터를 걸기 **전**의 값.
+    계획 항목의 mask 는 붓 층을 껐으면 기준이고 경계·불투명도가 걸렸으면 구운 창 래스터라, 편집 창에 내주거나(/mask/img edit)
+    다음 저장의 창 밖 획 보존(mask_save)에 쓰면 획을 잃거나 구운 경계가 붓 래스터에 들어간다. 편집을 읽지 못하면 None."""
+    if "brush" in it.get("stack_off", []) or it.get("mask_stacked"):
+        mask, _why = dmask.edit_mask(root, rec) if rec else (None, None)
+        return None if mask is None else dmask.expand_edit_mask(mask, it["base_mask"], rect)
+    return it["mask"] if it["mask_edit"] is not None else None
+
+
 def mask_image(root: str, key, kind, v) -> tuple[bytes, str]:
     """GET /mask/img → (PNG, 서명). v ≠ 지금 서명이면 409 stale. base = 기준 마스크(편집 창 L), edit = 저장한 붓 래스터를 지금
     창으로 옮긴 L(v = _edit_sig, 기록 창 밖은 기준). 붓 층을 끄거나 경계·불투명도를 바꿔도 저장된 획을 편집한다.
@@ -2245,15 +2255,7 @@ def mask_image(root: str, key, kind, v) -> tuple[bytes, str]:
             raise _Reject(404, "마스크 편집이 없습니다")
         t = _mask_target(root, m, cand, pref)
         sig = fresh(_edit_sig(rec, t["rect"], t["fp"], _edit_placement(m, cand, t["it"]["entry"], t["fp"])))
-        it = t["it"]
-        mask = it["mask"]
-        if "brush" in it.get("stack_off", []) or it.get("mask_stacked"):
-            # 편집 창에는 저장된 획을 내준다. 합성용 경계·불투명도를 붓 래스터에 다시 굽지 않는다.
-            mask, _why = dmask.edit_mask(root, rec)
-            if mask is not None:
-                mask = dmask.expand_edit_mask(mask, it["base_mask"], t["rect"])
-        elif it["mask_edit"] is None:
-            mask = None
+        mask = _brush_mask(root, rec, t["it"], t["rect"])
         if mask is None:
             raise _Reject(404, f"마스크 편집 파일을 읽지 못했습니다: {rec['file']}")
         return _png(_window_l(mask, t["rect"])), sig
@@ -2291,7 +2293,7 @@ def mask_save(root: str, key, data: bytes, seen, ops, rect) -> dict:
         return _edit_window(mm, _cand(mm, key), _entry_for(mm, key, _PREF.get(rk)), bool(_compose_settings(root, mm)["use_registration"]))
 
     rec, rev = dmask.save_edit(root, key, data, seen=_seen(seen), rect=t["rect"], base=t["fp"], ops=ops, placed=placed,
-                              preserve_mask=t["it"]["mask"] if t["it"]["mask_edit"] else None)
+                              preserve_mask=_brush_mask(root, _edit_rec(m, key), t["it"], t["rect"]))
     return {"ok": True, "edit": _edit_view(rk, key, rec, t["fp"], t["rect"]), "rev": rev,
             "composite_sig": _composite_sig(root, store.load_manifest(root), pref)}
 
