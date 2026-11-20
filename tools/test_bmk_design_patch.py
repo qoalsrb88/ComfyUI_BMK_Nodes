@@ -60214,7 +60214,7 @@ V2_FORBIDDEN = (
     (re.compile(r"""(?:src|href)\s*=\s*["'](?:https?:)?//""", re.I), "바깥 주소의 스크립트·글꼴·스타일"),
     (re.compile(r"""@import\s+(?:url\()?\s*["']?(?:https?:)?//""", re.I), "바깥 주소의 CSS @import"),
     (re.compile(r"""url\(\s*["']?(?:https?:)?//""", re.I), "바깥 주소의 CSS url()"),
-    (re.compile(r"jobs/prompt"), "유료 라우트 직접 호출(공용 모듈 DPSubmit 만)"),
+    (re.compile(r"""jobs/prompt|postprocess/run|(?:jobs|postprocess)/(?:["'`]\s*\+|\$\{)"""), "유료 라우트 직접 호출(공용 모듈 DPSubmit 만)"),
 )
 
 
@@ -64980,8 +64980,273 @@ def ux_v2c_post_unit():
 
 
 def ux_v2c_submit_unit():
-    """UX v2-C 갈래 A(명세 D593·D594·D621 · §3.7) — 공용 모듈의 후보정 제출·승인 상자의 글·v1 의 읽기 표시. 갈래 A 가 채운다."""
+    """UX v2-C 후보정의 승인·제출과 v1 읽기 표시. 가짜 fetch·DOM 으로만 검사한다."""
     section("UX v2-C — 후보정 승인(공용 모듈) (ux_v2c_submit_unit)")
+    for path in ("postprocess/run", "postprocess/plan", "postprocess/set", "postprocess/img", "postprocess?root=p"):
+        problems = v2_file_problems("v2_example.js", f'fetch(api("{path}"));\n'.encode())
+        check(bool(problems) == (path == "postprocess/run"), f"V2CS v2 후보정 경로 구조 검사 {path}")
+    for prefix in ("postprocess/", "jobs/"):
+        for expr in (f'"{prefix}" + op', f"'{prefix}' + op", f'`{prefix}`\n + op', f'`{prefix}${{op}}`'):
+            check(v2_file_problems("v2_example.js", f"api({expr});\n".encode()), f"V2CS v2 경로 조합 금지 {expr!r}")
+    node = shutil.which("node")
+    if not node:
+        skip("V2CS node 없음 — 후보정 VM 시험 생략")
+        return
+    web = PKG / "web_design_patch"
+    out = OUT_ROOT / "ux_v2c_submit"
+    out.mkdir(parents=True, exist_ok=True)
+    board = (web / "board.js").read_text(encoding="utf-8")
+    board_fns = ("el", "row", "tileBadges", "renderDetail", "renderGrid")
+    review = "\n".join(_layout_js_fn(board, name) + "\n}" for name in board_fns)
+    dom = _PL_JS_HARNESS[_PL_JS_HARNESS.index("class El {"):_PL_JS_HARNESS.index("async function mouse(")]
+    harness = dom + r'''
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import vm from "node:vm";
+const submit = fs.readFileSync(process.argv[2], "utf8");
+const results = {};
+async function test(name, run) {
+  try { await run(); results[name] = true; } catch (e) { results[name] = e.stack; }
+}
+const eq = (actual, expected) => assert.deepEqual(JSON.parse(JSON.stringify(actual)), expected);
+const flush = () => new Promise(resolve => setImmediate(resolve));
+El.prototype.remove = function() { this.parent.children = this.parent.children.filter(c => c !== this); this.parent = null; };
+const root = "패치 & A", up = "upscale", bg = "bg_removal";
+const options = {
+  upscale: { model: "magnific_v2", scale: 2 },
+  bg_removal: { opts: { mask_offset: 0, mask_blur: 3 } },
+};
+const why = "업스케일을 먼저 해 주세요";
+function plan(tool = up, states = ["new"], external = tool === up) {
+  const counts = { new: 0, reuse: 0, recover: 0, blocked: 0 };
+  const items = states.map((state, i) => {
+    counts[state]++;
+    return { key: "r_" + i, crop: "패치 " + i, state, why: state === "blocked" ? why : null };
+  });
+  return { ok: true, tool, expect: "418:3fa9c1d2e4b7", hash: counts.new ? "a1b2c3d4e5f6" : "", counts, items,
+    model: tool === up ? { id: "magnific_v2", name: "Magnific Precision V2", external } : { id: "RMBG-2.0", name: "RMBG 2.0", external },
+    opts: tool === up ? { scale: 2 } : { mask_offset: 0, mask_blur: 3 } };
+}
+const reply = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => structuredClone(data) });
+function studio(p = plan(), { second, run, env, routes = {} } = {}) {
+  const doc = new Doc(), calls = [], opened = [];
+  const location = new URL("https://example.org/bmk/design_patch/board/");
+  const ctx = vm.createContext({ document: doc, URL, location, window: {
+    DPEnv: { serverMode: true, backend: "forge", caps: { v2_postprocess: true }, ...env },
+    DPDialog: { lock(options) { opened.push(options); return true; }, unlock() {} },
+  } });
+  const plans = () => calls.filter(c => c.path === "postprocess/plan");
+  const runs = () => calls.filter(c => c.path === "postprocess/run");
+  ctx.fetch = async (url, init) => {
+    assert.equal(url.origin, location.origin);
+    const path = url.pathname.slice("/bmk/design_patch/".length);
+    calls.push({ path, method: init.method || "GET", query: Object.fromEntries(url.searchParams), body: init.body && JSON.parse(init.body) });
+    if (path in routes) return routes[path]();
+    if (path === "postprocess/plan") return second && plans().length > 1 ? second : reply(p);
+    if (path === "postprocess/run") return run ? run() : reply({ ok: true, prompt_id: "j_1", number: 5 });
+    throw Error("예상 밖의 요청 " + path);
+  };
+  vm.runInContext(submit, ctx);
+  const api = ctx.window.DPSubmit, keys = p.items.map(i => i.key);
+  const pay = (extra = {}) => api.submitPaid("postprocess", { root, tool: p.tool, keys, ...options[p.tool], ...extra });
+  const elements = tag => doc.body.all().filter(n => n.tagName === tag);
+  function click(yes, isTrusted = true) { elements("BUTTON")[yes ? 0 : 1].fire("click", { isTrusted }); }
+  return { doc, api, calls, opened, plans, runs, pay, click, elements, env: ctx.window.DPEnv };
+}
+await test("승인 문구 조합", () => {
+  const { api } = studio();
+  for (const tool of [up, bg]) for (const external of [false, true]) for (let mask = 0; mask < 8; mask++) {
+    const states = ["new", "new", ...["reuse", "recover", "blocked"].filter((_, i) => mask & (1 << i))];
+    const lines = ["Forge 로 후보정 2건을 요청합니다. 사내 사용량이 잡힙니다.",
+      (tool === up ? "업스케일 — Magnific Precision V2 · ×2 · 그림 2장" : "배경 제거 — RMBG 2.0 · 그림 2장")
+        + (external ? " · 외부 유료 공급자" : "")];
+    if (mask & 1) lines.push("이미 받은 결과 1건은 다시 요청하지 않습니다.");
+    if (mask & 2) lines.push("결과만 다시 받기 1건(추가 요청 없음)");
+    if (mask & 4) lines.push("할 수 없는 그림 1장은 건너뜁니다.");
+    eq(api.postLines(plan(tool, states, external)), lines);
+  }
+});
+await test("깨진 계획은 승인·제출 불가", async () => {
+  for (const breakPlan of [p => p.counts.new++, p => p.counts.reuse = 0.5, p => p.counts.blocked = -1,
+    p => p.model.name = " ", p => delete p.model.external, p => p.opts.scale = 0, p => p.items[0].state = "other",
+    p => p.hash = "", p => p.expect = "", p => delete p.model.id]) {
+    const p = plan(); breakPlan(p);
+    const s = studio(p); assert.equal(s.api.postLines(p), null);
+    assert.equal((await s.pay()).reason, "plan_error"); eq(s.opened, []); eq(s.runs(), []);
+  }
+  const s = studio(plan(), { routes: { "postprocess/plan": () => reply(plan(bg)) } });
+  assert.equal((await s.pay()).reason, "plan_error"); eq(s.opened, []); eq(s.runs(), []);
+});
+for (const tool of [up, bg]) await test(tool + " 신뢰 클릭·계획 재조회·요청 본문", async () => {
+  const p = plan(tool, ["new", "reuse", "recover", "blocked"]), s = studio(p);
+  const keys = p.items.map(i => i.key);
+  const extra = { ...options.upscale, opts: { ...options.bg_removal.opts }, keys: [...keys, keys[0]] };
+  const paid = s.pay(extra); await flush();
+  assert.equal(s.doc.activeElement.attrs["aria-label"], "후보정 승인"); assert.equal(s.opened.length, 1);
+  eq(s.elements("P").map(n => n.textContent), [...s.api.postLines(p)]);
+  s.click(true, false); await flush(); assert(s.api.asking()); eq(s.runs(), []);
+  extra.keys.push("changed"); extra.opts.mask_blur = 99;
+  s.click(true);
+  eq(await paid, { ok: true, prompt_id: "j_1", number: 5, summary: { new: 1, reuse: 1, recover: 1,
+    blocked: [{ key: "r_3", crop: "패치 3", why }] } });
+  eq(s.calls.map(c => [c.path, c.method]), [["postprocess/plan", "GET"], ["postprocess/plan", "GET"], ["postprocess/run", "POST"]]);
+  const query = { root, tool, keys: keys.join(","), ...(tool === up ? { model: "magnific_v2", scale: "2" } : { offset: "0", blur: "3" }) };
+  for (const c of s.plans()) eq(c.query, query);
+  eq(s.runs()[0].body, { root, tool, keys, ...options[tool], expect: p.expect, approve: p.hash });
+});
+for (const [tool, extra, query] of [
+  [up, { model: "requested", scale: 4 }, { model: "requested", scale: "4" }],
+  [up, { model: undefined, scale: undefined }, {}],
+  [bg, { opts: { mask_offset: -2 } }, { offset: "-2" }], [bg, { opts: {} }, {}],
+]) await test(tool + " 승인한 옵션과 서버 기본값 " + JSON.stringify(query), async () => {
+  const p = plan(tool), s = studio(p), paid = s.pay(extra); await flush();
+  eq(s.elements("P").map(n => n.textContent), [...s.api.postLines(p)]); s.click(true); assert((await paid).ok);
+  for (const call of s.plans()) eq(call.query, { root, tool, keys: "r_0", ...query });
+  eq(s.runs().map(call => call.body), [{ root, tool, keys: ["r_0"], ...options[tool], expect: p.expect, approve: p.hash }]);
+});
+for (const [tool, extra] of [[up, { model: " " }], [up, { model: 2 }], [up, { scale: "2" }], [up, { scale: NaN }],
+  [bg, { opts: { mask_offset: "0" } }], [bg, { opts: { mask_blur: Infinity } }], [bg, { opts: { mask_offset: NaN } }],
+]) await test("옵션 형식 오류는 계획 요청 전 거절 " + JSON.stringify(extra), async () => {
+  const s = studio(plan(tool, ["reuse"]));
+  eq(await s.pay(extra), { ok: false, reason: "plan_error", error: "후보정 옵션을 읽지 못했습니다" }); eq(s.calls, []);
+});
+await test("Escape 로 후보정 승인 취소", async () => {
+  const s = studio(), paid = s.pay(); await flush(); assert(s.api.asking());
+  s.opened[0].keys({ type: "keydown", key: "Escape", preventDefault() {}, stopPropagation() {} });
+  assert(!s.api.asking()); assert.equal((await paid).reason, "cancelled"); assert.equal(s.plans().length, 1); eq(s.runs(), []);
+});
+await test("유료 승인 뒤 건수·환경 변경과 재조회 실패", async () => {
+  const p = plan(up, ["new", "reuse"]);
+  for (const [second, changeEnv, reason] of [
+    [reply(plan(up, ["new", "new"])), null, "stale"],
+    [reply(p), env => { env.backend = "mock"; }, "stale"],
+    [reply(p), env => { env.caps.v2_postprocess = false; }, "stale"],
+    [reply({ reason: "busy", error: "계산 중" }, 409), null, "busy"],
+    [{ ok: true, status: 200, json: async () => { throw Error("JSON"); } }, null, "plan_error"],
+  ]) {
+    const s = studio(p, { second }), paid = s.pay(); await flush(); s.click(true);
+    if (changeEnv) changeEnv(s.env);
+    assert.equal((await paid).reason, reason); assert.equal(s.plans().length, 2); eq(s.runs(), []);
+  }
+});
+await test("취소·계획 변경은 요청 없음", async () => {
+  for (const change of [null, { hash: "other" }, { expect: "419:other" }]) {
+    const p = plan(), s = studio(p, { second: reply({ ...p, ...change }) });
+    const paid = s.pay(); await flush(); eq(s.runs(), []); s.click(!!change);
+    assert.equal((await paid).reason, change ? "stale" : "cancelled");
+    assert.equal(s.plans().length, change ? 2 : 1); eq(s.runs(), []);
+  }
+});
+await test("무과금 재사용·복구 / 막힘 / 빈 계획", async () => {
+  for (const hash of ["", "freehash"]) {
+    const p = { ...plan(up, ["reuse", "recover"]), hash }, s = studio(p);
+    eq((await s.pay()).summary, { new: 0, reuse: 1, recover: 1, blocked: [] });
+    eq(s.opened, []); assert.equal(s.runs().length, 1); assert.equal(s.runs()[0].body.approve, "");
+  }
+  const changed = studio(plan(up, ["reuse"]), { second: reply(plan(up, ["new"])) });
+  assert.equal((await changed.pay()).reason, "stale"); eq(changed.opened, []); eq(changed.runs(), []);
+  const p = plan(up, ["blocked", "blocked"]); p.items[1].why = "파일 없음";
+  const s = studio(p);
+  eq(await s.pay(), { ok: false, reason: "blocked", error: why,
+    blocked: [{ key: "r_0", crop: "패치 0", why }, { key: "r_1", crop: "패치 1", why: "파일 없음" }] });
+  eq(s.opened, []); eq(s.runs(), []);
+  const empty = studio(plan(up, [])); assert.equal((await empty.pay({ keys: ["r_0"] })).reason, "nothing_to_do");
+  eq(empty.opened, []); eq(empty.runs(), []);
+});
+await test("모드·플래그·도구·선택·8장 경계", async () => {
+  for (const [env, extra, reason] of [[{ serverMode: false }, {}, "server_only"], [{ backend: "mock" }, {}, "no_backend"],
+    [{ caps: {} }, {}, "disabled"], [{ caps: { v2_postprocess: false } }, {}, "disabled"], [{}, { tool: "other" }, "plan_error"],
+    [{}, { keys: [] }, "no_selection"], [{}, { keys: "r_0" }, "no_selection"],
+    [{}, { keys: Array.from({ length: 9 }, (_, i) => "r_" + i) }, "too_many"]]) {
+    const s = studio(plan(), { env }); assert.equal((await s.pay(extra)).reason, reason); eq(s.calls, []);
+  }
+  const p = plan(up, Array(8).fill("reuse")), s = studio(p);
+  assert((await s.pay({ keys: [...p.items.map(i => i.key), "r_0"] })).ok);
+  assert.equal((await s.api.submitPaid("other", {})).reason, "unsupported");
+});
+await test("계획·제출의 서버 거절 및 수신 여부 불명", async () => {
+  const p = plan(up, ["recover"]);
+  for (const [status, reason] of [[400, "too_many"], [401, "unauthorized"], [403, "forbidden"], [409, "busy"],
+    [409, "running"], [409, "stale"], [409, "not_picked"], [503, "forge_unreachable"]]) {
+    const data = { reason, error: reason + " 상세" }, denied = () => reply(data, status);
+    for (const path of ["postprocess/plan", "postprocess/run"]) {
+      const s = studio(p, { routes: { [path]: denied } }); eq(await s.pay(), { ok: false, ...data });
+      assert.equal(s.runs().length, path === "postprocess/run" ? 1 : 0);
+    }
+  }
+  const unreadable = () => ({ ok: true, status: 200, json: async () => { throw Error("JSON"); } });
+  for (const run of [unreadable, () => { throw Error("연결 끊김"); }, () => reply({ reason: "busy", error: "서버 오류" }, 500)]) {
+    const s = studio(p, { run }); assert.equal((await s.pay()).reason, "unknown"); assert.equal(s.runs().length, 1);
+  }
+  const s = studio(p, { second: unreadable() }); assert.equal((await s.pay()).reason, "plan_error"); eq(s.runs(), []);
+});
+await test("사유 없는 후보정 4xx도 확정 거절", async () => {
+  for (const [status, data, error] of [[400, { error: "허용하지 않는 키" }, "허용하지 않는 키"], [409, {}, "HTTP 409"],
+    [403, null, "HTTP 403"]]) {
+    const s = studio(plan(up, ["reuse"]), { run: () => reply(data, status) });
+    eq(await s.pay(), { ok: false, reason: "http_" + status, error }); assert.equal(s.runs().length, 1);
+  }
+});
+for (const useServer of [true, false]) await test(useServer ? "실행 응답의 건수" : "재조회한 계획의 건수", async () => {
+  const p = plan(up, ["new", "recover", "recover", "blocked"]), latest = plan(up, ["new", "blocked", "recover", "reuse"]);
+  latest.items[1].why = "재조회한 사유";
+  const serverCounts = { new: 0, reuse: 3, recover: 0, blocked: 1 };
+  for (const summary of useServer ? [serverCounts] : [undefined, { ...serverCounts, blocked: undefined }, { ...serverCounts, recover: 0.5 }]) {
+    const s = studio(p, { second: reply(latest), run: () => reply({ ok: true, prompt_id: "j", number: 3, summary }) });
+    const paid = s.pay(); await flush(); s.click(true);
+    eq(await paid, { ok: true, prompt_id: "j", number: 3, summary: { ...(useServer ? serverCounts : latest.counts),
+      blocked: [{ key: "r_1", crop: "패치 1", why: "재조회한 사유" }] } });
+  }
+});
+await test("후보정·생성·반영 제출 중 표지 공유 및 해제", async () => {
+  const s = studio(), paid = s.pay(); await flush();
+  assert.equal((await s.api.submitPaid("run", { root, only: "a" })).reason, "busy");
+  assert.equal((await s.api.applyChecked({ root })).reason, "busy");
+  assert.equal((await s.pay()).reason, "busy"); s.click(false); await paid;
+  const retry = s.pay(); await flush(); s.click(false); assert.equal((await retry).reason, "cancelled"); eq(s.runs(), []);
+  for (const stage of ["run", "apply"]) {
+    let release;
+    const path = stage === "run" ? "state" : "pipeline";
+    const t = studio(plan(up, ["reuse"]), { routes: { [path]: () => new Promise(resolve => { release = resolve; }) } });
+    const first = stage === "run" ? t.api.submitPaid(stage, { root, only: "a" }) : t.api.applyChecked({ root });
+    assert.equal((await t.pay()).reason, "busy"); eq(t.plans(), []);
+    release(reply({ error: "읽기 실패" }, 400)); await first; assert((await t.pay()).ok);
+  }
+});
+await test("v1 후보 타일·검토 상세의 읽기 표시", () => {
+  const doc = new Doc(), nodes = {}, $ = id => nodes[id] ??= doc.createElement("div");
+  El.prototype.querySelector = () => null;
+  const c = { key: "r_0", n: 1, label: "후보", slice_index: 1, thumb_url: "original.png" };
+  const target = { size: [100, 100], focus_box: [0, 0, 100, 100], cells: [], candidates: [c] };
+  const ctx = vm.createContext({ document: doc, $, cKey: c.key, pad: String, curCand: () => c,
+    curTarget: () => target, cropOf: () => null, targetTitle: () => "타깃", candidateModel: () => "", ranText: () => "",
+    tookRow() {}, isNew: () => false, oldCell: () => false, promptWarning() {}, setImg(img, url) { img.src = url; } });
+  vm.runInContext(REVIEW, ctx);
+  const label = "업스케일 · <b>PiD 1.5</b> ×2";
+  for (const [picked, post, shown, server = true] of [[true, undefined, false], [true, { on: true, label }, true],
+    [true, { on: false, label }, false], [false, { on: true, label }, false], [true, { on: true, label }, false, false]]) {
+    ctx.SM = () => server;
+    Object.assign(c, { picked, post }); ctx.renderGrid(); ctx.renderDetail();
+    const badges = nodes.grid.all().filter(n => n.classList.contains("badge") && n.textContent === "후보정");
+    const rows = nodes.detail.all().filter(n => n.classList.contains("row") && n.textContent.includes("후보정"));
+    assert.equal(badges.length, Number(shown)); assert.equal(rows.length, Number(shown));
+    if (shown) {
+      assert.equal(badges[0].title, "후보정 적용 중(" + label + ") — ★ 합성과 Export 에 이 결과가 쓰입니다. 썸네일은 원본입니다. 새 화면에서 끕니다.");
+      assert.equal(rows[0].textContent, "후보정 적용 중(" + label + ") — 새 화면에서 끕니다");
+      assert(!rows[0].all().some(n => n.tagName === "B"));
+    }
+    assert.equal(nodes.grid.all().find(n => n.tagName === "IMG").src, c.thumb_url);
+  }
+});
+console.log(JSON.stringify(results));
+'''
+    script = out / "submit.mjs"
+    script.write_text("const REVIEW = " + json.dumps(review) + ";\n" + harness, encoding="utf-8", newline="\n")
+    proc = subprocess.run([node, str(script), str(web / "submit.js")], capture_output=True, text=True, encoding="utf-8", timeout=40)
+    check(proc.returncode == 0 and bool(proc.stdout.strip()), f"V2CS 제출 VM 실행 {proc.stderr[-1500:]}")
+    if proc.returncode == 0 and proc.stdout.strip():
+        for name, result in json.loads(proc.stdout).items():
+            check(result is True, f"V2CS {name}: {result}")
 
 
 # (갈래 A ↑ · 갈래 D ↓)
