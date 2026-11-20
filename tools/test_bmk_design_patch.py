@@ -60418,6 +60418,8 @@ def ux_v2a_entry_unit():
                     ("?ui=v2x", default, 1), ("?ui=", default, 1), ("?ui=v2", default, 1),
                     ("?ui=v1", "v1", 0), ("?ui=v1&root=abc", "v1", 0), ("board.html", "v1", 0),
                     ("board.html?ui=v2", "v1", 0), ("v2.html?ui=v1", "v2" if has_v2 else None, 0),
+                    # 같은 쿼리가 두 번 오면 첫 값(화면의 URLSearchParams.get 과 같은 판정) · 퍼센트 인코딩은 풀어서 본다
+                    ("?ui=v1&ui=v2", "v1", 0), ("?ui=v2&ui=v1", default, 1), ("?ui=%76%32", default, 1), ("?ui=%76%31", "v1", 0),
                 ):
                     url = bd.API + "/board/" + suffix
                     with patch.object(bd, "v2_available", wraps=bd.v2_available) as probe:
@@ -60431,6 +60433,9 @@ def ux_v2a_entry_unit():
                           and response.headers.get("Cache-Control") == "no-store"
                           and response.headers.get("X-Content-Type-Options") == "nosniff",
                           f"V2E {web_dir.name} {url} → {entry} 본문·헤더")
+                response = await client.head(bd.API + "/board/")
+                check(response.status == 200 and response.headers["Content-Type"].startswith("text/html"),
+                      f"V2E 설정 v2·{web_dir.name} HEAD 도 같은 처리기")
                 for path, query in (("/", "parent_origin=x"), (bd.API + "/board", "root=abc")):
                     response = await client.get(path + "?" + query, allow_redirects=False)
                     check(response.status == 302 and response.headers["Location"] == bd.API + "/board/?" + query,
