@@ -845,6 +845,21 @@ window.DPMaskEdit = (() => {
       return el("span", "chip " + (cls || ""), txt);
     }
 
+    function stackChips(row, fx) {
+      if (!fx) return;
+      if (fx.edge || fx.opacity != null) {
+        const filter = chip("새 화면 필터 적용 중", "b-reg");
+        filter.title = "새 화면에서 저장한 경계 부드럽게·불투명도가 ★ 합성과 Export 에 적용됩니다. 이 화면의 미리 보기에는 보이지 않습니다 — 결과는 ★ 합성에서 확인하세요. 여기서 페이드·페더를 더하면 두 번 부드러워집니다.";
+        row.append(filter);
+      }
+      if (fx.off && fx.off.length) {
+        const layers = fx.off.map((name) => ({ brush: "브러시", transform: "변형" })[name]).join("·");
+        const hidden = chip("새 화면에서 끔: " + layers, "b-wait");
+        hidden.title = "새 화면에서 이 층을 꺼 두었습니다. 여기서 저장한 값은 남지만 ★ 합성에는 보이지 않습니다 — 새 화면에서 다시 켭니다.";
+        row.append(hidden);
+      }
+    }
+
     function withIcon(b, name) {
       if (window.DPRows && window.DPRows.icon) b.prepend(window.DPRows.icon(name));
       return b;
@@ -1783,6 +1798,7 @@ window.DPMaskEdit = (() => {
         const mine = segs.filter((x) => x.crop_id === c.id);
         if (mine.length) ch.append(chip(`이음매 ${mine.length}`, mine.some((x) => x.severity === "bad") ? "b-bad" : "b-wait"));
         if (!stars.length) ch.append(chip("★ 없음", "b-dim"));
+        if (stars.length === 1 && stars[0].c.key === M.key) stackChips(ch, cur()?.stack_fx);
         if (ch.childElementCount) li.append(ch);
         if (stars.length < 2) {
           if (!hasDetails) expanded.delete(keys[0]);
@@ -1797,6 +1813,7 @@ window.DPMaskEdit = (() => {
           sub.append(el("div", "tname", `${x.t.tid} · c${pad(x.c.n)} ${x.c.slice_index > 1 ? `조각 ${x.c.slice_index}` : "★"}`));
           if (x.c.mask_edit) sub.append(detailChip(x.c.mask_edit.stale ? "처음 마스크가 바뀜" : "편집", x.c.mask_edit.stale ? "b-bad" : "b-reg", [x.c.key]));
           if (x.c.adjust) sub.append(detailChip("보정", "b-reg", [x.c.key]));
+          if (x.c.key === M.key) stackChips(sub, cur()?.stack_fx);
           if (!hasDetails && !x.c.mask_edit && !x.c.adjust) expanded.delete(x.c.key);
           detailRows(sub, x.c);
           sub.addEventListener("click", (e) => {

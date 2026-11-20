@@ -1,6 +1,301 @@
 {
  "schema": "bmk.design_patch.mask_api/1",
  "_doc": {
+  "server_routes 설명": "서버 모드 전용 계약. GET /mask 예시는 기존 routes 응답에 더하는 칸이며 disabled는 플래그를 껐을 때다. POST /mask/stack 및 GET /mask/stack/img는 플래그를 켰을 때만 등록한다.",
+  "server_routes": {
+   "GET /mask": {
+    "request": {
+     "query": {
+      "root": "fe410d7f025d",
+      "key": "r_61ba2d695f0f_0_0"
+     }
+    },
+    "ok": {
+     "stack_fx": {
+      "edge": {
+       "feather": 6,
+       "fade": {
+        "top": 0,
+        "bottom": 48,
+        "left": 0,
+        "right": 0
+       }
+      }
+     },
+     "stack": {
+      "off": [],
+      "edge": {
+       "feather": 6,
+       "fade": {
+        "top": 0,
+        "bottom": 48,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "opacity": 100,
+      "at": "2026-11-20 15:10:00.000000001",
+      "hist": [
+       {
+        "off": [],
+        "edge": {
+         "feather": 6,
+         "fade": {
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0
+         }
+        },
+        "opacity": 100,
+        "at": "2026-11-20 15:09:00.000000001"
+       }
+      ]
+     },
+     "final": {
+      "sig": "3d5e78a210cf49b6",
+      "url": "mask/stack/img?root=fe410d7f025d&key=r_61ba2d695f0f_0_0&v=3d5e78a210cf49b6"
+     }
+    },
+    "alt": {
+     "disabled": {
+      "stack_fx": {
+       "edge": {
+        "feather": 6,
+        "fade": {
+         "top": 0,
+         "bottom": 48,
+         "left": 0,
+         "right": 0
+        }
+       }
+      }
+     },
+     "empty": {
+      "stack_fx": null,
+      "stack": null,
+      "final": {
+       "sig": "3d5e78a210cf49b6",
+       "url": "mask/stack/img?root=fe410d7f025d&key=r_61ba2d695f0f_0_0&v=3d5e78a210cf49b6"
+      }
+     }
+    },
+    "errors": {
+     "409": [
+      {
+       "error": "★ 합성·마스크가 그 사이 바뀌었습니다 — 다시 받기",
+       "reason": "stale"
+      }
+     ]
+    },
+    "nullable": [
+     "stack_fx",
+     "stack"
+    ],
+    "optional": [
+     "stack",
+     "final",
+     "stack_fx.edge",
+     "stack_fx.opacity",
+     "stack_fx.off"
+    ],
+    "maps": [],
+    "any": [],
+    "opaque": []
+   },
+   "POST /mask/stack": {
+    "request": {
+     "body": {
+      "root": "fe410d7f025d",
+      "key": "r_61ba2d695f0f_0_0",
+      "op": "set",
+      "seen": "2026-11-20 15:09:00.000000001",
+      "edge": {
+       "fade": {
+        "bottom": 48
+       }
+      }
+     }
+    },
+    "ok": {
+     "ok": true,
+     "stack": {
+      "off": [],
+      "edge": {
+       "feather": 6,
+       "fade": {
+        "top": 0,
+        "bottom": 48,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "opacity": 100,
+      "at": "2026-11-20 15:10:00.000000001",
+      "hist": [
+       {
+        "off": [],
+        "edge": {
+         "feather": 6,
+         "fade": {
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0
+         }
+        },
+        "opacity": 100,
+        "at": "2026-11-20 15:09:00.000000001"
+       }
+      ]
+     },
+     "rev": 137,
+     "composite_sig": "5d1f0c9a3be27741",
+     "final": {
+      "sig": "3d5e78a210cf49b6",
+      "url": "mask/stack/img?root=fe410d7f025d&key=r_61ba2d695f0f_0_0&v=3d5e78a210cf49b6"
+     }
+    },
+    "alt": {
+     "cleared": {
+      "ok": true,
+      "stack": null,
+      "rev": 138,
+      "composite_sig": "b61d0f398e7142af",
+      "final": {
+       "sig": "e8a90b7c6d5f4e31",
+       "url": "mask/stack/img?root=fe410d7f025d&key=r_61ba2d695f0f_0_0&v=e8a90b7c6d5f4e31"
+      }
+     }
+    },
+    "errors": {
+     "400": [
+      {
+       "error": "허용되지 않은 칸: extra"
+      },
+      {
+       "error": "되돌릴 이전 스택이 없습니다"
+      },
+      {
+       "error": "불투명도는 0 이상 100 이하의 정수여야 합니다"
+      },
+      {
+       "error": "JSON 본문을 읽을 수 없습니다"
+      }
+     ],
+     "404": [
+      {
+       "error": "후보가 없습니다: r_000000000000_0_0"
+      }
+     ],
+     "409": [
+      {
+       "error": "지금 ★ 후보가 아닙니다(★ 해제·제외·크롭에서 빠짐) — 다시 받기",
+       "reason": "not_picked"
+      },
+      {
+       "error": "마스크 스택이 다른 창에서 바뀌었습니다 — 다시 받기",
+       "reason": "changed",
+       "stack": {
+        "off": [],
+        "edge": {
+         "feather": 6,
+         "fade": {
+          "top": 0,
+          "bottom": 48,
+          "left": 0,
+          "right": 0
+         }
+        },
+        "opacity": 100,
+        "at": "2026-11-20 15:10:00.000000001",
+        "hist": [
+         {
+          "off": [],
+          "edge": {
+           "feather": 6,
+           "fade": {
+            "top": 0,
+            "bottom": 0,
+            "left": 0,
+            "right": 0
+           }
+          },
+          "opacity": 100,
+          "at": "2026-11-20 15:09:00.000000001"
+         }
+        ]
+       }
+      }
+     ],
+     "413": [
+      {
+       "error": "요청 본문이 너무 큽니다"
+      }
+     ],
+     "415": [
+      {
+       "error": "Content-Type 은 application/json 이어야 합니다"
+      }
+     ]
+    },
+    "nullable": [
+     "stack",
+     "final"
+    ],
+    "optional": [],
+    "maps": [],
+    "any": [],
+    "opaque": []
+   },
+   "GET /mask/stack/img": {
+    "request": {
+     "query": {
+      "root": "fe410d7f025d",
+      "key": "r_61ba2d695f0f_0_0",
+      "v": "3d5e78a210cf49b6"
+     }
+    },
+    "ok": {
+     "content_type": "image/png",
+     "mode": "L",
+     "size": "rect"
+    },
+    "alt": {},
+    "errors": {
+     "400": [
+      {
+       "error": "v 형식이 잘못되었습니다"
+      }
+     ],
+     "404": [
+      {
+       "error": "후보가 없습니다: r_000000000000_0_0"
+      }
+     ],
+     "409": [
+      {
+       "error": "★ 합성·마스크가 그 사이 바뀌었습니다 — 다시 받기",
+       "reason": "stale"
+      },
+      {
+       "error": "지금 ★ 후보가 아닙니다(★ 해제·제외·크롭에서 빠짐) — 다시 받기",
+       "reason": "not_picked"
+      }
+     ],
+     "422": [
+      {
+       "error": "편집 대상을 계산할 수 없습니다"
+      }
+     ]
+    },
+    "nullable": [],
+    "optional": [],
+    "maps": [],
+    "any": [],
+    "opaque": []
+   }
+  },
   "목적": "Design Patch Studio S4 마스크 라우트 5개(STUDIO_S4_SPEC §4)의 응답 모양 정본 — U1 이 병렬 착수 전에 쓴다. U2 의 B39–B44 는 실제 응답을 이 예시와 대조하고(키 집합·JSON 타입 — 대조기는 시험의 _pl_shape, 규칙은 pipeline_api.json _doc '대조 규칙' 1–7 그대로), U3 의 J-K 가짜 서버는 이 예시를 그대로 돌려준다. 값은 261014_Test 꼴(보드 키 fe410d7f025d, 015_치마밑단_주름 ★ r_61ba2d695f0f_0_0 — STUDIO_S4_SPEC §2·§8 의 장면)이고 수치는 문구 예시다(한 응답 안의 값들이 서로 맞는 장면일 필요는 없음). 매니페스트 기록(mask_edits·exports·사이드카)은 manifest 절 — U1 의 bmk_design_patch_mask.check_record 와 노드 Export 가 그 꼴을 지킨다(mask_unit·mask_node_unit 이 대조).",
   "구조": {
    "routes.\"<METHOD> <경로>\"": "경로는 /bmk/design_patch/ 아래. request = 요청 예시(GET 은 query, POST 는 query·body) · ok = 정상 200 본문 · alt = {이름: 다른 200 본문(같은 대조 규칙)} · errors = {HTTP 상태: [본문 예시 …]}(202 busy 포함) · nullable · optional · maps · any · opaque = 그 응답의 경로 목록(pipeline_api.json 과 같은 경로 문법). 예외: GET /mask/img 의 ok 는 JSON 본문이 아니라 응답 설명(content_type·kind 별 PNG 모드·크기) — 대조 대상이 아니다(B40 이 헤더·PNG 를 본다). POST /mask/save 의 request.body 도 설명(본문 = PNG 바이트).",
