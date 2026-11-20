@@ -6,16 +6,17 @@
 window.DPEnv = (() => {
   // 로컬판의 기능 표(bmk_design_patch_board.LOCAL_CAPS 와 같음 — GET ../env 가 404 인 옛 로컬 서버도 이 표). 서버 전용 둘은 false
   const LOCAL_CAPS = { jobs: false, export_download: false, sam3: true, local_qwen: true, external: true, open_folder: true,
-    path_input: true, ps_mask: true, agent_approve: true,
+    path_input: true, ps_mask: true, agent_approve: true, ui_default: "v1",
     // UX v2 기능 플래그(로컬판은 모두 false — 서버 모드의 GET ../env 가 열린 것만 true 로 준다)
     ui_v2: false, v2_spec_edit: false, v2_forge_prompt: false, v2_auto_prepare: false, v2_crop_model: false, v2_postprocess: false,
     v2_psd_reimport: false, v2_mask_stack: false };
-  // 서버 응답에 꼭 있어야 하는 키 = v2 플래그를 뺀 나머지. 화면 파일만 새 판이고 서버(파이썬)가 재시작 전의 옛 판이면 응답에 v2 키가 없다 —
-  // 그때 화면 전체를 막지 않고 없는 v2 키를 false 로 본다.
-  const REQUIRED_CAPS = Object.keys(LOCAL_CAPS).filter((key) => key !== "ui_v2" && !key.startsWith("v2_"));
+  // 옛 서버는 기본 화면과 v2 플래그를 주지 않는다. 필수 기능만 검사하고 나머지는 로컬 기본값으로 채운다.
+  const v2Flags = Object.keys(LOCAL_CAPS).filter((key) => key === "ui_v2" || key.startsWith("v2_"));
+  const REQUIRED_CAPS = Object.keys(LOCAL_CAPS).filter((key) => key !== "ui_default" && !v2Flags.includes(key));
   const withV2 = (caps) => {
-    const out = Object.assign({}, caps); // 서버가 준 키 순서 그대로, 없는 v2 키만 뒤에 false 로
-    for (const key of Object.keys(LOCAL_CAPS)) if (!REQUIRED_CAPS.includes(key) && typeof out[key] !== "boolean") out[key] = false;
+    const out = Object.assign({}, caps);
+    out.ui_default = caps.ui_default === "v2" ? "v2" : "v1";
+    for (const key of v2Flags) if (typeof out[key] !== "boolean") out[key] = false;
     return out;
   };
   // 해시를 다른 모듈·요청이 보기 전에 지운다. 토큰은 세션 교환 뒤 버린다.

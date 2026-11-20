@@ -396,12 +396,13 @@ NO_SESSION = "Forge에서 디자인 패치 스튜디오를 다시 열어 주세�
 SERVER_ENV = "BMK_DP_SERVER_MODE"  # D339 — 프로세스 플래그는 이 환경 변수 하나("1" = 서버 모드). runner·vlm·노드 모듈도 이것을 읽는다
 # 로컬판이 쓸 수 있는 기능 표(GET /env 의 caps — D341). 서버 전용(jobs·export_download)은 로컬에서 false
 LOCAL_CAPS = {"jobs": False, "export_download": False, "sam3": True, "local_qwen": True, "external": True, "open_folder": True,
-              "path_input": True, "ps_mask": True, "agent_approve": True}
+              "path_input": True, "ps_mask": True, "agent_approve": True, "ui_default": "v1"}
 # UX v2 기능 플래그(V2-A D490). 로컬판은 모두 false — 서버 모드의 GET /env 가 열린 것만 true 로 바꾼다.
 V2_CAPS = ("ui_v2", "v2_spec_edit", "v2_forge_prompt", "v2_auto_prepare", "v2_crop_model", "v2_postprocess", "v2_psd_reimport",
            "v2_mask_stack")
 LOCAL_CAPS.update({name: False for name in V2_CAPS})
 MASK_STACK_ENABLED = web.AppKey("bmk_dp_mask_stack", bool)
+DEFAULT_UI = web.AppKey("bmk_dp_default_ui", str)
 _SCOPE: contextvars.ContextVar = contextvars.ContextVar("bmk_dp_scope", default=None)
 _ENV_PROVIDER: list = []           # set_env_provider — 서버 모드의 GET /env 본문을 만드는 함수(request → dict)
 _SCOPE_ROOTS: dict = {}            # 정규화한 계정 프로젝트 폴더 → (mtime_ns, {key: root}), 최근 256개
@@ -7086,8 +7087,11 @@ def v2_available() -> bool:
 @_guard
 async def board_static(request: web.Request) -> web.StreamResponse:
     name = request.match_info.get("name")
-    if not name:  # 화면 주소: ?ui=v2 이고 v2 화면이 있을 때만 v2, 그 밖에는 지금 화면(V2-A D489)
-        name = V2_ENTRY if request.query.get("ui") == "v2" and await asyncio.to_thread(v2_available) else "board.html"
+    if not name:  # 화면 주소: ui=v1·ui=v2 는 그 화면, 없거나 다른 값이면 서버 설정(DEFAULT_UI — 로컬판·기본은 v1). v2 는 화면 파일이 있을 때만
+        ui = request.query.get("ui")
+        if ui not in ("v1", "v2"):
+            ui = request.app.get(DEFAULT_UI, "v1")
+        name = V2_ENTRY if ui == "v2" and await asyncio.to_thread(v2_available) else "board.html"
     ctype = static_type(name)
     if ctype is None:
         raise _Reject(404, "보드 파일이 아닙니다")

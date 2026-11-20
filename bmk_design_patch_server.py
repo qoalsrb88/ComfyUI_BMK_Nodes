@@ -108,6 +108,8 @@ def _validate_config(config):
         raise ValueError("개발 모드는 루프백 주소(127.0.0.1·::1·localhost)에서만 띄울 수 있습니다")
     if not config.dev_handoff and not config.public_origin:
         raise ValueError("개발 모드 밖에서는 public_origin 이 필요합니다")
+    if config.default_ui not in ("v1", "v2"):
+        raise ValueError("default_ui 는 v1 또는 v2 여야 합니다")
     origin = _origin(config.public_origin) if config.public_origin else None
     if config.cookie_samesite not in ("Lax", "Strict", "None"):
         raise ValueError("cookie_samesite 는 Lax·Strict·None 중 하나여야 합니다")
@@ -647,6 +649,7 @@ class ServerConfig:
     crop_model: bool = False                   # 새 화면이 /crop_gen 계약에 맞춘 뒤 켠다.
     mask_stack: bool = False                   # 새 화면이 마스크 필터 계약에 맞춘 뒤 켠다.
     postprocess: bool = False                  # 새 화면이 후보정 계약에 맞춘 뒤 켠다.
+    default_ui: str = "v1"                     # ui 쿼리가 없을 때 주는 화면("v1"·"v2"). v2 여도 화면 파일이 없으면 v1 을 준다.
 
 
 class DevVerifier:
@@ -844,6 +847,8 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                     "session_url": "/api/session", "prefs_url": "/api/preferences",
                     "caps": {name: name in SERVER_CAPS for name in board.LOCAL_CAPS}, "backend": backend_name()}
             result["caps"]["ui_v2"] = await asyncio.to_thread(board.v2_available)
+            default_ui = getattr(request, "app", app).get(board.DEFAULT_UI, "v1")
+            result["caps"]["ui_default"] = default_ui if result["caps"]["ui_v2"] else "v1"
             result["caps"]["v2_crop_model"] = config.crop_model
             result["caps"]["v2_mask_stack"] = config.mask_stack
             result["caps"]["v2_postprocess"] = config.postprocess and result["backend"] == "forge"
@@ -1064,6 +1069,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             app[cropgen.MODEL_ROWS] = model_rows
             crop_routes = cropgen.routes()
         app[board.MASK_STACK_ENABLED] = config.mask_stack
+        app[board.DEFAULT_UI] = config.default_ui
         stack_routes = board.MASK_STACK_ROUTES if config.mask_stack else ()
         post_routes = ()
         if config.postprocess and backend_name() == "forge":
@@ -1185,6 +1191,7 @@ def main(argv=None) -> int:
     parser.add_argument("--crop-model", action="store_true")
     parser.add_argument("--mask-stack", action="store_true")
     parser.add_argument("--postprocess", action="store_true")
+    parser.add_argument("--default-ui", choices=("v1", "v2"), default="v1")
     parser.add_argument("--forge-media-origin", action="append")
     parser.add_argument("--forge-access-key", action="append")
     parser.add_argument("--forge-concurrency", type=int)
@@ -1221,7 +1228,7 @@ def main(argv=None) -> int:
                           dev_handoff=args.dev_handoff, dev_parent_port=args.dev_parent_port,
                           cookie_samesite=args.cookie_samesite, workers=args.workers, trusted_proxies=tuple(args.trusted_proxy),
                           forge=forge_config, assist_model=args.assist_model, crop_model=args.crop_model,
-                          mask_stack=args.mask_stack, postprocess=args.postprocess)
+                          mask_stack=args.mask_stack, postprocess=args.postprocess, default_ui=args.default_ui)
     try:
         config = _validate_config(config)
     except ValueError as e:
