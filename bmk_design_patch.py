@@ -1749,6 +1749,7 @@ class BMKDesignPatchCandidateIn:
                    and (c.get("origin_info") or {}).get("via") != "studio"
                    and (c.get("origin_info") or {}).get(origin_key) == path]  # 같은 출처에서 사라진 후보
         added = updated = 0
+        baked_keys = None  # 그룹 마스크와 활성 필터가 함께 들어올 때만 사이드카를 한 번 읽는다.
         merged = [c for c in m["candidates"] if c["key"] not in seen and c["key"] not in removed]
         for c in new:
             prev = old.get(c["key"])
@@ -1772,6 +1773,25 @@ class BMKDesignPatchCandidateIn:
                     m["cand_adjust"][c["key"]] = dict(adjust, **geometry, base_quad=None, at=at, hist=hist)
                     label = (c.get("origin_info") or {}).get("layer") or c["key"]
                     warns.append(f"{label}: 다시 가져온 배치가 바뀌어 Studio 변형(이동·회전·배율)을 지움 — 블러·색반전·뒤집기는 유지")
+            if prev is not None and source == "psd_harvest" and keep_hand_masks and (c.get("hand_mask") or {}).get("owner") == "group":
+                key = c["key"]
+                stack = store.mask_stack_record(m, key)
+                fx = store.mask_stack_effect(stack)
+                if fx and ("edge" in fx or "opacity" in fx):
+                    if baked_keys is None:
+                        baked_keys = self._baked_stack_keys(path)
+                    label = (c.get("origin_info") or {}).get("layer") or key
+                    if key in baked_keys:
+                        previous = {k: v for k, v in stack.items() if k != "hist"}
+                        try:
+                            at = board._stack_at(stack["at"])
+                        except board._Reject:  # 옛 시각을 더 늘릴 수 없어도 구운 필터는 지운다. 옛 표지는 이력에 남는다.
+                            at = board._stack_at("")
+                        m["mask_stack"][key] = dict(store.mask_stack_defaults(), off=stack["off"], at=at,
+                                                    hist=[previous, *stack["hist"]][:store.RECORD_HIST_KEEP])
+                        warns.append(f"{label}: 다시 가져온 그룹 마스크에 새 화면의 경계·불투명도가 이미 들어 있어 그 필터 값을 지움 — 눈 끄기는 유지")
+                    else:
+                        warns.append(f"{label}: 새 화면의 경계·불투명도 필터가 다시 가져온 그룹 마스크 위에 걸립니다 — 두 번 부드러워 보이면 새 화면에서 필터를 지우세요")
             merged.append(c)
         m["candidates"] = _plain(merged)
         for k in removed:
@@ -1796,6 +1816,20 @@ class BMKDesignPatchCandidateIn:
         report = "\n".join(lines)
         logger.info("%s %s", _TAG, lines[0])
         return (handle, report)
+
+    @staticmethod
+    def _baked_stack_keys(path: str) -> set[str]:
+        """같은 이름의 Export 사이드카가 그룹 마스크에 경계·불투명도를 구웠다고 기록한 후보들."""
+        try:
+            with open(os.path.splitext(path)[0] + ".json", encoding="utf-8") as f:
+                snapshot = json.load(f)
+        except (OSError, ValueError):
+            return set()
+        rows = snapshot.get("export_layers") if isinstance(snapshot, dict) else None
+        if not isinstance(rows, list):
+            return set()
+        return {row["key"] for row in rows if isinstance(row, dict) and isinstance(row.get("key"), str)
+                and isinstance(fx := row.get("mask_fx"), dict) and ("edge" in fx or "opacity" in fx)}
 
     @staticmethod
     def _harvest(root, m, path, group, mapping, keep_masks, warns) -> list[dict]:
