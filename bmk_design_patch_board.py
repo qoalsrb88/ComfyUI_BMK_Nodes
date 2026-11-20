@@ -8014,6 +8014,8 @@ def _project_state_title(root: str) -> str | None:
         stat = os.stat(os.path.join(root, store.PROJECT_META_NAME), follow_symlinks=False)
     except OSError:
         return None
+    if not stat.st_ino:  # 파일 식별 번호를 주지 않는 파일 시스템: 같은 크기·같은 시각의 교체를 가릴 수 없다 — 기억하지 않고 매번 읽는다
+        return store.read_project_meta(root)[0]["title"]
     stamp = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
     with _PROJECT_TITLES_LOCK:
         cached = _PROJECT_TITLES.get(root)

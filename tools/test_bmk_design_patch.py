@@ -67339,6 +67339,34 @@ def ux_v2_home_unit():
             check(sorted(r.status for r in replies) == [200, 409] and any(json.loads(r.body).get("reason") == "name_taken" for r in replies)
                   and sum(store.load_project_meta(str(p))["title"] == "경합" for p in (root, second)) == 1,
                   "홈 두 스레드의 같은 이름 변경은 하나만 성공")
+            # 계정 잠금을 확정적으로: 한 요청이 쓰기에 들어가 멈춰 있는 동안 같은 계정의 다른 요청은 사전 판정(이름 중복 대조)조차 시작하지 못한다
+            writing, release, prechecks = threading.Event(), threading.Event(), []
+            real_update, real_precheck = store.update_project_meta, home._precheck
+
+            def slow_update(*args, **kwargs):
+                writing.set()
+                release.wait(10)
+                return real_update(*args, **kwargs)
+
+            def seen_precheck(data, *args, **kwargs):
+                prechecks.append(data["key"])
+                return real_precheck(data, *args, **kwargs)
+
+            metas = {p: store.load_project_meta(str(p)) for p in (root, second)}
+            holder, waiter = (root, key), (second, second_key)
+            with patch.object(store, "update_project_meta", side_effect=slow_update), patch.object(home, "_precheck", side_effect=seen_precheck):
+                first_call = asyncio.ensure_future(request(app, "POST", bd.API + "/projects/meta",
+                    {"op": "rename", "key": holder[1], "seen": metas[holder[0]]["rev"], "title": "줄서기"}, alice))
+                await asyncio.to_thread(writing.wait, 10)
+                second_call = asyncio.ensure_future(request(app, "POST", bd.API + "/projects/meta",
+                    {"op": "rename", "key": waiter[1], "seen": metas[waiter[0]]["rev"], "title": "줄서기"}, alice))
+                await asyncio.sleep(0.5)
+                check(writing.is_set() and prechecks == [holder[1]] and not second_call.done(),
+                      "홈 한 요청이 쓰는 동안 같은 계정의 다른 요청은 사전 판정 전에 기다림")
+                release.set()
+                held = [await first_call, await second_call]
+            check([r.status for r in held] == [200, 409] and json.loads(held[1].body).get("reason") == "name_taken"
+                  and prechecks == [holder[1], waiter[1]], "홈 기다린 요청은 앞 요청이 쓴 이름을 보고 거절")
             for target in (foreign, second):
                 link = root.parent / ("link_" + target.name)
                 linked = {"key": store.root_key(str(link)), "root": str(link), "outside_input": False}
@@ -67411,6 +67439,23 @@ def ux_v2_home_unit():
                       "홈 같은 크기·시각에 원자 교체된 파일은 새 표시 이름")
             else:
                 skip("홈 파일 식별 번호가 0인 파일 시스템 — 같은 크기·시각의 교체 검사 생략")
+            # 식별 번호를 주지 않는 파일 시스템(값이 늘 0)에서는 기억하지 않고 매번 읽는다 — 같은 크기·같은 시각으로 바뀌어도 새 이름
+            real_stat = os.stat
+
+            def no_inode(path, *args, **kwargs):
+                result = real_stat(path, *args, **kwargs)
+                if str(path).endswith(store.PROJECT_META_NAME):
+                    return os.stat_result((result.st_mode, 0, result.st_dev, result.st_nlink, result.st_uid, result.st_gid, result.st_size,
+                                           result.st_atime, result.st_mtime, result.st_ctime))
+                return result
+
+            with patch.object(bd.os, "stat", side_effect=no_inode):
+                check((await call("GET", probe_state))["title"] == "BBBB", "홈 식별 번호 0 — 처음 읽기")
+                store.write_json_atomic(str(probe_path), dict(doc, title="CCCC", rev=2))
+                os.utime(probe_path, ns=(first.st_atime_ns, first.st_mtime_ns))
+                check((await call("GET", probe_state))["title"] == "CCCC", "홈 식별 번호 0 — 같은 크기·시각의 교체도 새 표시 이름(기억하지 않음)")
+            store.write_json_atomic(str(probe_path), dict(doc, title="BBBB", rev=2))
+            os.utime(probe_path, ns=(first.st_atime_ns, first.st_mtime_ns))
             store.write_json_atomic(str(probe_path), dict(doc, title="다시 읽기", rev=3))
             with patch.object(store, "read_project_meta", return_value=(dict(doc, title=None), True)):
                 check((await call("GET", probe_state))["title"] is None, "홈 첫 메타 읽기 실패")

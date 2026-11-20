@@ -111,6 +111,8 @@ def _validate_config(config):
         raise ValueError("개발 모드 밖에서는 public_origin 이 필요합니다")
     if config.default_ui not in ("v1", "v2"):
         raise ValueError("default_ui 는 v1 또는 v2 여야 합니다")
+    if type(config.project_home) is not bool:  # 라우트 등록(참·거짓)과 목록 쪽 판정(is True)이 갈리지 않게
+        raise ValueError("project_home 은 true 또는 false 여야 합니다")
     origin = _origin(config.public_origin) if config.public_origin else None
     if config.cookie_samesite not in ("Lax", "Strict", "None"):
         raise ValueError("cookie_samesite 는 Lax·Strict·None 중 하나여야 합니다")
@@ -853,7 +855,8 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             default_ui = board.default_ui(request, config.default_ui)
             result["caps"]["ui_default"] = default_ui if result["caps"]["ui_v2"] else "v1"
             result["caps"]["v2_crop_model"] = config.crop_model
-            result["caps"]["v2_project_home"] = config.project_home
+            # 목록·열기 라우트(board._project_home_enabled)와 같은 값: 요청이 속한 앱의 설정
+            result["caps"]["v2_project_home"] = board.app_setting(request, board.PROJECT_HOME_ENABLED, config.project_home) is True
             result["caps"]["v2_mask_stack"] = config.mask_stack
             result["caps"]["v2_postprocess"] = config.postprocess and result["backend"] == "forge"
             if accounts is not None:
