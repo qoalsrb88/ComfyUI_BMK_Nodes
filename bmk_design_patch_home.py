@@ -63,23 +63,38 @@ def _busy(runner, root):
             or board.is_running(root) or board.draft_since(root) is not None)
 
 
-def _change(doc, data, runner, root):
+def _precheck(data, runner, root):
+    """프로젝트 잠금 밖에서 해 두는 판정 — 다른 프로젝트의 파일을 읽거나 작업 큐를 묻는 일을 이 프로젝트의 잠금 안에서 하지 않는다
+    (두 프로젝트의 잠금을 겹쳐 잡는 순서가 생기지 않게). 결과는 _change 가 판(seen) 대조 뒤에 쓴다."""
+    op = data["op"]
+    if op == "rename":
+        try:
+            title = store.check_project_title(data["title"])
+        except ValueError as exc:
+            return {"error": board._Reject(400, str(exc), reason="bad_title")}
+        if title == unicodedata.normalize("NFC", os.path.basename(root)):
+            title = None  # 폴더 이름과 같은 값 = 표시 이름을 지운다
+        # 지우는 것(폴더 이름으로 돌아감)은 늘 받는다 — 중복은 새 표시 이름을 붙일 때만 본다
+        return {"title": title, "taken": title is not None and _name_taken(data["key"], title)}
+    if op == "archive":
+        return {"busy": _busy(runner, root)}
+    return {}
+
+
+def _change(doc, data, pre, root):
     op = data["op"]
     if op == "rename":
         if doc["archived"] is not None:
             raise board._Reject(409, "보관된 프로젝트입니다 — 먼저 되돌려 주세요", reason="archived")
-        try:
-            title = store.check_project_title(data["title"])
-        except ValueError as exc:
-            raise board._Reject(400, str(exc), reason="bad_title") from None
-        folder = os.path.basename(root)
-        if _name_taken(data["key"], title or folder):
+        if "error" in pre:
+            raise pre["error"]
+        if pre["taken"]:
             raise board._Reject(409, "같은 이름의 프로젝트가 있습니다 — 다른 이름을 써 주세요", reason="name_taken")
-        doc["title"] = None if title == unicodedata.normalize("NFC", folder) else title
+        doc["title"] = pre["title"]
     elif op == "restore":
         doc["archived"] = None
     elif doc["archived"] is None:
-        if _busy(runner, root):
+        if pre["busy"]:
             raise board._Reject(409, "진행 중인 작업이 있습니다 — 끝난 뒤 다시 보관해 주세요", reason="busy")
         doc["archived"] = {"at": time.strftime("%Y-%m-%d %H:%M:%S")}
     _check_target(root)
@@ -93,10 +108,11 @@ def _update(data, runner):
         lock = _HOME_LOCKS.setdefault(parent, threading.Lock())
     with lock:
         stale = None
+        _check_target(root)
+        pre = _precheck(data, runner, root)
         try:
-            with store.manifest_lock(root):
-                _check_target(root)
-                _, changed = store.update_project_meta(root, lambda doc: _change(doc, data, runner, root), expect_rev=data["seen"])
+            # update_project_meta 가 이 프로젝트의 잠금 안에서 판 대조 → _change(대상 재확인 포함) → 쓰기를 한다
+            _, changed = store.update_project_meta(root, lambda doc: _change(doc, data, pre, root), expect_rev=data["seen"])
         except store.ProjectMetaConflict as exc:
             stale = str(exc)
         except ValueError:

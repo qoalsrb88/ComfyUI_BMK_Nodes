@@ -7081,13 +7081,18 @@ def static_type(name) -> str | None:
     return ctype
 
 
-def default_ui(request, fallback: str = "v1") -> str:
-    """ui 쿼리가 없을 때의 화면("v1"·"v2") — 요청이 속한 앱의 설정(DEFAULT_UI). 그 키가 없는 앱(로컬판)이나 앱을 알 수 없는
-    요청(라우터를 거치지 않고 만든 요청)은 fallback."""
+def app_setting(request, key, fallback):
+    """요청이 속한 앱에 서버 진입점이 걸어 둔 설정 값. 그 키가 없는 앱(로컬판)이나 앱을 알 수 없는 요청(라우터를 거치지 않고
+    만든 요청 — aiohttp 판에 따라 AssertionError·RuntimeError·AttributeError)은 fallback."""
     try:
-        value = request.app.get(DEFAULT_UI, fallback)
-    except Exception:  # 앱이 붙지 않은 요청은 aiohttp 판에 따라 AssertionError·RuntimeError·AttributeError 를 낸다
+        return request.app.get(key, fallback)
+    except Exception:
         return fallback
+
+
+def default_ui(request, fallback: str = "v1") -> str:
+    """ui 쿼리가 없을 때의 화면("v1"·"v2") — 요청이 속한 앱의 설정(DEFAULT_UI)."""
+    value = app_setting(request, DEFAULT_UI, fallback)
     return value if value in ("v1", "v2") else fallback
 
 
@@ -7988,7 +7993,7 @@ def _project_summary(root: str) -> dict:
 
 
 def _project_home_enabled(request) -> bool:
-    return server_mode() and getattr(request, "app", {}).get(PROJECT_HOME_ENABLED, False)
+    return server_mode() and app_setting(request, PROJECT_HOME_ENABLED, False) is True
 
 
 @functools.lru_cache(maxsize=512)
