@@ -893,5 +893,17 @@
       "error": "보관함에 같은 이름의 프로젝트가 있습니다 — 다른 이름을 쓰거나 보관함에서 되돌리세요",
       "reason": "archived_name"
     }
+  },
+  "projects_new_name_taken": {
+    "method": "POST",
+    "path": "{API}/projects/new?name=겨울&filename=test.png",
+    "headers": {
+      "Content-Type": "application/octet-stream"
+    },
+    "status": 409,
+    "response": {
+      "error": "다른 프로젝트(보관함 포함)가 이 이름을 표시 이름으로 쓰고 있습니다 — 다른 이름을 써 주세요",
+      "reason": "name_taken"
+    }
   }
 }

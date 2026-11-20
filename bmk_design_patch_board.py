@@ -7632,6 +7632,8 @@ _PROJECT_THUMB_SLOTS = threading.BoundedSemaphore(1)
 _PROJECT_NEW_LOCK = threading.Lock()
 _PROJECT_NEW_LOCKS: dict[str, threading.Lock] = {}
 _PROJECT_NEW_LOCKS_GUARD = threading.Lock()
+_PROJECT_ACCOUNT_LOCKS: dict[str, threading.Lock] = {}
+_PROJECT_ACCOUNT_LOCKS_GUARD = threading.Lock()
 _PROJECT_NEW_SLOTS = threading.BoundedSemaphore(2)
 _PROJECT_OLD_TRACES = ("cands", "inputs", "specs", "vlm", "layout.json", "refs.json", "pipeline.json", "board_pref.json", store.CROP_GEN_NAME)
 
@@ -7643,6 +7645,12 @@ def _project_new_lock():
     key = os.path.normcase(os.path.realpath(project_input()))
     with _PROJECT_NEW_LOCKS_GUARD:
         return _PROJECT_NEW_LOCKS.setdefault(key, threading.Lock())
+
+
+def _project_account_lock(root: str):
+    parent = os.path.normcase(os.path.abspath(os.path.dirname(root)))
+    with _PROJECT_ACCOUNT_LOCKS_GUARD:
+        return _PROJECT_ACCOUNT_LOCKS.setdefault(parent, threading.Lock())
 
 
 async def _project_new_target_limited(state, part):
@@ -7686,6 +7694,26 @@ class _ProjectNameExists(_Reject):
 def _project_name_is_archived(root: str) -> bool:
     return (in_scope(root) and not _is_link(root) and os.path.isfile(os.path.join(root, store.MANIFEST_NAME))
             and store.read_project_meta(root)[0]["archived"] is not None)
+
+
+def _project_name_key(name: str) -> str:
+    return unicodedata.normalize("NFKC", name).casefold()
+
+
+def _project_title_taken(name: str, exclude_key: str | None = None) -> bool:
+    wanted = _project_name_key(name)
+    for record in _project_records():
+        if record["key"] == exclude_key:
+            continue
+        title = store.read_project_meta(record["root"])[0]["title"]
+        if title and _project_name_key(title) == wanted:
+            return True
+    return False
+
+
+def _project_new_check_title(name: str) -> None:
+    if _project_title_taken(name):
+        raise _Reject(409, "다른 프로젝트(보관함 포함)가 이 이름을 표시 이름으로 쓰고 있습니다 — 다른 이름을 써 주세요", reason="name_taken")
 
 
 def _project_new_begin(data: dict, upload: bool) -> dict:
@@ -7823,7 +7851,9 @@ def _project_new_file(state: dict, path: str, value: dict) -> None:
 def _project_new_finish(state: dict, target: str) -> dict:
     root = state["root"]
     working = root if state["adopt"] else state["tmp"]
-    with store.manifest_lock(root):
+    project_home = state.get("project_home", False)
+    account_lock = _project_account_lock(root) if project_home else contextlib.nullcontext()
+    with account_lock, store.manifest_lock(root):
         if state["adopt"] and not _project_adoption(root)["adoptable"]:
             raise _Reject(409, "폴더에 프로젝트 기록이 생겼습니다 — 목록을 새로고침하세요")
         refs = os.path.join(working, "refs")
@@ -7837,6 +7867,8 @@ def _project_new_finish(state: dict, target: str) -> dict:
             os.makedirs(os.path.dirname(root), exist_ok=True)
             if os.path.lexists(root):
                 raise _Reject(409, "같은 이름의 프로젝트가 있습니다")
+            if project_home:
+                _project_new_check_title(state["name"])
             _project_new_rename(working, root)
             state["moved"] = True
             rev = 0  # 기존 update 계약: 없는 pipeline.json 은 rev 0.
@@ -7912,6 +7944,9 @@ async def _project_new_request(request):
             if _project_home_enabled(request) and await asyncio.to_thread(_project_name_is_archived, exc.root):
                 raise _Reject(409, "보관함에 같은 이름의 프로젝트가 있습니다 — 다른 이름을 쓰거나 보관함에서 되돌리세요", reason="archived_name") from None
             raise
+        state["project_home"] = _project_home_enabled(request)
+        if state["project_home"]:
+            await asyncio.to_thread(_project_new_check_title, state["name"])
         part = None
         if not state["adopt"]:
             part = await recv_upload(request, state["tmp"]) if upload else await _project_new_thread(copy_in, state["source"], state["tmp"])

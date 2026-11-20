@@ -67356,14 +67356,14 @@ def ux_v2_home_unit():
             metas = {p: store.load_project_meta(str(p)) for p in (root, second)}
             holder, waiter = (root, key), (second, second_key)
             # 둘째 요청이 「계정 잠금을 잡으려 했다」는 것을 본 뒤에 판정한다(시간에 기대지 않는다) — 잠금을 쓰지 않는 코드면 이 신호가 오지 않는다
-            real_locks, arrivals, second_arrived = home._HOME_LOCKS, [], threading.Event()
+            real_locks, arrivals, second_arrived = bd._PROJECT_ACCOUNT_LOCKS, [], threading.Event()
 
             class Watched:
                 def __init__(self, lock):
                     self.lock = lock
 
                 def __enter__(self):
-                    arrivals.append(threading.current_thread())
+                    arrivals.append(self.lock)
                     if len(arrivals) == 2:
                         second_arrived.set()
                     self.lock.acquire()
@@ -67376,7 +67376,9 @@ def ux_v2_home_unit():
                 def setdefault(self, name, default):
                     return Watched(real_locks.setdefault(name, default))
 
-            with patch.object(store, "update_project_meta", side_effect=slow_update), patch.object(home, "_precheck", side_effect=seen_precheck),                     patch.object(home, "_HOME_LOCKS", Locks()):
+            with (patch.object(store, "update_project_meta", side_effect=slow_update),
+                  patch.object(home, "_precheck", side_effect=seen_precheck),
+                  patch.object(bd, "_PROJECT_ACCOUNT_LOCKS", Locks())):
                 first_call = asyncio.ensure_future(request(app, "POST", bd.API + "/projects/meta",
                     {"op": "rename", "key": holder[1], "seen": metas[holder[0]]["rev"], "title": "줄서기"}, alice))
                 await asyncio.to_thread(writing.wait, 10)
@@ -67504,6 +67506,87 @@ def ux_v2_home_unit():
             await post("rename", rev, target=probe_key, title=mixed)
             check(store.load_project_meta(str(probe))["title"] == "Ａ여름", "홈 중복 비교와 별도로 저장은 NFC")
 
+            collision = api["projects_new_name_taken"]
+            png = png_bytes(np.zeros((64, 64, 3), np.uint8))
+            owner, owner_key = seed(scope, "title_owner")
+            staging = Path(scope["input"]) / bd._NEW_TMP_DIRNAME
+
+            def create(name, status=200, *, data=png):
+                query = urllib.parse.urlencode({"name": name, "filename": "test.png"})
+                return call("POST", "/projects/new?" + query, data, status, mime="application/octet-stream")
+
+            def clean_rejection(name):
+                return not (owner.parent / name).exists() and (not staging.exists() or not any(staging.iterdir()))
+
+            async def early_collision(name):
+                with patch.object(bd, "recv_upload", wraps=bd.recv_upload) as receive:
+                    reply = await create(name, collision["status"], data=b"")
+                check(reply == collision["response"] and receive.call_count == 0 and clean_rejection(name),
+                      f"홈 표시 이름 {name} 충돌은 본문 수신 전 거절·프로젝트와 임시 폴더 없음")
+
+            await post("rename", 0, target=owner_key, title="겨울")
+            read_threads.clear()
+            with patch.object(store, "read_project_meta", side_effect=track_read):
+                await early_collision("겨울")
+            check(read_threads and all(t is not loop_thread for t in read_threads), "홈 새 폴더와 표시 이름의 사전 대조는 작업 스레드")
+            await post("rename", 1, target=owner_key, title="Winter")
+            await early_collision("winter")
+            await early_collision("Ｗｉｎｔｅｒ")
+            await post("archive", 2, target=owner_key)
+            await early_collision("Winter")
+            await post("restore", 3, target=owner_key)
+            await post("rename", 4, target=owner_key, title="")
+            await post("rename", 0, target=store.root_key(str(foreign)), account=bob, title="new_unique")
+            for name in ("Winter", "new_unique"):
+                check((await create(name)).get("name") == name and (owner.parent / name / store.MANIFEST_NAME).is_file(),
+                      f"홈 지운 표시 이름·다른 계정만 쓰는 이름으로 새 프로젝트 생성 {name}")
+
+            # 업로드 도중 다른 프로젝트가 이름을 가져가면 마지막 판정에서 중단한다.
+            recv = bd.recv_upload
+            late_name = "during_upload"
+
+            async def receive_then_rename(*args):
+                part = await recv(*args)
+                await post("rename", 5, target=owner_key, title=late_name)
+                return part
+
+            with patch.object(bd, "recv_upload", side_effect=receive_then_rename) as receive:
+                late = await create(late_name, collision["status"])
+            check(receive.await_count == 1 and late == collision["response"] and clean_rejection(late_name)
+                  and store.load_project_meta(str(owner))["title"] == late_name,
+                  "홈 수신 중 선점된 표시 이름은 이동 직전에 거절·임시 폴더 정리")
+
+            # 만들기가 이동 직전에 멈춘 동안 이름 변경이 같은 잠금에 도착하는 것을 관찰한다.
+            race_name = "racing_name"
+            moving, release_move = threading.Event(), threading.Event()
+            move = bd._project_new_rename
+            arrivals.clear()
+            second_arrived.clear()
+
+            def pause_move(source, dest):
+                if Path(dest) == owner.parent / race_name:
+                    moving.set()
+                    if not release_move.wait(20):
+                        raise AssertionError("프로젝트 이동 재개 시간 초과")
+                return move(source, dest)
+
+            with patch.object(bd, "_PROJECT_ACCOUNT_LOCKS", Locks()), patch.object(bd, "_project_new_rename", side_effect=pause_move):
+                creating = asyncio.create_task(create(race_name))
+                try:
+                    at_move = await asyncio.to_thread(moving.wait, 10)
+                    renaming = asyncio.create_task(post("rename", 6, target=owner_key, title=race_name, status=409))
+                    arrived = await asyncio.to_thread(second_arrived.wait, 5)
+                    check(at_move and arrived and arrivals[0] is arrivals[1] and not renaming.done(),
+                          "홈 새 프로젝트 이동 중 이름 변경이 같은 계정 잠금에서 대기")
+                finally:
+                    release_move.set()
+                created, renamed = await asyncio.gather(creating, renaming)
+            check(created.get("name") == race_name and (owner.parent / race_name / store.MANIFEST_NAME).is_file()
+                  and renamed.get("reason") == "name_taken" and store.load_project_meta(str(owner))["title"] == late_name,
+                  "홈 같은 이름으로 만들기와 변경이 겹치면 먼저 잠근 만들기만 성공")
+
+            await post("rename", store.load_project_meta(str(owner))["rev"], target=owner_key, title="겨울")
+
         async with server(False) as app:
             alice, _ = await login(app, "alice", "one")
             check(not any(r.resource.canonical == bd.API + "/projects/meta" for r in app.router.routes())
@@ -67516,6 +67599,10 @@ def ux_v2_home_unit():
             check((await call("POST", "/projects/open", {"key": key}))["ok"]
                   and await call("POST", new_url, b"", 409, mime="application/octet-stream")
                   == {"error": "같은 이름의 프로젝트가 있습니다 — 폴더 목록을 확인하세요"}, "홈 꺼진 서버 열기·새로 만들기")
+            with patch.object(store, "read_project_meta", wraps=read_meta) as reads:
+                created = await create("겨울")
+            check(created.get("name") == "겨울" and (owner.parent / "겨울" / store.MANIFEST_NAME).is_file() and reads.call_count == 0,
+                  "홈 꺼진 서버는 표시 이름이 겹쳐도 메타를 읽지 않고 새 프로젝트 생성")
 
         # 일꾼은 실제로 시작하되 대기 작업을 가져가지 못하게 한다. 제출·조회·취소·종료는 실제 큐를 쓴다.
         with patch.object(jobs.JobRunner, "_take", return_value=None):
@@ -67547,6 +67634,11 @@ def ux_v2_home_unit():
                                       "source": "asset", "id": asset["id"]}, 409)
                 expected = api["projects_new_archived_name"]["response"] if enabled else {"error": "같은 이름의 프로젝트가 있습니다 — 폴더 목록을 확인하세요"}
                 check(imported == expected, f"홈 Forge 가져오기 요청 앱의 보관함 안내 (플래그 {enabled})")
+                if enabled:
+                    imported = await call("POST", "/forge/import", {"into": "target", "name": doc["title"],
+                                          "source": "asset", "id": asset["id"]}, collision["status"])
+                    check(imported == collision["response"] and not (forge_root.parent / doc["title"]).exists(),
+                          "홈 Forge 타깃 가져오기도 보관된 프로젝트의 표시 이름과 충돌하면 거절")
 
         with patch.object(bd, "_PROJECT_INPUT", scope["input"]), patch.object(store, "known_roots", return_value=[]), \
                 patch.object(store, "resolve_board_root", return_value=str(root)), \

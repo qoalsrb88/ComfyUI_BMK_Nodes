@@ -2,7 +2,6 @@
 
 import logging
 import os
-import threading
 import time
 import unicodedata
 
@@ -15,8 +14,6 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
-_HOME_LOCKS = {}
-_HOME_LOCKS_GUARD = threading.Lock()
 
 
 def _validate(data):
@@ -41,21 +38,11 @@ def _check_target(root):
         raise board._Reject(404, board._PROJECT_NOT_FOUND, reason="not_found")
 
 
-def _name_key(name):
-    return unicodedata.normalize("NFKC", name).casefold()
-
-
 def _name_taken(key, title):
-    wanted = _name_key(title)
-    for other in board._project_records():
-        if other["key"] == key:
-            continue
-        if wanted == _name_key(os.path.basename(other["root"])):
-            return True
-        other_title = store.read_project_meta(other["root"])[0]["title"]
-        if other_title and wanted == _name_key(other_title):
-            return True
-    return False
+    wanted = board._project_name_key(title)
+    return (any(board._project_name_key(os.path.basename(other["root"])) == wanted
+                for other in board._project_records() if other["key"] != key)
+            or board._project_title_taken(title, key))
 
 
 def _busy(runner, root):
@@ -104,10 +91,7 @@ def _change(doc, data, pre, root):
 def _update(data, runner):
     record = board._project_find(data.get("key"))
     root = record["root"]
-    parent = os.path.normcase(os.path.abspath(os.path.dirname(root)))
-    with _HOME_LOCKS_GUARD:
-        lock = _HOME_LOCKS.setdefault(parent, threading.Lock())
-    with lock:
+    with board._project_account_lock(root):
         stale = None
         _check_target(root)
         pre = _precheck(data, runner, root)
