@@ -519,7 +519,7 @@ class JobRunner:
                 raise RuntimeError("생성 백엔드 설정이 바뀌었습니다 — 계획을 다시 확인해 주세요")
             if self._forge is not None and not backend.mock_enabled(job["raw_root"]):
                 ctx = {**self._forge.context(job["scope"]), "account": job["scope"]["account"],
-                       "root": job["raw_root"], "stop": lambda: job["closed"]}
+                       "root": job["raw_root"], "stop": lambda: job["closed"], "draining": lambda: job["draining"]}
                 forge_token = backend.set_forge(ctx)
                 if job.get("stage") in ("apply", "run", "reroll"):
                     _refresh_catalog(ctx)

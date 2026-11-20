@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import stat
 import struct
 import time
 from datetime import datetime, timedelta
@@ -42,6 +43,7 @@ RATIO = "결과의 비율이 입력과 다릅니다 — 켜면 늘어나 보입�
 SMALL = "업스케일 결과가 입력보다 크지 않습니다"
 OPAQUE = "배경 제거 결과가 전부 불투명합니다"
 CHANGED = "그 사이 다른 창에서 바뀌었습니다 — 받아 둔 결과는 다시 누르면 재사용됩니다"
+INPUT_CHANGED = "입력 그림이 바뀌었습니다 — 계획을 다시 확인해 주세요"
 SCHEMA = "bmk.design_patch.post/1"
 
 
@@ -130,7 +132,20 @@ def post_key(tool, body, sha):
 def _alpha(im):
     if "A" in im.getbands():
         return im.getchannel("A").getextrema()[0] < 255
-    return "transparency" in im.info and im.convert("RGBA").getchannel("A").getextrema()[0] < 255
+    return im.mode == "P" and "transparency" in im.info and im.convert("RGBA").getchannel("A").getextrema()[0] < 255
+
+
+def _sha256(stream):
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+@functools.lru_cache(maxsize=256)
+def _result_sha(path, mtime_ns, size):
+    with path.open("rb") as stream:
+        return _sha256(stream)
 
 
 def _record(m, key):
@@ -148,10 +163,7 @@ def _source(root, m, cand, *, fingerprint=True):
         path = _path(root, src["file"])
         with path.open("rb") as stream:
             if fingerprint:
-                digest = hashlib.sha256()
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-                src["sha"] = digest.hexdigest()
+                src["sha"] = _sha256(stream)
                 stream.seek(0)
             with Image.open(stream) as im:
                 src.update(size=list(im.size), alpha=_alpha(im))
@@ -170,7 +182,7 @@ def _available(model, catalog):
     return None
 
 
-def _blocked(src, tool, model, opts, catalog):
+def _blocked(src, tool, opts):
     if src.get("error"):
         return src["error"]
     if tool == "upscale" and src["alpha"]:
@@ -182,7 +194,7 @@ def _blocked(src, tool, model, opts, catalog):
         if side * 2 > store.POST_MAX_SIDE:
             return "이미 충분히 큰 그림입니다"
         return "지금 그림의 변 × 배율 이 4096 을 넘습니다"
-    return _available(model, catalog) if tool == "upscale" else None
+    return None
 
 
 class Ledger:
@@ -216,7 +228,24 @@ class Ledger:
                 or not isinstance(done.get("warnings"), list)
                 or any(w not in (RATIO, SMALL, OPAQUE) for w in done["warnings"])):
             raise _bad_record()
-        return done if _path(self.root, done["file"]).is_file() else None
+        path = _path(self.root, done["file"])
+        try:
+            info = path.stat()
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            return done if _result_sha(path, info.st_mtime_ns, info.st_size) == done.get("sha") else None
+        except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+            return None
+
+    def unfinished_output(self):
+        # 이전 완료 기록이 있는 손상 파일은 반드시 원격 결과와 대조해 복구한다.
+        if self.path("done.json").exists():
+            return None
+        for ext, _ in FORMATS.values():
+            path = self.path("out." + ext)
+            if path.is_file():
+                return path
+        return None
 
     def sidecar(self):
         side = self.read("forge")
@@ -262,7 +291,7 @@ class Ledger:
             return "unusable", attempt
         if self.done() is not None:
             return "reuse", attempt
-        if self.receipt() is not None:
+        if self.receipt() is not None or self.unfinished_output() is not None:
             return "recover", attempt
         if failed is not None:
             return "new", attempt + 1
@@ -295,7 +324,7 @@ def _plan(root, args, catalog):
         stamps[key] = rec["at"] if rec else ""
         src = _source(root, m, cand)
         inputs[key] = {k: src[k] for k in ("file", "size", "sha") if k in src}
-        why = _blocked(src, tool, model, opts, catalog)
+        why = _blocked(src, tool, opts)
         pk = post_key(tool, _settings(tool, model, opts), src["sha"]) if "sha" in src else None
         state, attempt = "blocked", 0
         if not why:
@@ -303,6 +332,10 @@ def _plan(root, args, catalog):
             state, attempt = ledger.state()
             if state == "unusable":
                 state, why = "blocked", ledger.unusable_reason()
+            elif state == "new" and tool == "upscale":
+                why = _available(model, catalog)
+                if why:
+                    state, attempt = "blocked", 0
         if not why and pk in scheduled:
             state = "reuse"  # 앞 후보의 결과만 등록한다. 앞 후보가 실패해도 추가 제출하지 않는다.
         if not why:
@@ -315,7 +348,8 @@ def _plan(root, args, catalog):
                       "why": why})
         counts[state] += 1
     mark = hashlib.sha256("".join(stamps[k] for k in sorted(keys)).encode()).hexdigest()[:12]
-    plan = {"ok": True, "expect": f"{m['rev']}:{mark}", "hash": runner.pending_hash(["backend:forge", *pending]) if pending else "",
+    approval = runner.pending_hash(["backend:forge", "root:" + store.root_key(root), *pending]) if pending else ""
+    plan = {"ok": True, "expect": f"{m['rev']}:{mark}", "hash": approval,
             "tool": tool, "model": _model(model), "opts": opts, "items": items, "counts": counts}
     return plan, inputs, stamps
 
@@ -335,12 +369,17 @@ class _Drained(Exception):
     """첫 전송 전 drain. 접수 여부가 불명확한 요청의 멱등 재전송은 끝까지 한다."""
 
 
+def _draining(ctx):
+    flag = ctx.get("draining")
+    return (flag is not None and flag()) or board.drain_requested(ctx["root"])
+
+
 async def _submit(ctx, poller, tool, body, *, uncertain):
     lost, overload = uncertain, False
     for n in range(3):
         poller._stop()
         token = await poller._fresh_token(body["request_id"])
-        if not lost and board.drain_requested(ctx["root"]):
+        if _draining(ctx) and (n == 0 or not lost):
             raise _Drained
         try:
             res = await ctx["client"].submit_post(token, tool, body)
@@ -450,7 +489,7 @@ async def _request(ledger, ctx, poller, item, plan, src, crop_id, data):
     return resp
 
 
-async def _receive(ledger, ctx, poller, resp, tool, size):
+async def _download(ledger, ctx, poller, resp):
     job_id, submitted = resp["job_id"], fg._timestamp(resp["received"])
     # receipt 를 복구했으면 조회보다 먼저 영속화한다.
     if not ledger.path("resp.json").exists():
@@ -470,7 +509,7 @@ async def _receive(ledger, ctx, poller, resp, tool, size):
     if not isinstance(images, list) or not images or not isinstance(images[0], str) or not images[0]:
         raise _NoResult("Forge 결과 그림이 없습니다.", phase="download", maybe_billed=True)
     try:
-        data = await ctx["client"].fetch_media(images[0], limit=MEDIA_LIMIT)
+        return await ctx["client"].fetch_media(images[0], limit=MEDIA_LIMIT)
     except ForgeError as exc:
         if exc.status == 413 and exc.kind == "format":
             raise _Unusable("결과 그림의 형식 또는 크기가 잘못되었습니다.", phase="download", status=413) from None
@@ -479,6 +518,17 @@ async def _receive(ledger, ctx, poller, resp, tool, size):
     except Exception as exc:
         raise fg._pressure_error("Forge 결과 그림을 받지 못했습니다.", overloaded=isinstance(exc, OSError),
                                  phase="download", maybe_billed=True) from None
+
+
+async def _receive(ledger, ctx, poller, resp, tool, size, *, local_only):
+    local = ledger.unfinished_output()
+    if local is not None:
+        with local.open("rb") as stream:
+            data = stream.read(MEDIA_LIMIT + 1)
+    else:
+        if local_only or resp is None:
+            raise board._Reject(409, "복구할 결과가 없습니다 — 계획을 다시 확인해 주세요.")
+        data = await _download(ledger, ctx, poller, resp)
     ext = runner._sniff_ext(data) if isinstance(data, bytes) and len(data) <= MEDIA_LIMIT else None
     if ext is None:
         raise _Unusable("결과 그림의 형식 또는 크기가 잘못되었습니다.", phase="download")
@@ -489,10 +539,16 @@ async def _receive(ledger, ctx, poller, resp, tool, size):
     previous = ledger.read("done")
     if previous is not None and previous.get("sha") != digest:
         raise _Unusable("기존 완료 그림과 복구 결과가 다릅니다.")
-    store._atomic_write_bytes(ledger.path(name), data)
+    if local is None:
+        store._atomic_write_bytes(ledger.path(name), data)
+    elif name != local.name:
+        raise _Unusable("결과 그림의 형식 또는 크기가 잘못되었습니다.", phase="download")
     _, result_size, warnings = _check_result(data, tool, size)
+    started = resp["received"] if resp else (ledger.read("req") or {}).get("time")
+    submitted = fg._timestamp(started)
     done = {"file": f"post/{ledger.key}/{name}", "size": result_size, "sha": digest,
-            "elapsed_s": round(max(0, time.time() - submitted), 2), "warnings": warnings, "finished": runner._now()}
+            "elapsed_s": round(max(0, time.time() - submitted), 2) if submitted is not None else 0,
+            "warnings": warnings, "finished": runner._now()}
     ledger.write("done", done)
     ledger.path("failed.json").unlink(missing_ok=True)
     return done
@@ -529,15 +585,40 @@ def _at(previous):
 
 
 def _register(root, key, seen, plan, src, done, pk):
+    # 매니페스트 잠금 밖에서 바이트를 읽고, 잠금 안에서는 경로와 파일 교체 여부를 확인한다.
+    path = _path(root, src["file"])
+    try:
+        with path.open("rb") as stream:
+            info = os.fstat(stream.fileno())
+            if _sha256(stream) != src["sha"]:
+                raise board._Reject(409, INPUT_CHANGED)
+    except FileNotFoundError:
+        raise board._Reject(409, INPUT_CHANGED) from None
+    planned_input = {"file": src["file"], "sha": src["sha"]}
+
     def mutate(m):
         old = _record(m, key)
-        if not board.dmask.star_cand(m, key) or (old["at"] if old else "") != seen:
+        cand = board.dmask.star_cand(m, key)
+        if cand is None or (old["at"] if old else "") != seen:
             raise board._Reject(409, CHANGED, reason="changed")
+        try:
+            current = _path(root, src["file"]).stat()
+        except FileNotFoundError:
+            raise board._Reject(409, INPUT_CHANGED) from None
+        if not os.path.samestat(info, current) or (info.st_mtime_ns, info.st_size) != (current.st_mtime_ns, current.st_size):
+            raise board._Reject(409, INPUT_CHANGED)
+        effective = store.cand_effective(m, cand, root)["file"]
+        if effective != src["file"]:
+            # 잃었던 현재 머리의 동일 파일을 되살리면 이미 등록돼 있다. 이력도 그대로 둔다.
+            if (old and old["on"] and old["call"] == pk and old["file"] == effective == done["file"]
+                    and old["input"] == planned_input and cand["file"] == src["file"]):
+                return
+            raise board._Reject(409, INPUT_CHANGED)
         hist = []
         if old:
             hist = [{k: v for k, v in old.items() if k != "hist"}, *old["hist"]][:store.RECORD_HIST_KEEP]
         rec = {"on": RATIO not in done["warnings"], "file": done["file"], "size": done["size"], "tool": plan["tool"],
-               "model": plan["model"]["id"], "opts": plan["opts"], "input": {"file": src["file"], "sha": src["sha"]},
+               "model": plan["model"]["id"], "opts": plan["opts"], "input": planned_input,
                "call": pk, "at": _at(seen), "hist": hist}
         m.setdefault("cand_post", {})[key] = rec
         if store.cand_post_record(m, key) is None:
@@ -545,7 +626,7 @@ def _register(root, key, seen, plan, src, done, pk):
     store.update_manifest(root, mutate)
 
 
-async def _execute(root, bundle):
+async def _execute(root, bundle, *, local_only=False):
     plan, inputs, stamps = bundle
     ctx = runner.forge_context()
     poller = fg.ForgeBackend(ctx)
@@ -555,7 +636,7 @@ async def _execute(root, bundle):
     progress = jobs.compat.ProgressBar(len(items))
     with board.run_active(root):
         for item in items:
-            if board.drain_requested(root) or ctx["stop"]():
+            if ctx["stop"]():
                 result["stopped_reason"] = "drain"
                 break
             key, pk = item["key"], item["post_key"]
@@ -573,31 +654,35 @@ async def _execute(root, bundle):
                     if state == "new" and (item["state"] != "new" or attempt != item["attempt"] or not plan["hash"]):
                         raise board._Reject(409, "승인한 호출 목록이 바뀌었습니다 — 계획을 다시 확인해 주세요.")
                     if state == "new":
+                        if _draining(ctx):
+                            result["stopped_reason"] = "drain"
+                            continue
                         m = store.load_manifest(root)
                         cand = board._mask_cand(m, key)
                         rec = _record(m, key)
-                        if (rec["at"] if rec else "") != stamps[key] or store.cand_effective(m, cand, root)["file"] != src["file"]:
+                        if (rec["at"] if rec else "") != stamps[key]:
                             raise board._Reject(409, "후보 그림이 바뀌었습니다 — 계획을 다시 확인해 주세요.")
-                        data = _path(root, src["file"]).read_bytes()
+                        if store.cand_effective(m, cand, root)["file"] != src["file"]:
+                            raise board._Reject(409, INPUT_CHANGED)
+                        try:
+                            data = _path(root, src["file"]).read_bytes()
+                        except FileNotFoundError:
+                            raise board._Reject(409, INPUT_CHANGED) from None
                         if hashlib.sha256(data).hexdigest() != src["sha"]:
-                            raise board._Reject(409, "입력 그림이 바뀌었습니다 — 계획을 다시 확인해 주세요.")
-                        if board.drain_requested(root) or ctx["stop"]():
-                            result["stopped_reason"] = "drain"
-                            break
+                            raise board._Reject(409, INPUT_CHANGED)
                         writing = True
                         resp = await _request(ledger, ctx, poller, item, plan, src, cand["crop_id"], data)
                         del data
                     else:
                         writing = True
                         resp = ledger.receipt()
-                    done = await _receive(ledger, ctx, poller, resp, plan["tool"], src["size"])
+                    done = await _receive(ledger, ctx, poller, resp, plan["tool"], src["size"], local_only=local_only)
                 writing = False
                 _register(root, key, stamps[key], plan, src, done, pk)
                 result[{"reuse": "reused", "recover": "recovered", "new": "done"}[state]].append(key)
                 result["warnings"].extend({"key": key, "text": w} for w in done["warnings"])
             except _Drained:
                 result["stopped_reason"] = "drain"
-                break
             except runner._interrupt_types():
                 raise
             except Exception as error:
@@ -662,9 +747,9 @@ def _view(root, scope, queue):
         edges = [math.dist(quad[:2], quad[2:4]), math.dist(quad[:2], quad[6:8])]
         density = round(min(s / length for s, length in zip(src["size"], edges)), 2) if min(edges) > 0 else None
         model = next((r["id"] for r in models if r["available"]), MODELS[0])
-        reasons = {s: _blocked(src, "upscale", model, {"scale": s}, catalog) for s in (2, 4)}
+        reasons = {s: _blocked(src, "upscale", {"scale": s}) or _available(model, catalog) for s in (2, 4)}
         scales = [s for s, why in reasons.items() if not why]
-        bg = _blocked(src, "bg_removal", "RMBG-2.0", {}, catalog)
+        bg = _blocked(src, "bg_removal", {})
         can = {"upscale": {"ok": bool(scales), "why": reasons[2], "scales": scales},
                "bg_removal": {"ok": bg is None, "why": bg}}
         candidates.append({"key": key, "crop_id": cand["crop_id"], "tid": cand["tid"], "size": cand["src_size"],
@@ -740,6 +825,12 @@ def _guard(handler):
     return wrapped
 
 
+def _needs_forge(root, plan):
+    return plan["counts"]["new"] > 0 or any(
+        item["state"] == "recover" and Ledger(root, item["post_key"]).unfinished_output() is None
+        for item in plan["items"])
+
+
 def routes(queue, accounts):
     def root_of(data):
         root = board._root_param(data.get("root"))
@@ -769,17 +860,18 @@ def routes(queue, accounts):
         if queue.post_busy(scope):
             raise board._Reject(409, "대기 중이거나 실행 중인 후보정 작업이 있습니다.", reason="busy")
         bundle = await asyncio.to_thread(_plan, root, args, _catalog(scope))
-        counts = bundle[0]["counts"]
-        if counts["new"] or counts["recover"]:
+        needs_forge = await asyncio.to_thread(_needs_forge, root, bundle[0])
+        if needs_forge:
             await jobs.ensure_forge_access(accounts, scope)
             bundle = await asyncio.to_thread(_plan, root, args, _catalog(scope))
-            counts = bundle[0]["counts"]
         current = bundle[0]
+        counts = current["counts"]
         if data.get("expect") != current["expect"] or data.get("approve", "") != current["hash"]:
             raise board._Reject(409, "후보정 계획을 다시 확인해 주세요.", reason="stale", plan=current)
         meta = {"tool": args[1], "total": len(args[0]) - counts["blocked"]}
         try:
-            result = queue.submit(scope, root, "post", meta, "forge", run=lambda: asyncio.run(_execute(root, bundle)))
+            result = queue.submit(scope, root, "post", meta, "forge",
+                                  run=lambda: asyncio.run(_execute(root, bundle, local_only=not needs_forge)))
         except jobs.PostBusy as exc:
             raise board._Reject(409, str(exc), reason="busy") from None
         except jobs.QueueFull as exc:

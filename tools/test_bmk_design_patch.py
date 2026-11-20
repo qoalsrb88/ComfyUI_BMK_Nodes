@@ -64457,9 +64457,9 @@ def ux_v2c_post_unit():
         wire.root, ctx["root"] = root, root
         return root, m, keys
 
-    def plan(root, keys, tool="bg_removal", **kw):
+    def plan(root, keys, tool="bg_removal", *, models=catalog, **kw):
         args = post._arguments({"keys": keys, "tool": tool, **kw}, query=False)
-        return post._plan(root, args, catalog)
+        return post._plan(root, args, models)
 
     async def execute(root, bundle):
         token = post.runner.set_forge(ctx)
@@ -64717,7 +64717,7 @@ def ux_v2c_post_unit():
         check(failed["stopped_reason"] == "overload" and len(wire.submits) == count + 2 and len(failed["failed"]) == 2,
               "과부하 두 번 뒤 나머지 제출 중단")
         retry = plan(root, [a])
-        check(retry[0]["items"][0]["attempt"] == 2 and retry[0]["hash"] != plan_hash(bundle, 0),
+        check(retry[0]["items"][0]["attempt"] == 2 and retry[0]["hash"] != plan_hash(root, bundle[0]["items"][0]),
               "명시적 실패 재실행은 새 승인")
         wire.fail_poll = [200]
         await execute(root, retry)
@@ -64761,9 +64761,173 @@ def ux_v2c_post_unit():
         check(not record(root, a)["on"] and len(record(root, a)["hist"]) == st.RECORD_HIST_KEEP
               and {"key": a, "text": post.RATIO} in got["warnings"], "비율 불일치 꺼짐·20판 상한")
 
-    def plan_hash(mixed, index):
-        item = mixed[0]["items"][index]
-        return post.runner.pending_hash(["backend:forge", f"p:{item['post_key']}:a{item['attempt']}"])
+    def plan_hash(root, item):
+        return post.runner.pending_hash(["backend:forge", "root:" + st.root_key(root), f"p:{item['post_key']}:a{item['attempt']}"])
+
+    async def local_recovery():
+        root, _, keys = project("received-bytes")
+        a = keys["a1"]
+        for offset, fmt in enumerate(("PNG", "JPEG", "WEBP", "invalid")):
+            opts = {"mask_offset": offset}
+            wire.output = picture((64, 64), (4, 5, 6), "PNG" if fmt == "invalid" else fmt)
+            p = plan(root, [a], opts=opts)
+            await execute(root, p)
+            ledger = post.Ledger(root, p[0]["items"][0]["post_key"])
+            edit(root, a, "reset")
+            info = ledger.read("done")
+            ledger.path("done.json").unlink()  # 원자적인 out 쓰기와 done 쓰기 사이에서 중단
+            if fmt == "invalid":
+                (Path(root) / info["file"]).write_bytes(b"broken")
+            ledger.write("resp", dict(ledger.read("resp"), received="2000-01-01 00:00:00"))
+            if fmt == "JPEG":
+                ledger.path("resp.json").unlink()
+                ledger.path("forge.json").unlink()
+            wire.fail_poll = [404]
+            before = list(wire.calls)
+            got = await execute(root, plan(root, [a], opts=opts))
+            check(wire.calls == before, f"다운로드 후 중단 {fmt} — 만료 잡 조회·제출 0")
+            if fmt == "invalid":
+                check(got["failed"] and ledger.state()[0] == "unusable", "로컬에 받은 깨진 그림은 사용 불가")
+            else:
+                check(got["recovered"] == [a] and (ledger.read("done") or {}).get("sha") == info["sha"]
+                      and (record(root, a) or {}).get("file") == info["file"], f"로컬 {fmt} 검사·등록")
+                edit(root, a, "reset")
+                check(plan(root, [a], opts=opts)[0]["items"][0]["state"] == "reuse", f"로컬 {fmt} 완료 뒤 재사용")
+            wire.fail_poll = []
+        wire.output = None
+
+    async def integrity_cases():
+        root, m, keys = project("damaged-result")
+        a = keys["a1"]
+        p = plan(root, [a])
+        await execute(root, p)
+        path = Path(root) / record(root, a)["file"]
+        good = path.read_bytes()
+        edit(root, a, "reset")
+        path.write_bytes(good + b"changed")
+        check(plan(root, [a])[0]["items"][0]["state"] == "recover", "디코드 가능한 그림도 SHA가 다르면 복구")
+        path.write_bytes(b"")
+        recover = plan(root, [a])
+        check(recover[0]["items"][0]["state"] == "recover" and not recover[0]["hash"], "빈 완료본은 무료 복구")
+        before = len(wire.submits)
+        got = await execute(root, recover)
+        current = st.load_manifest(root)
+        check(got["recovered"] == [a] and not got["reused"] and len(wire.submits) == before and path.read_bytes() == good
+              and st.cand_effective(current, m["candidates"][0], root)["post"], "손상 완료본 재수신·합성 파생본·추가 제출 0")
+        edit(root, a, "reset")
+        path.write_bytes(b"")
+        ledger = post.Ledger(root, p[0]["items"][0]["post_key"])
+        ledger.path("resp.json").unlink()
+        ledger.path("forge.json").unlink()
+        fresh = plan(root, [a])[0]
+        check(fresh["items"][0]["state"] == "new" and fresh["hash"], "완료본 손상·접수표 소실은 신규 승인 필요")
+
+    async def removed_model():
+        root, _, keys = project("removed-model")
+        a = keys["a1"]
+        wire.fail_download = [503]
+        await execute(root, plan(root, [a], "upscale"))
+        before = len(wire.submits)
+        for models in ({}, None):
+            p = plan(root, [a], "upscale", models=models)[0]
+            check(p["items"][0]["state"] == "recover" and p["hash"] == "", "누락·미확인 모델의 접수 잡 복구")
+        got = await execute(root, plan(root, [a], "upscale", models={}))
+        check(got["recovered"] == [a] and len(wire.submits) == before, "목록에서 빠진 모델도 접수 결과 등록")
+        edit(root, a, "reset")
+        for models in ({}, None):
+            reused = plan(root, [a], "upscale", models=models)
+            fresh = plan(root, [a], "upscale", models=models, scale=4)[0]
+            check(reused[0]["items"][0]["state"] == "reuse" and not reused[0]["hash"]
+                  and fresh["items"][0]["state"] == "blocked", "모델 목록 검사는 신규 제출에만 적용")
+        before = list(wire.calls)
+        got = await execute(root, reused)
+        check(got["reused"] == [a] and wire.calls == before, "목록에서 빠진 모델 완료본 재사용·전송 0")
+
+    async def input_at_registration():
+        changed = "입력 그림이 바뀌었습니다 — 계획을 다시 확인해 주세요"
+        for state in ("reuse", "recover", "new"):
+            root, m, keys = project("register-" + state)
+            a = keys["a1"]
+            path = Path(root) / m["candidates"][0]["file"]
+            if state != "new":
+                if state == "recover":
+                    wire.fail_download = [503]
+                await execute(root, plan(root, [a]))
+                edit(root, a, "reset")
+            p = plan(root, [a])
+            before = len(wire.submits)
+            def replace_input():
+                path.write_bytes(picture((64, 64), (10, 20, 30)))
+            if state == "reuse":
+                replace_input()
+            elif state == "new":
+                wire.on_poll = replace_input
+            else:
+                # 바이트가 같아도 실효 입력의 파일이 달라진 경우
+                (path.parent / "other.png").write_bytes(path.read_bytes())
+                st.update_manifest(root, lambda doc: doc["candidates"][0].update(file=path.with_name("other.png").relative_to(root).as_posix()))
+            got = await execute(root, p)
+            ledger = post.Ledger(root, p[0]["items"][0]["post_key"])
+            check(got["failed"] == [{"key": a, "error": changed}] and record(root, a) is None and ledger.done()
+                  and len(wire.submits) == before + int(state == "new"), f"{state} 등록 직전 입력 경로·SHA 확인과 결과 보존")
+
+    async def png_alpha():
+        root, _, keys = project("color-transparency")
+        a = keys["a1"]
+        for mode, transparency, alpha in (("RGB", (7, 7, 7), False), ("P", 0, True), ("RGBA", None, True)):
+            image = Image.new(mode, (64, 64), {"RGB": (7, 7, 7), "P": 0, "RGBA": (7, 7, 7, 120)}[mode])
+            buf = io.BytesIO()
+            image.save(buf, "PNG", transparency=transparency)
+            wire.output = buf.getvalue()
+            result = await execute(root, plan(root, [a]))
+            check(result["done"] == [a] and ({"key": a, "text": post.OPAQUE} in result["warnings"]) == (not alpha),
+                  f"{mode} 배경 제거 알파 경고와 합성 디코더 일치")
+            check((plan(root, [a], "upscale")[0]["items"][0]["state"] == "blocked") == alpha,
+                  f"{mode} 입력 업스케일의 부분 투명 판정")
+        wire.output = None
+
+    async def closing_queue():
+        root, _, keys = project("closing")
+        a, b = keys["a1"], keys["a2"]
+        wire.fail_download = [503]
+        await execute(root, plan(root, [b]))
+        mixed = plan(root, [a, b])
+        entered, draining = threading.Event(), threading.Event()
+        real_drain = bd.set_drain
+        def drain(path):
+            try:
+                return real_drain(path)
+            finally:
+                draining.set()
+        def worker():
+            entered.set()
+            if not draining.wait(5):
+                raise AssertionError("종료 표지 대기 시간 초과")
+            return asyncio.run(post._execute(root, mixed))
+        queue = post.jobs.JobRunner(forge=types.SimpleNamespace(context=lambda _: ctx))
+        before = len(wire.submits)
+        try:
+            with patch.object(post.runner, "backend_name", return_value="forge"), patch.object(post.runner, "mock_enabled", return_value=False), \
+                    patch.object(bd, "set_drain", side_effect=drain):
+                pid = queue.submit(scope, root, "post", {"tool": "bg_removal", "total": 2}, "forge", run=worker)["prompt_id"]
+                check(await asyncio.to_thread(entered.wait, 5), "후보정 워커 실행 목록 진입")
+                await asyncio.to_thread(queue.close, 3)
+            result = queue.history(scope, root, pid)[pid]["outputs"].get("dp_post", {})
+            check(len(wire.submits) == before and result.get("stopped_reason") == "drain" and not record(root, a),
+                  "close 뒤 run_active 진입에도 첫 유료 제출 0")
+            check(result.get("recovered") == [b] and record(root, b), "종료 유예 중 이미 접수된 그림 등록")
+        finally:
+            draining.set()
+            queue.close()
+        # 첫 토큰을 기다리는 중 들어온 종료 신호도 실제 전송 경계에서 확인한다.
+        stop_new = threading.Event()
+        def token():
+            stop_new.set()
+            return wire.token
+        before = len(wire.submits)
+        with patch.dict(ctx, draining=stop_new.is_set, token_of=token):
+            got = await execute(root, plan(root, [a], opts={"mask_offset": 3}))
+        check(got["stopped_reason"] == "drain" and len(wire.submits) == before, "첫 전송 직전의 작업 종료 신호")
 
     def checks():
         for data in (b"not an image", picture((4097, 3), (1, 2, 3))):
@@ -64785,6 +64949,12 @@ def ux_v2c_post_unit():
         await queued_cases()
         await interrupted_cases()
         await result_cases()
+        await local_recovery()
+        await integrity_cases()
+        await removed_model()
+        await input_at_registration()
+        await png_alpha()
+        await closing_queue()
         await route_cases()
 
     # HTTP 서버나 외부 API 소켓 없이 실제 라우터·작업 스레드를 거친다.
@@ -64832,11 +65002,33 @@ def ux_v2c_post_unit():
 
         async def requests(app):
             accounts, queue = app[srv._FORGE_KEY], app[srv._RUNNER_KEY]
+            async def finished(project, pid):
+                end = time.monotonic() + 8
+                while time.monotonic() < end:
+                    history = queue.history(scope, project, pid)
+                    if pid in history:
+                        return history[pid]["outputs"]["dp_post"]
+                    await asyncio.sleep(0.01)
+                raise AssertionError("후보정 큐 실행 시간 초과")
+
             args = dict(root_query, tool="upscale", keys=a)
             body = dict(args, keys=[a])
             access = AsyncMock()
             with patch.object(accounts, "context", return_value=ctx), patch.object(accounts, "ensure_access", access), \
                     patch.object(post, "_catalog", return_value=catalog):
+                other_root, _, _ = project("same-picture")
+                other_id = st.root_key(other_root)
+                first = await call(app, "plan", args)
+                other = await call(app, "plan", dict(args, root=other_id))
+                check(first["items"][0]["post_key"] == other["items"][0]["post_key"] and first["expect"] == other["expect"]
+                      and first["hash"] != other["hash"] and first["hash"] == plan_hash(root, first["items"][0]),
+                      "같은 입력·옵션의 승인 해시는 프로젝트별로 구분")
+                before = len(wire.submits)
+                crossed = await call(app, "run", dict(body, root=other_id, expect=first["expect"], approve=first["hash"]), 409)
+                if "prompt_id" in crossed:
+                    await finished(other_root, crossed["prompt_id"])
+                check(crossed.get("reason") == "stale" and len(wire.submits) == before, "다른 프로젝트 승인 재사용 거절·제출 0")
+                wire.root, ctx["root"] = root, root
                 view = await call(app, "view", root_query)
                 ref = fixture["view"]["response"]
                 check(view.keys() == ref.keys() and view["tools"] == ref["tools"] and view["limits"] == ref["limits"]
@@ -64904,10 +65096,7 @@ def ux_v2c_post_unit():
                     check(busy["reason"] == "busy", "계정당 후보정 하나")
                 finally:
                     release.set()
-                end = time.monotonic() + 8
-                while not queue.history(scope, root, pid) and time.monotonic() < end:
-                    await asyncio.sleep(0.01)
-                history = queue.history(scope, root, pid)[pid]["outputs"]["dp_post"]
+                history = await finished(root, pid)
                 check(history == {"done": [a], "failed": [], "warnings": [], "stopped_reason": None,
                                   "reused": [], "recovered": []}, "작업 기록 공개 칸")
                 secret_free.append(json.dumps(history))
@@ -64926,11 +65115,34 @@ def ux_v2c_post_unit():
                 wire.calls.clear()
                 access.reset_mock()
                 pid = (await call(app, "run", dict(body, expect=free["expect"])))["prompt_id"]
-                end = time.monotonic() + 8
-                while not queue.history(scope, root, pid) and time.monotonic() < end:
-                    await asyncio.sleep(0.01)
-                check(queue.history(scope, root, pid)[pid]["outputs"]["dp_post"]["reused"] == [a]
+                check((await finished(root, pid))["reused"] == [a]
                       and wire.calls == [] and not access.called, "무료 실행 승인·접근 호출 0회")
+                edit(root, a, "reset")
+                local = post.Ledger(root, preview["items"][0]["post_key"])
+                local.path("done.json").unlink()
+                saved = await call(app, "plan", args)
+                access.side_effect = forge.ForgeError("unauthorized")
+                # 무료 로컬 복구로 큐에 들어간 뒤 파일이 사라지는 경우
+                output = local.path("out.png")
+                raw = output.read_bytes()
+                submit = queue.submit
+                def lose_local(*args, **kwargs):
+                    output.unlink()
+                    return submit(*args, **kwargs)
+                with patch.object(queue, "submit", side_effect=lose_local):
+                    queued = await call(app, "run", dict(body, expect=saved["expect"]))
+                outcome = await finished(root, queued["prompt_id"])
+                check(outcome["failed"] and not wire.calls and not access.called and local.receipt(),
+                      "로컬 복구 대기 중 파일 소실 시 접근 확인 없는 원격 조회 0")
+                output.write_bytes(raw)
+                saved = await call(app, "plan", args)
+                wire.calls.clear()
+                access.reset_mock()
+                local_run = await call(app, "run", dict(body, expect=saved["expect"]))
+                access.side_effect = None
+                outcome = await finished(root, local_run["prompt_id"])
+                check(outcome["recovered"] == [a] and record(root, a) and not wire.calls and not access.called,
+                      "로컬 완료 복구는 라우트에서도 로그인 갱신·Forge 전송 0")
                 # 한 장이 막혀도 나머지 승인 목록만 제출한다.
                 mixed = plan(root, [a, b], "upscale")
                 check(mixed[0]["counts"]["blocked"] == 1 and "배경" in mixed[0]["items"][1]["why"], "알파 업스케일 차단")
