@@ -506,13 +506,19 @@ window.DPV2Store = (() => {
   async function loadSpec(cropId, force = false) {
     if (!state.root || !cropId || !Api.can("v2_spec_edit")) return null;
     const m = ensurePatchMeta(cropId);
-    if (m.specLoaded && !force) return m;
+    if (m.specLoaded && !force) {
+      m._lastLoadOk = true;
+      m._lastLoadErr = null;
+      return m;
+    }
     if (!force && inflightSpecLoads.has(cropId)) return inflightSpecLoads.get(cropId);
     // 비강제 조회 시 매니페스트(state.S.crops)에 아직 없는 새 크롭은 불필요한 GET /spec 409 왕복을 생략한다
     // (force=true 인 savePatchSpec·명시적 갱신은 항상 실제 서버에 조회)
     if (!force && state.S && Array.isArray(state.S.crops) && !state.S.crops.some((c) => c.id === cropId)) {
       m.needsApplyForSpec = true;
       m.specLoaded = false;
+      m._lastLoadOk = false;
+      m._lastLoadErr = "apply_needed";
       emit("selection");
       return m;
     }
@@ -521,10 +527,17 @@ window.DPV2Store = (() => {
         const res = await Api.getSpec(state.root, cropId);
         if (res) {
           applySpecResponse(cropId, res);
+          m._lastLoadOk = true;
+          m._lastLoadErr = null;
           emit("selection");
+        } else {
+          m._lastLoadOk = false;
+          m._lastLoadErr = "empty_response";
         }
         return m;
       } catch (err) {
+        m._lastLoadOk = false;
+        m._lastLoadErr = (err && err.message) || "load_failed";
         if (err && err.status === 409 && err.data && err.data.reason === "apply_needed") {
           m.needsApplyForSpec = true;
           m.specLoaded = false;
@@ -690,15 +703,15 @@ window.DPV2Store = (() => {
 
     const prevChain = quickSpecQueues.get(cropId) || Promise.resolve();
     const task = prevChain.catch(() => null).then(async () => {
-      if (m._quickSpecSeqByField[field] !== seq || state.assistBusy) return null;
-      // #C18-6① · #C21-3② · #C23-5: 영역을 처음 고르고 GET /spec 응답이 끝나기 전에 목적·AI 자동을 누른 경우
-      // 서버의 실제 이전 값을 먼저 읽되, 같은 칸의 연속 클릭만 대체하고 서로 다른 칸은 직렬로 모두 반영한다
+      if (m._quickSpecSeqByField[field] !== seq) return null;
+      // #C18-6① · #C21-3② · #C23-5 · #C26-4: 이미 접수된 즉시 저장은 뒤이어 생성/AI 작성이 눌려도
+      // awaitPendingQuickSpecs() 가 끝날 때까지 기다려 주므로 assistBusy 로 취소하지 않고 끝까지 완료한다
       if (Api.can("v2_spec_edit") && !m.specLoaded && !m.needsApplyForSpec) {
         await loadSpec(cropId, false);
-        if (m._quickSpecSeqByField[field] !== seq || state.assistBusy) return null;
+        if (m._quickSpecSeqByField[field] !== seq) return null;
         if (!m.specLoaded && !m.needsApplyForSpec) {
           await loadSpec(cropId, true);
-          if (m._quickSpecSeqByField[field] !== seq || state.assistBusy) return null;
+          if (m._quickSpecSeqByField[field] !== seq) return null;
         }
         if (!m.specLoaded && !m.needsApplyForSpec) {
           toast("서버에서 기존 스펙을 읽지 못했습니다 — 잠시 후 다시 시도해 주세요.", "err");

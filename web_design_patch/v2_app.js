@@ -377,26 +377,21 @@
       $("projects-view").classList.add("hidden");
       $("studio-view").classList.remove("hidden");
       await Store.refreshAll(true);
-      // 새 프로젝트 첫 진입(가져오기 전 — S.canvas 없음)이면 무료 반영(apply)을 자동 1회 실행해 원화 캔버스를 준비한다
+      // #C26-5: 새 프로젝트 첫 진입(가져오기 전 — S.canvas 없음) 초기 반영도 공용 모듈 Api.applyChecked 로 통일해 잠금 밖 중복 반영을 막는다
       if (Store.state.S && !Store.state.S.canvas && !Store.state.S.running && Api.submitAdapter()) {
         Store.toast("새 프로젝트 원화를 불러오는 중입니다 (무료 초기 반영)…");
         try {
-          const applied = await Api.submitStage("apply", { root });
-          if (applied && applied.ok && applied.prompt_id) {
-            const waited = await Api.waitJob(root, applied.prompt_id);
-            await Store.refreshAll(true);
-            if (waited && !waited.done) {
+          const applied = await Api.applyChecked(root);
+          await Store.refreshAll(true);
+          if (applied && !applied.ok) {
+            if (applied.reason === "cancelled") {
+              Store.toast(applied.error || "초기 반영을 취소했습니다.");
+            } else {
               Store.toast(
-                waited.reason === "timeout"
-                  ? "초기 반영 대기 시간이 초과되었습니다 — 다른 작업이 끝난 뒤 [합성 적용]으로 다시 확인해 주세요."
-                  : "초기 반영 상태를 확인하지 못했습니다 — [합성 적용]으로 다시 확인해 주세요.",
+                applied.error || applied.message || "초기 반영 작업을 완료하지 못했습니다 — [합성 적용]으로 다시 확인해 주세요.",
                 "err"
               );
-            } else if (waited && !waited.ok) {
-              Store.toast("초기 반영 작업이 실패했습니다 — 프로젝트 설정을 확인한 뒤 [합성 적용]을 실행해 주세요.", "err");
             }
-          } else if (applied && !applied.ok) {
-            Store.toast(applied.error || applied.message || applied.reason || "초기 반영을 시작하지 못했습니다.", "err");
           }
         } catch (err) {
           Store.toast(`초기 반영 실패: ${(err && err.message) || "알 수 없는 오류"}`, "err");
