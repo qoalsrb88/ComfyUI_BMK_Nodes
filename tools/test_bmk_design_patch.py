@@ -49981,8 +49981,8 @@ def forge_f2_session_unit():
         async with serving(http, forge=False) as (app, call):
             response, value = await call(bd.API + "/env")
             legacy = {"server_mode": True, "session": False, "account": None, "session_url": "/api/session", "prefs_url": "/api/preferences",
-                      "caps": {name: name in srv.SERVER_CAPS for name in bd.LOCAL_CAPS}, "backend": "mock"}
-            legacy = _env_ui_v2(legacy, bd)  # 키 순서는 그대로 — 아래의 바이트 비교도 같은 순서로 본다
+                      "caps": {**{name: name in srv.SERVER_CAPS for name in bd.LOCAL_CAPS}, "ui_default": "v1"}, "backend": "mock"}
+            legacy = _env_ui_v2(legacy, bd)  # 키 순서는 그대로 — 아래의 바이트 비교도 같은 순서로 본다(ui_default 는 불리언 표의 그 자리에 글자값)
             check(value == legacy and responses[-1].startswith(json.dumps(legacy)), "F2S Forge 없는 env 기존 바이트")
             response, _ = await call("/api/session/token", "POST", {})
             check(response.status == 404, "F2S Forge 없는 갱신 라우트 404")
@@ -60256,7 +60256,10 @@ def ux_v2a_entry_unit():
     section("UX v2-A — 진입점 (ux_v2a_entry_unit)")
     import asyncio
     import tempfile
+    import yarl
+    from aiohttp import web as aio_web
     from aiohttp.test_utils import TestClient, TestServer
+    from unittest.mock import patch
     import bmk_design_patch_board as bd
     import bmk_design_patch_server as srv
 
@@ -60333,7 +60336,10 @@ def ux_v2a_entry_unit():
     check(list(bd.LOCAL_CAPS)[-len(bd.V2_CAPS):] == list(bd.V2_CAPS), "V2E v2 플래그는 기존 caps 키 뒤에(기존 키 순서 그대로)")
     env_js = (web / "env.js").read_text(encoding="utf-8")
     local_js = env_js[env_js.index("const LOCAL_CAPS = {"):env_js.index("};", env_js.index("const LOCAL_CAPS = {"))]
-    check(all(f"{name}: {'true' if value else 'false'}" in local_js for name, value in bd.LOCAL_CAPS.items()),
+    # 불리언 칸은 true/false, 문자열 칸(ui_default)은 따옴표 붙은 글자값으로 적혀 있다
+    check(all(type(value) is bool for name, value in bd.LOCAL_CAPS.items() if name != "ui_default") and bd.LOCAL_CAPS["ui_default"] == "v1"
+          and all((f'{name}: "{value}"' if name == "ui_default" else f"{name}: {'true' if value else 'false'}") in local_js
+                  for name, value in bd.LOCAL_CAPS.items()),
           "V2E env.js 의 로컬 기능 표가 서버 표(LOCAL_CAPS)와 같음")
 
     # ── 서버: ?ui=v2 분기 · caps.ui_v2 · 파일 제공
@@ -60341,6 +60347,11 @@ def ux_v2a_entry_unit():
         bd.WEB_DIR = str(web_dir)
         app = srv.make_app(srv.ServerConfig(str(out / "data"), dev_handoff=True))
         return TestClient(TestServer(app))
+
+    for invalid in ("V2", "", None, True, "v3"):
+        config = srv.ServerConfig(str(out / "data"), dev_handoff=True, default_ui=invalid)
+        expect_raises(lambda: srv.make_app(config), f"V2E default_ui 설정 거절 {invalid!r}",
+                      contains="default_ui 는 v1 또는 v2 여야 합니다")
 
     async def run():
         # ① v2 파일이 없는 화면 폴더(임시 폴더에 v1 파일만)
@@ -60350,6 +60361,7 @@ def ux_v2a_entry_unit():
         async with serve(plain) as client:
             r = await client.get(bd.API + "/env")
             caps = (await r.json())["caps"]
+            check(caps["ui_default"] == "v1", "V2E 기본 설정·v2 파일 없음 → 기본 화면 v1")
             check({n: caps[n] for n in bd.V2_CAPS} == {n: n in ("v2_spec_edit", "v2_auto_prepare") for n in bd.V2_CAPS},
                   f"V2E v2 파일 없음 → ui_v2 false · 지시문 저장·자동 반영만 true: {caps}")
             check(srv.SERVER_CAPS == ("jobs", "export_download", "v2_spec_edit", "v2_auto_prepare"), "V2E 서버 모드에서 늘 열린 기능")
@@ -60373,6 +60385,7 @@ def ux_v2a_entry_unit():
             r = await client.get(bd.API + "/env")
             body = await r.json()
             check(body["caps"]["ui_v2"] is True, "V2E v2.html 있음 → caps.ui_v2 true")
+            check(body["caps"]["ui_default"] == "v1", "V2E 기본 설정·v2 파일 있음 → 기본 화면 v1")
             check(all(body["caps"][n] is False for n in ("v2_crop_model", "v2_postprocess", "v2_psd_reimport", "v2_forge_prompt")),
                   "V2E 아직 없는 기능·Forge 연결 없는 서버의 프롬프트 작성 플래그는 false")
             check(body["caps"]["v2_spec_edit"] is True and body["caps"]["v2_auto_prepare"] is True, "V2E 서버 모드는 지시문 저장·자동 반영이 늘 true")
@@ -60393,6 +60406,68 @@ def ux_v2a_entry_unit():
                 check(r.status == 404, f"V2E 꼴이 아니거나 없는 파일 404: {name}")
             r = await client.get(bd.API + "/board/v2.html")
             check("frame-ancestors" in r.headers.get("Content-Security-Policy", ""), "V2E v2 화면도 서버 공통 헤더")
+
+        for web_dir, has_v2 in ((full, True), (plain, False)):
+            bd.WEB_DIR = str(web_dir)
+            config = srv.ServerConfig(str(out / "data"), dev_handoff=True, default_ui="v2")
+            async with TestClient(TestServer(srv.make_app(config))) as client:
+                caps = (await (await client.get(bd.API + "/env")).json())["caps"]
+                default = "v2" if has_v2 else "v1"
+                check(caps["ui_default"] == default and caps["ui_v2"] is has_v2,
+                      f"V2E 설정 v2·{web_dir.name}의 실제 기본 화면 {default}")
+                for suffix, entry, probe_count in (
+                    ("", default, 1), ("?root=abc", default, 1), ("?ui=V2", default, 1),
+                    ("?ui=v2x", default, 1), ("?ui=", default, 1), ("?ui=v2", default, 1),
+                    ("?ui=v1", "v1", 0), ("?ui=v1&root=abc", "v1", 0), ("board.html", "v1", 0),
+                    ("board.html?ui=v2", "v1", 0), ("v2.html?ui=v1", "v2" if has_v2 else None, 0),
+                    # 같은 쿼리가 두 번 오면 첫 값(화면의 URLSearchParams.get 과 같은 판정) · 퍼센트 인코딩은 풀어서 본다
+                    ("?ui=v1&ui=v2", "v1", 0), ("?ui=v2&ui=v1", default, 1), ("?ui=%76%32", default, 1), ("?ui=%76%31", "v1", 0),
+                ):
+                    url = bd.API + "/board/" + suffix
+                    with patch.object(bd, "v2_available", wraps=bd.v2_available) as probe:
+                        # 퍼센트 인코딩은 클라이언트가 풀지 않은 채 서버까지 보낸다(encoded=True) — 서버가 푼 값으로 판정하는지 본다
+                        response = await client.get(yarl.URL(url, encoded=True) if "%" in suffix else url)
+                    if "%" in suffix:
+                        check("%76%3" in response.url.raw_query_string, f"V2E 인코딩된 쿼리가 그대로 서버로 감 {url}")
+                    check(probe.call_count == probe_count, f"V2E v2 선택 때만 가용성 조회 {url}")
+                    if entry is None:
+                        check(response.status == 404, "V2E 이름을 지정한 v2.html 파일이 없으면 404")
+                        continue
+                    filename = "v2.html" if entry == "v2" else "board.html"
+                    check(response.status == 200 and await response.read() == (web_dir / filename).read_bytes()
+                          and response.headers.get("Cache-Control") == "no-store"
+                          and response.headers.get("X-Content-Type-Options") == "nosniff",
+                          f"V2E {web_dir.name} {url} → {entry} 본문·헤더")
+                with patch.object(bd, "v2_available", wraps=bd.v2_available) as probe:
+                    response = await client.head(bd.API + "/board/")
+                    head_v1 = await client.head(bd.API + "/board/?ui=v1")
+                # 두 화면 파일의 길이가 같아 본문 없이는 가릴 수 없다 — 새 화면을 고르는 길에서만 화면 파일을 찾아본다는 것으로 가린다
+                check(response.status == 200 and head_v1.status == 200 and response.headers["Content-Type"].startswith("text/html")
+                      and probe.call_count == 1, f"V2E 설정 v2·{web_dir.name} HEAD 도 GET 과 같은 분기")
+                for path, query in (("/", "parent_origin=x"), (bd.API + "/board", "root=abc")):
+                    response = await client.get(path + "?" + query, allow_redirects=False)
+                    check(response.status == 302 and response.headers["Location"] == bd.API + "/board/?" + query,
+                          f"V2E {path}?{query} 리다이렉트가 쿼리를 보존")
+
+        config = srv.ServerConfig(str(out / "data"), dev_handoff=True, default_ui="v2")
+        async with serve(full) as first, TestClient(TestServer(srv.make_app(config))) as second:
+            for client, expected in ((first, "v1"), (second, "v2")):
+                caps = (await (await client.get(bd.API + "/env")).json())["caps"]
+                response = await client.get(bd.API + "/board/")
+                check(caps["ui_default"] == expected and f"<title>{expected}</title>".encode() in await response.read(),
+                      f"V2E 함께 열린 앱의 기본 화면 {expected}")
+
+        bd.WEB_DIR = str(full)
+        local = aio_web.Application()
+        routes = aio_web.RouteTableDef()
+        bd.register_routes(routes)
+        local.add_routes(routes)
+        async with TestClient(TestServer(local)) as client:
+            caps = (await (await client.get(bd.API + "/env")).json())["caps"]
+            check(caps["ui_default"] == "v1", "V2E 로컬 기본 화면 v1")
+            response = await client.get(bd.API + "/board/?ui=v2")
+            check(response.status == 200 and await response.read() == (full / "board.html").read_bytes(),
+                  "V2E 로컬에 v2 파일이 있어도 ?ui=v2 는 v1")
 
     try:
         asyncio.run(run())
@@ -60421,6 +60496,80 @@ def ux_v2a_entry_unit():
     src = (PKG / "bmk_design_patch_server.py").read_text(encoding="utf-8")
     check('parser.add_argument("--web-dir")' in src and "not args.dev_handoff or not os.path.isfile" in src,
           "V2E --web-dir 는 개발 모드에서만·board.html 이 있는 폴더만")
+
+    check('projectUiQuery("?")' in go and _layout_js_fn(js, "newProjectForm").count('projectUiQuery("&")') == 1
+          and _layout_js_fn(js, "showProjects").count('projectUiQuery("&")') == 1,
+          "V2E 목록·생성·열기의 주소가 같은 ui 쿼리 도우미를 사용")
+    node = shutil.which("node")
+    if not node:
+        skip("V2E node 없음 — 기본 화면과 v1 이동 VM 시험 생략")
+        return
+    harness = _fw_core_js().split('await scenario("FW7', 1)[0]
+    harness += _PL_JS_HARNESS[_PL_JS_HARNESS.index("class El {"):_PL_JS_HARNESS.index("async function mouse(")]
+    harness += r'''
+import assert from "node:assert/strict";
+for (const [raw, expected] of [[undefined, "v1"], [true, "v1"], ["V2", "v1"], ["v1", "v1"], ["v2", "v2"]]) {
+  await scenario("V2E 서버 env ui_default " + String(raw), async () => {
+    const body = clone(A.env_server_no_session.response);
+    if (raw === undefined) delete body.caps.ui_default;
+    else body.caps.ui_default = raw;
+    const e = await boot({handler: (u, o) => String(u).endsWith("/env") ? response(body) : serverHandler(u, o)});
+    return e.ready && e.ctx.DPEnv.serverMode === true && e.ctx.DPEnv.caps.ui_default === expected;
+  });
+}
+const key = "0123456789ab";
+for (const [search, ui] of [["", ""], ["?ui=v1", "v1"], ["?ui=v2", "v2"], ["?ui=v2x", ""]]) {
+  await scenario("V2E v1 주소 이동 " + (search || "(쿼리 없음)"), async () => {
+    const {ctx, loc} = context(), doc = new Doc(), ids = new Map(), moves = [];
+    doc.getElementById = id => {
+      if (!ids.has(id)) ids.set(id, doc.createElement("div"));
+      return ids.get(id);
+    };
+    loc.search = search;
+    loc.href = loc.origin + loc.pathname + search;
+    loc.assign = url => moves.push(url);
+    ctx.document = doc;
+    const serverDefault = ui === "v1" ? "v2" : "v1";
+    ctx.DPEnv = {caps: {ui_default: serverDefault}, can: name => name === "ui_v2"};
+    ctx.fetch = async url => response(String(url).endsWith("/projects") ?
+      {projects: [{id: key, name: "sample", openable: true}]} : {ok: true, key});
+    vm.runInContext(IN.source["board.js"].replace("  main();",
+      "  globalThis.board = {goProjects, showProjects, wireButtons, consumeNewProject};"), ctx);
+    const button = doc.getElementById("btn-v2");
+    button.textContent = IN.buttonLabel;
+    ctx.board.wireButtons();
+    assert.equal(button.textContent, serverDefault === "v2" ? "새 화면으로" : "새 화면 시험하기");
+    await ctx.board.goProjects();
+    await ctx.board.showProjects();
+    const find = cls => doc.getElementById("app").all().find(e => e.className === cls);
+    await find("projects-open").on.click[0]();
+    await ctx.board.showProjects();
+    find("projects-new").fire("click");
+    find("projects-new-name").value = "sample";
+    const pick = find("projects-new-file");
+    pick.files = [{name: "sample.png", size: 100}];
+    pick.fire("change");
+    await find("projects-create").on.click[0]();
+    const suffix = ui ? "&ui=" + ui : "";
+    assert.deepEqual(moves, [loc.pathname + (ui ? "?ui=" + ui : ""),
+      "?root=" + key + suffix, "?root=" + key + "&new=1" + suffix]);
+    loc.href = loc.origin + loc.pathname + moves[2] + "#anchor";
+    ctx.board.consumeNewProject();
+    assert.equal(loc.replaced, loc.pathname + moves[1] + "#anchor");
+    return true;
+  });
+}
+console.log(JSON.stringify(out));
+'''
+    script, data = out / "entry.mjs", out / "entry.json"
+    script.write_text(harness, encoding="utf-8")
+    data.write_text(json.dumps({"source": {"env.js": env_js, "board.js": js}, "api": _server_api(),
+                                "buttonLabel": re.search(r'id="btn-v2"[^>]*>([^<]*)', html)[1]}), encoding="utf-8")
+    result = subprocess.run([node, str(script), str(data)], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    check(result.returncode == 0, f"V2E 기본 화면 VM 실행: {result.stderr[-2000:]}")
+    if result.returncode == 0:
+        for name, ok in json.loads(result.stdout).items():
+            check(ok is True, f"{name}: {ok}")
 
 
 def ux_v2a_dev_unit():
@@ -74162,7 +74311,7 @@ for(const enabled of [false,true]) await scenario("FC 프로젝트 단추 연결
  const create=(tag,cls,text)=>{const n=e.doc.createElement(tag);n.className=cls;n.textContent=text||"";return n;};
  Object.assign(c,{el:create,can:()=>enabled,SM:()=>true,projectNameError:v=>v?"":"이름 필요",apiUrl:x=>x});
  c.DPForgeImport.open=options=>{opened=options;};c.sessionStorage={setItem(){}};c.location.assign=url=>c.location.assigned=url;
- vm.runInContext(sourceFn("board.js","newProjectForm"),c);
+ vm.runInContext(sourceFn("board.js","projectUiQuery"),c);vm.runInContext(sourceFn("board.js","newProjectForm"),c);
  const host=create("section");e.doc.body.append(host);c.newProjectForm(host,null,()=>{});
  const button=find(e,"Forge에서 가져오기");if(!enabled)return !button;
  if(!button||!button.disabled)return false;

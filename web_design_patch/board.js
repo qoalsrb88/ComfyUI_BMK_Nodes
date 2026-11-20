@@ -1798,6 +1798,11 @@
     }
   }
 
+  function projectUiQuery(separator) {
+    const ui = new URLSearchParams(location.search).get("ui");
+    return ui === "v1" || ui === "v2" ? separator + "ui=" + ui : "";
+  }
+
   async function goProjects(to) {
     const v2 = to === "v2";  // [새 화면 시험하기]: 같은 확인을 거쳐 같은 프로젝트를 새 화면으로(쿼리 유지)
     if (maskEd && maskEd.pending.locked && maskEd.pending.locked()) {
@@ -1821,7 +1826,8 @@
       // 이동 전용 확인을 이미 받았으므로 마스크 beforeunload 확인을 중복으로 띄우지 않는다.
       window.removeEventListener("beforeunload", onUnload);
       if (v2) { const u = new URL(location.href); u.searchParams.set("ui", "v2"); location.assign(u.href); return; }
-      location.assign(location.pathname);
+      if (location.search) location.assign(location.pathname + projectUiQuery("?"));
+      else location.assign(location.pathname);
     };
     if (editor && editor.flush) return editor.flush().then(move, (e) => toast(e.message, "err"));
     move();
@@ -1932,7 +1938,7 @@
     function finishProject(result) {
       if (!/^[0-9a-f]{12}$/.test(result.key || "")) throw new Error(result.error || "프로젝트를 만들지 못했습니다");
       try { window.sessionStorage.setItem("bmk-dp-new:" + result.key, JSON.stringify(result.notes || [])); } catch (_) { /* 저장소 차단 */ }
-      location.assign(`?root=${encodeURIComponent(result.key)}&new=1`);
+      location.assign(`?root=${encodeURIComponent(result.key)}&new=1${projectUiQuery("&")}`);
     }
     async function send() {
       if (sending || !validate()) return;
@@ -2062,7 +2068,7 @@
               const result = await readJson(response);
               if (response.status === 404 && result.unreadable) throw new Error((SM() ? "화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요 (HTTP 404)" : "ComfyUI 재시작 필요 — 프로젝트 열기 기능을 찾을 수 없습니다 (HTTP 404)"));
               if (!response.ok || !result.ok || result.key !== r.id) throw new Error(result.error || "프로젝트를 열지 못했습니다");
-              location.assign(`?root=${encodeURIComponent(result.key)}`);
+              location.assign(`?root=${encodeURIComponent(result.key)}${projectUiQuery("&")}`);
             } catch (e) {
               opening = false;
               reload.disabled = false;
@@ -2139,6 +2145,7 @@
     const toV2 = $("btn-v2");
     if (toV2) {
       toV2.hidden = !(globalThis.DPEnv && globalThis.DPEnv.can("ui_v2"));
+      if (globalThis.DPEnv?.caps?.ui_default === "v2") toV2.textContent = "새 화면으로";
       toV2.addEventListener("click", () => goProjects("v2"));
     }
     const exportMenu = $("export-menu");
