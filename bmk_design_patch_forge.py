@@ -449,13 +449,20 @@ class ForgeClient:
 
     async def submit(self, token: str, body: dict) -> dict:
         """POST /api/image/generate → {"job_id", "status"}. 4xx 는 ForgeError(reason, status, detail=가린 detail)."""
+        return await self._submit_job("/api/image/generate", token, body)
+
+    async def submit_post(self, token: str, tool: str, body: dict) -> dict:
+        paths = {"upscale": "/api/image/upscale", "bg_removal": "/api/image/bg-removal"}
+        return await self._submit_job(paths[tool], token, body)
+
+    async def _submit_job(self, path, token, body):
         started = time.monotonic()
-        data = await self._json("POST", "/api/image/generate", token, body)
+        data = await self._json("POST", path, token, body)
         job_id = data.get("job_id")
         if job_id is None and isinstance(data.get("job_ids"), list) and data["job_ids"]:
             job_id = data["job_ids"][0]
         if not isinstance(job_id, str) or not job_id or data.get("status") not in ("pending", "processing", "completed", "failed"):
-            _log_failure("POST /api/image/generate", "format", started)
+            _log_failure("POST " + path, "format", started)
             raise ForgeError("unreachable", 200, kind="format")
         return {"job_id": job_id, "status": data["status"]}
 

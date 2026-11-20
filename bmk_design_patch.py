@@ -968,6 +968,14 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
         item = {"cand": c, "entry": entry, "quad": quad, "base_quad": base_quad, "mask": mask, "msrc": msrc, "area": area,
                 "base_mask": base_mask, "base_msrc": base_msrc, "mask_edit": mask_edit,
                 "z": (0, int(z)) if z is not None else (1, order_idx[c["key"]])}
+        if c.get("picked"):
+            eff = store.cand_effective(m, c, root)
+            if eff["post"]:
+                item["post"] = eff["post"]
+            elif eff.get("lost"):
+                warns.append(f"{key} ({crop['name']}): 후보정 결과 파일 없음 → 원본 그림으로")
+            elif isinstance(m.get("cand_post"), dict) and key in m["cand_post"] and store.cand_post_record(m, key) is None:
+                warns.append(f"{key} ({crop['name']}): 후보정 기록을 읽지 못함 → 원본 그림으로")
         if mask_merged:
             item["mask_merged"] = True
         if fx:
@@ -1022,18 +1030,20 @@ def _cand_pixels(root: str, item: dict, toned: bool) -> tuple[np.ndarray, bool]:
     """풀해상도 픽셀: 톤(캐시 포함) 뒤 ★ 후보 보정. 보정 결과는 분석 항목·tone.full에 쓰지 않는다."""
     c, entry = item["cand"], item["entry"]
     tone = (entry or {}).get("tone") or {}
+    post = item.get("post")
 
     def adjusted(pix, is_toned):
         adj = item.get("adjust")
         if adj:
-            pix = an.adjust_candidate(pix, adj["blur"], adj["invert"], c["src_size"], item["quad"],
+            size = [pix.shape[1], pix.shape[0]] if post else c["src_size"]
+            pix = an.adjust_candidate(pix, adj["blur"], adj["invert"], size, item["quad"],
                                       adj.get("flip_h", False), adj.get("flip_v", False))
         return pix, is_toned
 
-    if toned and entry is not None and not entry.get("skipped") and tone.get("full") \
+    if not post and toned and entry is not None and not entry.get("skipped") and tone.get("full") \
             and os.path.isfile(_abs(root, tone["full"])):
         return adjusted(_decode(_read(_abs(root, tone["full"]))), True)
-    full = _decode(_read(_abs(root, c["file"])))
+    full = _decode(_read(_abs(root, post["file"] if post else c["file"])))
     if not toned or entry is None or entry.get("skipped") or not tone.get("delta"):
         return adjusted(full, False)
     delta = _load_delta(root, tone)
@@ -2451,7 +2461,7 @@ def _outline(w: int, h: int, px: int = 4, color=(255, 64, 64)) -> np.ndarray:
     return o
 
 
-def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | None = None) -> str:
+def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | None = None, root: str | None = None) -> str:
     """edits = {★ 후보 key: [편집 file, rect]} — _plan 이 그룹 마스크로 적용한 ★ 의 마스크 편집(S4)."""
     payload = {"v": _EXPORT_VERSION, "opts": opts, "base": m["base"], "canvas": m["canvas"], "work_rect": m["work_rect"],
                "crops": [[c["id"], c["name"], c["rect"], c["targets"]] for c in m["crops"]],
@@ -2467,6 +2477,8 @@ def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | N
         payload["cand_adjust"] = adjustments
     if stacks := store.picked_stacks(m):
         payload["mask_stack"] = stacks
+    if posts := (store.picked_posts(m) if root is None else store.applied_posts(m, root)):
+        payload["cand_post"] = posts
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
@@ -2594,9 +2606,9 @@ class BMKDesignPatchExportPSD:
                 # 옛 정합으로 이미 창이 어긋난 편집도 새 채움 규칙으로 다시 Export 한다.
                 edits[it["cand"]["key"]].append({"outside_base": dmask.base_fp(it["cand"], it["entry"], mask_source)})
         # 해시의 하위 폴더 = 이 OS 의 폴더 같음(Windows 는 대소문자 무시 — 외주_A·외주_a 는 같은 폴더라 '변경 없음'), 기록 options 는 입력 그대로
-        eh = _export_hash(m, entries, comp, dict(opts, subfolder=os.path.normcase(sub)) if sub else opts, edits)
+        eh = _export_hash(m, entries, comp, dict(opts, subfolder=os.path.normcase(sub)) if sub else opts, edits, root=root)
         try:
-            state_sig = store.export_state_sig(m)
+            state_sig = store.export_state_sig(m, root)
         except Exception:  # 점검표 서명 실패는 PSD 출력·재사용을 막지 않는다
             state_sig = None
             warns.append("Export 변경 여부를 계산하지 못함 — 서명 없이 기록")
@@ -2662,6 +2674,9 @@ class BMKDesignPatchExportPSD:
             name = f"{crop['name']} · {_target_label(crop, c['tid'])} · c{num:02d}" + (" ★" if c.get("picked") else "")
             if any((it.get("adjust") or {}).get(k) for k in ("blur", "invert", "flip_h", "flip_v")):
                 name += " · 보정"
+            post = it.get("post")
+            if post:
+                name += " · 후보정"
             label = "green" if c.get("picked") else "red"
             if layer_mode == "smart_object":
                 data, ft = self._so_bytes(root, it, pix, is_toned)
@@ -2680,6 +2695,8 @@ class BMKDesignPatchExportPSD:
                             [mk["left"], mk["top"], mk["left"] + mk["arr"].shape[1], mk["top"] + mk["arr"].shape[0]]})
             if it["mask_edit"]:
                 written[-1]["mask_edit"] = it["mask_edit"]
+            if post:
+                written[-1]["post"] = {k: post[k] for k in ("file", "tool", "model")}
             if it.get("mask_fx"):
                 written[-1]["mask_fx"] = it["mask_fx"]
             if it.get("mask_stacked"):
@@ -2749,8 +2766,13 @@ class BMKDesignPatchExportPSD:
             rel = store.save_png_ca(root, "derived", pix, prefix="adjust_")
             return _read(_abs(root, rel)), "png"
         if not is_toned:
-            ext = os.path.splitext(c["file"])[1].lower().lstrip(".")
-            return _read(_abs(root, c["file"])), ("jpg" if ext == "jpeg" else ext)
+            file = it.get("post", c)["file"]
+            ext = os.path.splitext(file)[1].lower().lstrip(".")
+            return _read(_abs(root, file)), ("jpg" if ext == "jpeg" else ext)
+        if it.get("post"):
+            prefix = _derived_prefix(c["key"], entry["params_hash"]) + "ptone_"
+            rel = store.save_png_ca(root, "derived", pix, prefix=prefix)
+            return _read(_abs(root, rel)), "png"
         tone = entry["tone"]
         if not (tone.get("full") and os.path.isfile(_abs(root, tone["full"]))):
             tone["full"] = store.save_png_ca(root, "derived", pix, prefix=_derived_prefix(c["key"], entry["params_hash"]) + "toned_")

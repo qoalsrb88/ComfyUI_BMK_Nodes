@@ -54,6 +54,10 @@ class QueueFull(Exception):
     """이 계정의 대기 작업 상한에 닿았다."""
 
 
+class PostBusy(Exception):
+    """같은 계정의 후보정이 이미 큐에 있다."""
+
+
 def _node_classes():
     """실행할 때만 노드를 읽는다. 시험은 이 함수만 가짜 클래스 표로 바꿔 끼운다."""
     try:
@@ -247,6 +251,19 @@ def _public_outputs(outputs):
 
     result = {}
     for key, ui in outputs.items():
+        if key == "dp_post" and isinstance(ui, dict):
+            def valid_key(k):
+                return isinstance(k, str) and board._KEY_RE.fullmatch(k)
+
+            post = {name: [k for k in ui.get(name, []) if valid_key(k)] for name in ("done", "reused", "recovered")}
+            for name, field in (("failed", "error"), ("warnings", "text")):
+                post[name] = [{"key": row["key"], field: board.public_error(
+                    row[field] if safe(row[field]) and ":" not in row[field] else "후보정 기록을 확인해 주세요.")}
+                              for row in ui.get(name, []) if isinstance(row, dict) and valid_key(row.get("key"))
+                              and isinstance(row.get(field), str)]
+            post["stopped_reason"] = ui.get("stopped_reason") if ui.get("stopped_reason") in ("drain", "overload") else None
+            result[key] = post
+            continue
         result[key] = {}
         name = "bmk_" + key
         rows = ui.get(name) if isinstance(ui, dict) else None
@@ -338,12 +355,14 @@ class JobRunner:
         for thread in self._threads:
             thread.start()
 
-    def submit(self, scope: dict, root: str, stage: str, prompt: dict, backend_name: str | None = None) -> dict:
+    def submit(self, scope: dict, root: str, stage: str, prompt: dict, backend_name: str | None = None, *, run=None) -> dict:
         """작업을 줄에 넣는다 → {"prompt_id": str, "number": int}."""
         home, project = _path(scope["home"]), _path(root)
         with self._condition:
             if self._closed:
                 raise RuntimeError("작업 실행기가 닫혔습니다")
+            if stage == "post" and self.post_busy(scope):
+                raise PostBusy("대기 중이거나 실행 중인 후보정 작업이 있습니다.")
             if sum(j["home"] == home for j in self._pending) >= self._max_pending:
                 raise QueueFull("대기 중인 작업이 너무 많습니다 — 앞 작업이 끝난 뒤 다시 하세요.")
             with _NUMBER_LOCK:
@@ -354,9 +373,25 @@ class JobRunner:
                    "node": {"node_id": "", "node_type": ""}, "closed": False, "draining": False}
             if backend_name is not None:
                 job["backend"] = backend_name
+            if run is not None:
+                job["run"] = run
             self._pending.append(job)
             self._condition.notify_all()
             return {"prompt_id": prompt_id, "number": number}
+
+    def post_busy(self, scope):
+        home = _path(scope["home"])
+        with self._condition:
+            return any(j["home"] == home and j["stage"] == "post" for j in (*self._pending, *self._running.values()))
+
+    def post_running(self, scope, root):
+        home, project = _path(scope["home"]), _path(root)
+        with self._condition:
+            for job in self._running.values():
+                if job["stage"] == "post" and job["home"] == home and job["root"] == project:
+                    done, total = job.get("progress", (0, job["prompt"]["total"]))
+                    return {"prompt_id": job["prompt_id"], "tool": job["prompt"]["tool"], "done": done, "total": total}
+        return None
 
     def queue(self, scope: dict, root: str) -> dict:
         """{"queue_running": [[number, prompt_id, stage]], "queue_pending": […]} — 이 프로젝트 것 + 앞에 선 남의 작업은 [number, "", ""]."""
@@ -484,12 +519,12 @@ class JobRunner:
                 raise RuntimeError("생성 백엔드 설정이 바뀌었습니다 — 계획을 다시 확인해 주세요")
             if self._forge is not None and not backend.mock_enabled(job["raw_root"]):
                 ctx = {**self._forge.context(job["scope"]), "account": job["scope"]["account"],
-                       "root": job["raw_root"], "stop": lambda: job["closed"]}
+                       "root": job["raw_root"], "stop": lambda: job["closed"], "draining": lambda: job["draining"]}
                 forge_token = backend.set_forge(ctx)
                 if job.get("stage") in ("apply", "run", "reroll"):
                     _refresh_catalog(ctx)
             before = _apply_manifest(job["raw_root"]) if job.get("stage") == "apply" and compat.server_mode() else None
-            result = execute(job["prompt"])
+            result = job["run"]() if "run" in job else execute(job["prompt"])
             after = _apply_manifest(job["raw_root"]) if before is not None else None
             record = _record(result["outputs"], node=job["node"], scope=job["scope"])
             if after is not None and record["status"]["status_str"] == "success":
@@ -543,6 +578,24 @@ def _forge_concurrency(root, concurrency):
         return concurrency
 
 
+async def ensure_forge_access(forge, account):
+    try:
+        from .bmk_design_patch_forge import ForgeError, with_note
+    except ImportError:
+        from bmk_design_patch_forge import ForgeError, with_note
+    try:
+        await forge.ensure_access(account)
+    except ForgeError as exc:
+        if exc.reason == "unauthorized":
+            raise board._Reject(401, "Forge 로그인 정보를 다시 받아야 합니다 — 잠시 뒤 자동으로 다시 시도합니다.",
+                                reason="forge_auth") from None
+        if exc.reason == "forbidden":
+            raise board._Reject(403, "디자인 패치 스튜디오 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
+                                reason="no_access") from None
+        raise board._Reject(503, with_note("Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요.", exc),
+                            reason="forge_unreachable") from None
+
+
 def routes(runner: JobRunner) -> tuple:
     """서버 진입점이 자기 앱에 붙일 (method, path, handler) 넷 — 보드 _ROUTES 에는 넣지 않는다(D334)."""
     def scope():
@@ -572,21 +625,7 @@ def routes(runner: JobRunner) -> tuple:
             forge = getattr(runner, "_forge", None)
             if stage not in ("run", "reroll") or selected_backend != backend.BACKEND_FORGE or forge is None:
                 raise board._Reject(409, "서버 모드 생성 백엔드가 아직 연결되지 않았습니다(mock 만).", reason="no_backend")
-            try:
-                from .bmk_design_patch_forge import ForgeError, with_note
-            except ImportError:
-                from bmk_design_patch_forge import ForgeError, with_note
-            try:
-                await forge.ensure_access(account)
-            except ForgeError as exc:
-                if exc.reason == "unauthorized":
-                    raise board._Reject(401, "Forge 로그인 정보를 다시 받아야 합니다 — 잠시 뒤 자동으로 다시 시도합니다.",
-                                        reason="forge_auth") from None
-                if exc.reason == "forbidden":
-                    raise board._Reject(403, "디자인 패치 스튜디오 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
-                                        reason="no_access") from None
-                raise board._Reject(503, with_note("Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요.", exc),
-                                    reason="forge_unreachable") from None
+            await ensure_forge_access(forge, account)
         if stage in ("run", "reroll") and board.server_mode():
             cancelled = await asyncio.to_thread(board.reset_rerolls_backend, root)
             if cancelled:

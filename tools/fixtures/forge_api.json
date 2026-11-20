@@ -1055,13 +1055,39 @@
               "generation",
               "editing"
             ]
+          },
+          {
+            "id": "pid_upscale",
+            "name": "PiD 1.5 업스케일",
+            "architecture": "upscale",
+            "backend": "comfyui",
+            "checkpoint": null,
+            "max_input_images": null,
+            "supported_modes": [
+              "upscale"
+            ],
+            "variant": null,
+            "max_scale": 4
+          },
+          {
+            "id": "magnific_v2",
+            "name": "Magnific Precision V2",
+            "architecture": "upscale",
+            "backend": "magnific",
+            "checkpoint": null,
+            "max_input_images": null,
+            "supported_modes": [
+              "upscale"
+            ],
+            "variant": "v2",
+            "max_scale": 16
           }
         ],
         "loras": [],
         "architecture_groups": [],
         "default_negative_prompt": "",
         "default_positive_prompt": "",
-        "count": 10
+        "count": 12
       }
     },
     "job": {

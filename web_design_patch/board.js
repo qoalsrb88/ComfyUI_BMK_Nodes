@@ -1425,6 +1425,9 @@
       + (ranText(c) ? ` · ${ranText(c)} 완료` : ""));
     const model = candidateModel(c);
     if (model) row(d, "모델", model).title = model;
+    if (c.picked && c.post?.on === true && SM()) {
+      d.append(el("div", "row", `후보정 적용 중(${c.post.label}) — 새 화면에서 끕니다`));
+    }
     if (SM() && (c.prompt_rewritten === true || c.prompt_used === true)) {
       const r = row(d, "프롬프트", c.prompt_rewritten === true ? "공급자가 프롬프트를 고쳐 씀" : "프롬프트가 서버에서 바뀜");
       r.classList.add("dp-prompt-detail");
@@ -1548,6 +1551,11 @@
     if (c.external_missing) b.append(el("span", "badge b-bad", "파일 없음"));
     if (isNew(c)) b.append(el("span", "badge b-new", "새"));
     if (c.picked) b.append(el("span", "badge b-star", c.slice_index === 1 ? "★" : `S${c.slice_index}`));
+    if (c.picked && c.post?.on === true && SM()) {
+      const badge = el("span", "badge b-post", "후보정");
+      badge.title = `후보정 적용 중(${c.post.label}) — ★ 합성과 Export 에 이 결과가 쓰입니다. 썸네일은 원본입니다. 새 화면에서 끕니다.`;
+      b.append(badge);
+    }
     if (c.mock) b.append(el("span", "badge b-mock", "MOCK"));
     if (c.gates && c.gates.fails.length) b.append(el("span", "badge b-bad", "게이트"));
     if (c.analysis === "nosrc" && !c.hand_mask) b.append(el("span", "badge b-bad", "마스크 없음"));
