@@ -847,7 +847,8 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                     "session_url": "/api/session", "prefs_url": "/api/preferences",
                     "caps": {name: name in SERVER_CAPS for name in board.LOCAL_CAPS}, "backend": backend_name()}
             result["caps"]["ui_v2"] = await asyncio.to_thread(board.v2_available)
-            default_ui = getattr(request, "app", app).get(board.DEFAULT_UI, "v1")
+            # 화면 분기(board_static)와 같은 값: 요청이 속한 앱의 설정. 앱을 알 수 없는 요청이면 이 서버의 설정.
+            default_ui = board.default_ui(request, config.default_ui)
             result["caps"]["ui_default"] = default_ui if result["caps"]["ui_v2"] else "v1"
             result["caps"]["v2_crop_model"] = config.crop_model
             result["caps"]["v2_mask_stack"] = config.mask_stack

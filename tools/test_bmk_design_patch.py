@@ -49981,8 +49981,8 @@ def forge_f2_session_unit():
         async with serving(http, forge=False) as (app, call):
             response, value = await call(bd.API + "/env")
             legacy = {"server_mode": True, "session": False, "account": None, "session_url": "/api/session", "prefs_url": "/api/preferences",
-                      "caps": {name: name in srv.SERVER_CAPS for name in bd.LOCAL_CAPS}, "backend": "mock"}
-            legacy = _env_ui_v2(legacy, bd)  # 키 순서는 그대로 — 아래의 바이트 비교도 같은 순서로 본다
+                      "caps": {**{name: name in srv.SERVER_CAPS for name in bd.LOCAL_CAPS}, "ui_default": "v1"}, "backend": "mock"}
+            legacy = _env_ui_v2(legacy, bd)  # 키 순서는 그대로 — 아래의 바이트 비교도 같은 순서로 본다(ui_default 는 불리언 표의 그 자리에 글자값)
             check(value == legacy and responses[-1].startswith(json.dumps(legacy)), "F2S Forge 없는 env 기존 바이트")
             response, _ = await call("/api/session/token", "POST", {})
             check(response.status == 404, "F2S Forge 없는 갱신 라우트 404")
