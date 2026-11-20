@@ -414,6 +414,21 @@ def _commit(root: str, m: dict, before: str, src: dict | None = None, *, finaliz
     return _handle(root, m, src, **branch), [f"매니페스트 병합 충돌(이 노드의 값으로 저장): {c}" for c in conflicts]
 
 
+_CAND_RECORD_FIELDS = ("mask_edits", "cand_adjust", "mask_stack", "cand_post")  # 후보 key 마다 붙는 기록(★ 일 때만 쓰임)
+
+
+def _drop_vanished(m: dict, gone) -> None:
+    """매니페스트에서 사라진 후보(gone 가운데 지금 후보 목록에 없는 key)의 기록을 지운다. 탈락·★ 해제는 기록을 둔다 — 사라진 후보만.
+    수확 노드가 병합 저장의 마지막(finalize — 잠금 안)에도 부른다: 수확이 도는 동안 보드가 그 후보에 새로 쓴 기록은 3-way 병합이
+    보존하므로, 같은 key 의 후보가 나중에 다시 들어오면 옛 기록이 되살아난다."""
+    live = {c["key"] for c in m.get("candidates") or [] if isinstance(c, dict) and isinstance(c.get("key"), str)}
+    for field in _CAND_RECORD_FIELDS:
+        records = m.get(field)
+        if isinstance(records, dict):
+            for k in set(gone) - live:
+                records.pop(k, None)
+
+
 def _abs(root: str, rel: str) -> str:
     return store.resolve_path(root, rel)
 
@@ -905,7 +920,13 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
         entry = entries.get(c["key"])
         mask, msrc = _final_mask(root, c, entry, crop, mask_source)
         base_mask, base_msrc, mask_edit = mask, msrc, None
-        rec = dmask.edit_record(m, c["key"]) if c.get("picked") else None
+        key = c["key"]
+        fx = store.mask_stack_applied(m, key) if c.get("picked") else None
+        if c.get("picked") and fx is None and isinstance(m.get("mask_stack"), dict) and key in m["mask_stack"]:
+            if store.mask_stack_record(m, key) is None:
+                warns.append(f"{key} ({crop['name']}): 마스크 필터 기록을 읽지 못함 → 필터 없이")
+        off = fx.get("off", []) if fx else []
+        rec = dmask.edit_record(m, key) if c.get("picked") and "brush" not in off else None
         if rec is not None:
             em, why = dmask.edit_mask(root, rec)
             if em is None:
@@ -925,12 +946,15 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
         base_quad = quad
         bb = dpsd.quad_bbox(base_quad)
         adjust = store.cand_adjust_effect(store.cand_adjust(m, c["key"])) if c.get("picked") else None
-        if adjust:
+        if "transform" in off:
+            adjust = {k: adjust[k] for k in ("blur", "invert")} if adjust["blur"] or adjust["invert"] else None
+        elif adjust:
             quad = an.xform_quad(base_quad, **{k: adjust[k] for k in ("dx", "dy", "rot", "sx", "sy") if k in adjust})
+        filter_mask = fx is not None and ("edge" in fx or "opacity" in fx)
+        rect = dmask.edit_rect(dpsd.quad_bbox(quad), m["canvas"]) if mask_edit is not None or filter_mask else None
         mask_merged = False
         if mask_edit is not None:
-            now = dmask.edit_rect(dpsd.quad_bbox(quad), m["canvas"])
-            merged = dmask.expand_edit_mask(mask, base_mask, now)
+            merged = dmask.expand_edit_mask(mask, base_mask, rect)
             mask_merged, mask = merged is not mask, merged
             if entry is not None and dmask.base_fp(c, entry, mask_source)["ph"] != rec["base"]["ph"]:
                 warns.append(f"{c['key']} ({crop['name']}): 마스크 편집 기준 바뀜(분석 항목) → 편집 그대로 씀"
@@ -946,6 +970,13 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
                 "z": (0, int(z)) if z is not None else (1, order_idx[c["key"]])}
         if mask_merged:
             item["mask_merged"] = True
+        if fx:
+            item["mask_fx"] = fx
+            if off:
+                item["stack_off"] = off
+            if filter_mask and rect is not None:
+                item["mask"] = dmask.apply_stack(mask, rect, fx)
+                item["mask_stacked"] = True
         if adjust:
             item["adjust"] = adjust
         g = groups.setdefault((c["crop_id"], c["tid"]), {"slices": [], "alts": []})
@@ -1718,6 +1749,7 @@ class BMKDesignPatchCandidateIn:
                    and (c.get("origin_info") or {}).get("via") != "studio"
                    and (c.get("origin_info") or {}).get(origin_key) == path]  # 같은 출처에서 사라진 후보
         added = updated = 0
+        baked_keys = None  # 그룹 마스크와 활성 필터가 함께 들어올 때만 사이드카를 한 번 읽는다.
         merged = [c for c in m["candidates"] if c["key"] not in seen and c["key"] not in removed]
         for c in new:
             prev = old.get(c["key"])
@@ -1741,18 +1773,34 @@ class BMKDesignPatchCandidateIn:
                     m["cand_adjust"][c["key"]] = dict(adjust, **geometry, base_quad=None, at=at, hist=hist)
                     label = (c.get("origin_info") or {}).get("layer") or c["key"]
                     warns.append(f"{label}: 다시 가져온 배치가 바뀌어 Studio 변형(이동·회전·배율)을 지움 — 블러·색반전·뒤집기는 유지")
+            if prev is not None and source == "psd_harvest" and keep_hand_masks and (c.get("hand_mask") or {}).get("owner") == "group":
+                key = c["key"]
+                stack = store.mask_stack_record(m, key)
+                fx = store.mask_stack_effect(stack)
+                if fx and ("edge" in fx or "opacity" in fx):
+                    if baked_keys is None:
+                        baked_keys = self._baked_stack_keys(path)
+                    label = (c.get("origin_info") or {}).get("layer") or key
+                    if key in baked_keys:
+                        previous = {k: v for k, v in stack.items() if k != "hist"}
+                        try:
+                            at = board._stack_at(stack["at"])
+                        except board._Reject:  # 옛 시각을 더 늘릴 수 없어도 구운 필터는 지운다. 옛 표지는 이력에 남는다.
+                            at = board._stack_at("")
+                        m["mask_stack"][key] = dict(store.mask_stack_defaults(), off=stack["off"], at=at,
+                                                    hist=[previous, *stack["hist"]][:store.RECORD_HIST_KEEP])
+                        warns.append(f"{label}: 다시 가져온 그룹 마스크에 새 화면의 경계·불투명도가 이미 들어 있어 그 필터 값을 지움 — 눈 끄기는 유지")
+                    else:
+                        warns.append(f"{label}: 새 화면의 경계·불투명도 필터가 다시 가져온 그룹 마스크 위에 걸립니다 — 두 번 부드러워 보이면 새 화면에서 필터를 지우세요")
             merged.append(c)
         m["candidates"] = _plain(merged)
         for k in removed:
             m["analysis"].pop(k, None)
-            for field in ("mask_edits", "cand_adjust"):  # 탈락·★ 해제는 기록을 둠 — 사라진 후보만
-                records = m.get(field)
-                if isinstance(records, dict):
-                    records.pop(k, None)
+        _drop_vanished(m, removed)
         if source == "folder":
             self._autopick(m, {c["key"] for c in new}, warns)
         _sync_picks(m)
-        handle, conflicts = _commit(root, m, before, project)
+        handle, conflicts = _commit(root, m, before, project, finalize=lambda merged: _drop_vanished(merged, removed))
         per: dict[str, list[int]] = {}
         for c in m["candidates"]:
             row = per.setdefault(c["crop_id"], [0, 0])
@@ -1768,6 +1816,20 @@ class BMKDesignPatchCandidateIn:
         report = "\n".join(lines)
         logger.info("%s %s", _TAG, lines[0])
         return (handle, report)
+
+    @staticmethod
+    def _baked_stack_keys(path: str) -> set[str]:
+        """같은 이름의 Export 사이드카가 그룹 마스크에 경계·불투명도를 구웠다고 기록한 후보들."""
+        try:
+            with open(os.path.splitext(path)[0] + ".json", encoding="utf-8") as f:
+                snapshot = json.load(f)
+        except (OSError, ValueError):
+            return set()
+        rows = snapshot.get("export_layers") if isinstance(snapshot, dict) else None
+        if not isinstance(rows, list):
+            return set()
+        return {row["key"] for row in rows if isinstance(row, dict) and isinstance(row.get("key"), str)
+                and isinstance(fx := row.get("mask_fx"), dict) and ("edge" in fx or "opacity" in fx)}
 
     @staticmethod
     def _harvest(root, m, path, group, mapping, keep_masks, warns) -> list[dict]:
@@ -2403,6 +2465,8 @@ def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | N
         payload["z_order"] = manual
     if adjustments := store.picked_adjustments(m):
         payload["cand_adjust"] = adjustments
+    if stacks := store.picked_stacks(m):
+        payload["mask_stack"] = stacks
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
@@ -2616,8 +2680,12 @@ class BMKDesignPatchExportPSD:
                             [mk["left"], mk["top"], mk["left"] + mk["arr"].shape[1], mk["top"] + mk["arr"].shape[0]]})
             if it["mask_edit"]:
                 written[-1]["mask_edit"] = it["mask_edit"]
-                if it.get("mask_merged"):
-                    written[-1]["mask_file"] = store.save_png_ca(root, "derived", mk["arr"], prefix="edit_fill_")
+            if it.get("mask_fx"):
+                written[-1]["mask_fx"] = it["mask_fx"]
+            if it.get("mask_stacked"):
+                written[-1]["mask_file"] = store.save_png_ca(root, "derived", mk["arr"], prefix="stack_")
+            elif it.get("mask_merged"):
+                written[-1]["mask_file"] = store.save_png_ca(root, "derived", mk["arr"], prefix="edit_fill_")
             if it.get("adjust"):
                 written[-1]["adjust"] = dict(it["adjust"])
             pbar.update(1)

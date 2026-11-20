@@ -174,6 +174,43 @@ def expand_edit_mask(edit: dict, base: dict | None, rect: list[int] | None) -> d
     return {"arr": arr, "left": x0, "top": y0, "bg": 0}
 
 
+def apply_stack(mask: dict | None, rect: list[int], effect: dict) -> dict:
+    """편집 창의 기준·붓 마스크에 4면 페이드, 전체 페더, 불투명도를 차례로 적용한다."""
+    x0, y0, x1, y1 = rect
+    values = np.full((y1 - y0, x1 - x0), 255 if mask is None else mask["bg"], np.float64)
+    if mask is not None:
+        left, top = mask["left"], mask["top"]
+        arr = mask["arr"]
+        a, b = max(x0, left), max(y0, top)
+        c, d = min(x1, left + arr.shape[1]), min(y1, top + arr.shape[0])
+        if a < c and b < d:
+            values[b - y0:d - y0, a - x0:c - x0] = arr[b - top:d - top, a - left:c - left]
+    values /= 255.0
+
+    edge = effect.get("edge")
+    if edge:
+        # 각 뷰의 첫 줄이 해당 변이다. 폭 안쪽 띠만 곱하면 나머지 픽셀의 배수는 1이다.
+        for side, inward in (("top", values), ("bottom", values[::-1]), ("left", values.T), ("right", values.T[::-1])):
+            width = min(edge["fade"][side], inward.shape[0] // 2)
+            if width:
+                t = (np.arange(width, dtype=np.float64) + 0.5) / width
+                inward[:width] *= (t * t * (3 - 2 * t))[:, None]
+        sigma = edge["feather"]
+        if sigma > 0:
+            import cv2
+            radius = int(np.ceil(3 * sigma))
+            offsets = np.arange(-radius, radius + 1, dtype=np.float64)
+            kernel = np.exp(-offsets ** 2 / (2 * sigma ** 2))
+            kernel /= kernel.sum()
+            values = cv2.sepFilter2D(values, -1, kernel, kernel, borderType=cv2.BORDER_REPLICATE)
+    if "opacity" in effect:
+        values *= effect["opacity"] / 100.0
+    np.clip(values, 0, 1, out=values)
+    values *= 255.0
+    values += 0.5
+    return {"arr": np.floor(values, out=values).astype(np.uint8), "left": x0, "top": y0, "bg": 0}
+
+
 # 검사
 # ══════════════════════════════════════════════════════════════════════
 def _keys(d, keys, what: str) -> None:
@@ -270,8 +307,11 @@ def export_mask(root: str, snapshot: dict, row: dict, mask_source: str, *, use_r
                 raise ValueError("마스크 파일 크기·위치가 Export 기록과 다름")
             return {"arr": arr, "left": left, "top": top, "bg": bg}
 
+        fx = row.get("mask_fx")
+        if "mask_file" in row and isinstance(fx, dict) and ("edge" in fx or "opacity" in fx):
+            # 기준 종류(hand·auto·none)와 무관하게 Export 당시의 최종 래스터.
+            return read(row["mask_file"], rect[0], rect[1])
         if src == "edit":
-            # 확장된 편집은 Export 때 굳힌 합친 래스터, 기존 행은 당시 편집 파일 그대로.
             return read(row["mask_file"] if "mask_file" in row else row["mask_edit"], rect[0], rect[1])
         cand = next(c for c in snapshot.get("candidates") or [] if c.get("key") == row["key"])
         if src == "hand":
@@ -360,6 +400,9 @@ def import_ps_masks(root: str, psd_path: str, sidecar: dict, *, manifest: dict, 
         name, key = row.get("name", ""), row.get("key")
         skipped = {"name": name, "key": key}
         try:
+            fx = row.get("mask_fx")
+            if isinstance(fx, dict) and ("edge" in fx or "opacity" in fx):
+                raise ValueError("새 화면의 마스크 필터가 적용된 Export 입니다 — 필터를 지운 뒤 다시 Export 하세요")
             if not isinstance(key, str) or counts[key] != 1:
                 raise ValueError("사이드카 후보 key 중복·누락 — 매핑 불가")
             cand = star_cand(manifest, key)
