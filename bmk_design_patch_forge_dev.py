@@ -6,7 +6,7 @@ FakeForge.handle 은 소켓을 쓰지 않는다 — bmk_design_patch_forge.Forge
 
 토큰: `dev:<계정>`(만료 없음) · `dev:<계정>:<만료 epoch 초>`. 사용자 id = `u_<계정>`, 조직 = org1(이름 「개발 조직」).
 시나리오는 프롬프트 속 표지로 건다(여러 개 가능): [[fake:delay=초]] [[fake:queue=순번/전체]] [[fake:partial=장수]]
-[[fake:fail=user|ailabs]] [[fake:changed]] [[fake:empty]] — 표지가 없으면 곧바로 completed.
+[[fake:fail=user|ailabs]] [[fake:changed]] [[fake:empty]]. 후보정도 선택적인 prompt 로 같은 지연·실패를 재현한다.
 퇴역 모델은 BMK_DP_FAKE_RETIRED 환경 변수에 checkpoint 를 쉼표로 나열하거나 fake.retire(checkpoint, True/False) 로 바꾼다.
 fake.requests 는 최근 요청의 키·checkpoint·입력 인덱스·공급자 호출 인덱스만 기록한다(토큰·입력 본문 없음).
 """
@@ -32,7 +32,7 @@ import time
 from urllib.parse import parse_qs, urlencode, urlsplit
 import uuid
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 
 _ACCOUNT = re.compile(r"[a-z0-9_-]{1,32}")
@@ -45,6 +45,11 @@ _MAX_UPLOADS = 16
 _MAX_CALLS = 1000
 _MAX_RENDERED = 32
 _MAX_RENDERED_BYTES = 64 * 1024 * 1024
+_POST_ROUTES = {"/api/image/upscale": "upscale", "/api/image/bg-removal": "bg_removal"}
+_UPSCALE_MODELS = {
+    "pid_upscale": ("PiD 1.5 업스케일", "comfyui", None, 4),
+    "magnific_v2": ("Magnific Precision V2", "magnific", "v2", 16),
+}
 
 
 class _Validation(ValueError):
@@ -107,6 +112,28 @@ def _png(size, label, seed, source=None):
     draw.text((6, 5), label, fill=(255, 255, 255))
     output = io.BytesIO()
     picture.save(output, format="PNG")
+    return output.getvalue()
+
+
+def _post_png(source, tool, settings, size):
+    if tool == "upscale":
+        result = source.resize(size, Image.Resampling.LANCZOS)
+    else:
+        width, height = size
+        offset = settings["mask_offset"]
+        x = min((width - 1) // 2, width // 8 - offset)
+        y = min((height - 1) // 2, height // 8 - offset)
+        mask = Image.new("L", size)
+        draw = ImageDraw.Draw(mask)
+        draw.ellipse((x, y, width - 1 - x, height - 1 - y), fill=255)
+        draw.point((width // 2, height // 2), fill=255)
+        if settings["mask_blur"]:
+            mask = mask.filter(ImageFilter.GaussianBlur(settings["mask_blur"]))
+        result = source
+        result.putalpha(mask)
+    result.info.clear()
+    output = io.BytesIO()
+    result.save(output, format="PNG")
     return output.getvalue()
 
 
@@ -182,6 +209,11 @@ class FakeForge:
     def _catalog(self):
         result = copy.deepcopy(self._fixture["models"]["catalog"]["response"])
         result["models"] = [row for row in result["models"] if row["checkpoint"] not in self._retired]
+        listed = {row["id"] for row in result["models"]}
+        result["models"].extend(
+            dict(id=model, name=name, architecture="upscale", supported_modes=["upscale"], backend=backend,
+                 checkpoint=None, max_input_images=None, variant=variant, max_scale=limit)
+            for model, (name, backend, variant, limit) in _UPSCALE_MODELS.items() if model not in listed)
         result["count"] = len(result["models"])
         return result
 
@@ -407,6 +439,25 @@ class FakeForge:
             result["delay"] = 6.0
         return result
 
+    def _record_submission(self, data, checkpoint):
+        record = {"keys": sorted(key if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", key) else "<invalid>"
+                                 for key in data), "checkpoint": checkpoint, "provider_calls": []}
+        self.requests.append(record)
+        return record
+
+    @staticmethod
+    def _job_id(account, request_id):
+        if not request_id:
+            return str(uuid.uuid4())
+        key = json.dumps({"user_id": "u_" + account, "request_id": request_id, "index": 0},
+                         sort_keys=True, separators=(",", ":"))
+        return str(uuid.uuid5(_NAMESPACE, key))
+
+    def _reused(self, job_id, record):
+        job = self._update_job(job_id)
+        record.update(job_id=job_id, reused=True, effective_checkpoint=job["request_data"].get("checkpoint"))
+        return _json(200, {"job_id": job_id, "job_ids": [job_id], "status": job["status"]})
+
     def _submit(self, account, data):
         fixture = self._fixture["generate"]
         rules = fixture["request_rules"]
@@ -415,9 +466,7 @@ class FakeForge:
         model = next(((name, spec) for name, spec in models["requests"].items()
                       if spec["request"]["checkpoint"] == checkpoint), None)
         known = checkpoint in models["names"].values()
-        record = {"keys": sorted(key if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", key) else "<invalid>"
-                                 for key in data), "checkpoint": checkpoint if known else None, "provider_calls": []}
-        self.requests.append(record)
+        record = self._record_submission(data, checkpoint if known else None)
         retired = known and checkpoint in self._retired
         prompt = data.get("prompt")
         if not isinstance(prompt, str) or (not prompt.strip() and model is None):
@@ -463,15 +512,9 @@ class FakeForge:
                 raise _Validation("size")
         record.update(effective_checkpoint=effective, retired=retired, input_count=sum(map(len, groups)), used_input_indices=used)
         scenario = self._scenario(prompt)
-        user_id = "u_" + account
-        job_id = str(uuid.uuid5(_NAMESPACE, json.dumps({"user_id": user_id, "request_id": request_id, "index": 0},
-                                                     sort_keys=True, separators=(",", ":")))) if request_id else str(uuid.uuid4())
+        job_id = self._job_id(account, request_id)
         if job_id in self.jobs:
-            job = self._update_job(job_id)
-            record.update(job_id=job_id, reused=True, effective_checkpoint=job["request_data"]["checkpoint"])
-            return _json(200, {"job_id": job_id, "job_ids": [job_id], "status": job["status"]})
-        now = self._now()
-        job = copy.deepcopy(self._fixture["job"]["pending"])
+            return self._reused(job_id, record)
         summary = {key: value for key, value in data.items() if key in fixture["request"] and key != "input_images"}
         summary.update(prompt=prompt, num_outputs=count, size=size)
         if kind != "gpt":
@@ -481,9 +524,77 @@ class FakeForge:
                 summary["request_id"] = request_id
             if kind == "seedream" and failure is None:
                 summary["image_size"] = size
-        job.update(id=job_id, user_id=user_id, created_at=_stamp(now), request_data=summary,
-                   queue_position=scenario["queue"][0] if scenario["queue"] else None,
-                   queue_total=scenario["queue"][1] if scenario["queue"] else None)
+        autopilot = data.get("prompt_autopilot")
+        state = dict(scenario, size=(width, height), source=first, changed=scenario["changed"] or "prompt_autopilot" not in data
+                     or isinstance(autopilot, dict) and "candidate_prompt" in autopilot)
+        if kind != "gpt":
+            record["provider_calls"] = list(range(count if kind in ("seedream", "gemini") else 1)) if failure is None else []
+            state.update(kind=kind, input_error=failure, changed=scenario["changed"], record=record)
+        return self._new_job(account, job_id, "generate", summary, state, record)
+
+    def _submit_post(self, account, data, tool):
+        checkpoint = data.get("checkpoint")
+        known = tool == "upscale" and isinstance(checkpoint, str) and checkpoint in _UPSCALE_MODELS
+        record = self._record_submission(data, checkpoint if known else None)
+        record["job_type"] = tool
+        if "request_id" in data:
+            self._validate_id(data["request_id"], "request_id")
+        organization = data.get("organization_id")
+        if organization is not None and not self._org(account, self._organization(organization)):
+            return self._error("org_denied")
+        groups = data.get("input_images")
+        if (not isinstance(groups, list) or len(groups) != 1 or not isinstance(groups[0], list)
+                or len(groups[0]) != 1 or not isinstance(groups[0][0], str)):
+            raise _Validation("input_images")
+        header, separator, encoded = groups[0][0].partition(",")
+        if not separator or not re.fullmatch(r"data:image/[A-Za-z0-9][A-Za-z0-9.+-]*;base64", header):
+            raise _Validation("input_images")
+        if tool == "upscale":
+            strings = {"checkpoint": None}
+            integers = {"scale": (2, 1, 16)}
+        else:
+            strings = {"model": "RMBG-2.0", "model_node": "RMBG", "background": "Alpha"}
+            integers = {"mask_offset": (0, -64, 64), "mask_blur": (0, 0, 64)}
+        summary = {k: data[k] for k in ("request_id", "organization_id") if k in data}
+        for key, default in strings.items():
+            value = data.get(key, default)
+            if not isinstance(value, str):
+                raise _Validation(key)
+            summary[key] = value
+        for key, (default, lo, hi) in integers.items():
+            value = data.get(key, default)
+            if type(value) is not int or not lo <= value <= hi:
+                raise _Validation(key)
+            summary[key] = value
+        prompt = data.get("prompt")
+        state = self._scenario(prompt if isinstance(prompt, str) else "")
+        job_id = self._job_id(account, data.get("request_id"))
+        if job_id in self.jobs:
+            return self._reused(job_id, record)
+
+        source, size, error = None, None, None
+        if tool == "upscale" and checkpoint not in _UPSCALE_MODELS:
+            error = "알 수 없는 업스케일 모델입니다."
+        else:
+            try:
+                source = base64.b64decode(encoded, validate=True)
+                with _picture(source)[0] as picture:
+                    size = tuple(side * summary.get("scale", 1) for side in picture.size)
+                if Image.MAX_IMAGE_PIXELS and size[0] * size[1] > Image.MAX_IMAGE_PIXELS:
+                    error = "후보정 결과가 개발용 이미지 처리 한도를 넘습니다."
+            except Exception:
+                error = "입력 데이터를 그림으로 읽을 수 없습니다."
+        failure = dict(self._fixture["job"]["failed_user"], error_message=error) if error else None
+        state.update(source=None if error else source, size=size, input_error=failure, changed=False)
+        record.update(input_count=1, used_input_indices=[] if error else [0], provider_calls=[] if error else [0])
+        return self._new_job(account, job_id, tool, summary, state, record)
+
+    def _new_job(self, account, job_id, job_type, summary, state, record):
+        now = self._now()
+        job = copy.deepcopy(self._fixture["job"]["pending"])
+        queue = state["queue"]
+        job.update(id=job_id, user_id="u_" + account, job_type=job_type, created_at=_stamp(now), request_data=summary,
+                   queue_position=queue[0] if queue else None, queue_total=queue[1] if queue else None)
         while len(self.jobs) >= _MAX_JOBS:
             oldest = next(iter(self.jobs))
             del self.jobs[oldest]
@@ -492,14 +603,8 @@ class FakeForge:
                 if key[0] == oldest:
                     self._rendered_bytes -= len(self._rendered.pop(key))
         self.jobs[job_id] = job
-        autopilot = data.get("prompt_autopilot")
-        self._states[job_id] = dict(scenario, at=now, polls=0, size=(width, height), source=first,
-                                   changed=scenario["changed"] or "prompt_autopilot" not in data
-                                   or isinstance(autopilot, dict) and "candidate_prompt" in autopilot)
+        self._states[job_id] = dict(state, at=now, polls=0)
         record.update(job_id=job_id, reused=False)
-        if kind != "gpt":
-            record["provider_calls"] = list(range(count if kind in ("seedream", "gemini") else 1)) if failure is None else []
-            self._states[job_id].update(kind=kind, input_error=failure, changed=scenario["changed"], record=record)
         return _json(200, {"job_id": job_id, "job_ids": [job_id], "status": "pending"})
 
     def _update_job(self, job_id, poll=False):
@@ -509,6 +614,9 @@ class FakeForge:
             return job
         now = max(state["at"], self._now())
         delay = state["delay"]
+        post = job["job_type"] != "generate"
+        if post and not delay and not poll:
+            return job
         queued = state["queue"] is not None
         start = state["at"] + (delay / 2 if queued else 0)
         end = state["at"] + delay
@@ -518,10 +626,14 @@ class FakeForge:
             if poll:
                 state["polls"] += 1
             return job
+        first_post_poll = post and not delay and job["status"] == "pending"
         job.update(status="processing", queue_position=None, queue_total=None,
-                   started_at=_stamp(start), execution_deadline_at=_stamp(start + 1200))
-        if duration > 0 and now < end:
-            job["progress"] = max(1, min(99, int(100 * (now - start) / duration)))
+                   started_at=_stamp(start), execution_deadline_at=None if post else _stamp(start + 1200))
+        # 지연 표지가 없는 후보정도 첫 조회에서 processing 을 한 번 보여 준다.
+        if now < end or first_post_poll:
+            job["progress"] = max(1, min(99, int(100 * (now - start) / duration))) if duration else 1
+            if job["job_type"] == "bg_removal" and not state["input_error"] and not state["fail"]:
+                job["result_data"] = self._job_result(job_id)
             return job
         job.update(progress=100, completed_at=_stamp(end))
         if state.get("input_error") is not None:
@@ -532,7 +644,12 @@ class FakeForge:
             if state.get("kind") == "seedream":
                 job["error_message"] = "seedream: " + job["error_message"]
             return job
-        count = job["request_data"]["num_outputs"]
+        job.update(status="completed", result_data=self._job_result(job_id))
+        return job
+
+    def _job_result(self, job_id):
+        job, state = self.jobs[job_id], self._states[job_id]
+        count = job["request_data"].get("num_outputs", 1)
         actual = 0 if state["empty"] else min(count, state["partial"] if state["partial"] is not None else count)
         metadata = [{} for _ in range(actual)]
         kind = state.get("kind")
@@ -555,8 +672,7 @@ class FakeForge:
                   "thumbnails": [{} for _ in range(actual)], "saved_id": job_id}
         if actual < count and kind not in ("seedream", "gemini"):
             result["warning"] = self._fixture["job"]["completed_partial"]["result_data"]["warning"]
-        job.update(status="completed", result_data=result)
-        return job
+        return result
 
     def _history(self, account, query):
         organization = query.get("organization_id", [None])[0]
@@ -592,15 +708,16 @@ class FakeForge:
         items = []
         for job in jobs:
             urls = job["result_data"]["images"]
-            common = {"prompt": job["request_data"]["prompt"], "created_at": job["created_at"],
-                      "created_by": job["user_id"], "is_favorite": False, "generation_type": "generate",
+            common = {"prompt": job["request_data"].get("prompt", ""), "created_at": job["created_at"],
+                      "created_by": job["user_id"], "is_favorite": False, "generation_type": job["job_type"],
                       "batch_id": job["id"]}
             if len(urls) == 1:
                 item = copy.deepcopy(templates[0])
                 item.update(common, id=job["id"] + ":0", result_id=job["id"] + ":0", statement_id=job["id"],
                             result_index=0, result_url=urls[0], thumbnail_url=urls[0],
                             batch_position=0,
-                            model_used=job["request_data"]["checkpoint"], completed_at=job["completed_at"],
+                            model_used=job["request_data"].get("checkpoint", job["request_data"].get("model")),
+                            completed_at=job["completed_at"],
                             parameters=dict(zip(("width", "height"), self._states[job["id"]]["size"])), history_view=view)
             else:
                 item = copy.deepcopy(templates[1])
@@ -772,14 +889,18 @@ class FakeForge:
         if match and match[1] in self.jobs:
             job = self._update_job(match[1])
             slot = int(match[2])
-            if job["status"] == "completed" and slot < len(job["result_data"]["images"]):
+            if job["result_data"] and slot < len(job["result_data"]["images"]):
                 key = (match[1], slot)
                 if key in self._rendered:
                     self._rendered.move_to_end(key)
                     return 200, {"Content-Type": "image/png"}, self._rendered[key]
                 state = self._states[match[1]]
                 source = _picture(state["source"])[0] if state["source"] is not None else None
-                png = _png(state["size"], "FAKE FORGE", f"{match[1]}:{slot}", source)
+                if job["job_type"] == "generate":
+                    png = _png(state["size"], "FAKE FORGE", f"{match[1]}:{slot}", source)
+                else:
+                    with source:
+                        png = _post_png(source, job["job_type"], job["request_data"], state["size"])
                 if len(png) <= _MAX_RENDERED_BYTES:
                     while self._rendered and (len(self._rendered) >= _MAX_RENDERED
                                              or self._rendered_bytes + len(png) > _MAX_RENDERED_BYTES):
@@ -880,7 +1001,7 @@ class FakeForge:
                 headers = {key.lower(): value for key, value in headers.items()}
                 query = parse_qs(parsed.query, keep_blank_values=True)
                 routes = {"/auth/me": ("GET",), "/api/access/summary": ("GET",),
-                          "/api/image/templates": ("GET",),
+                          "/api/image/templates": ("GET",), **{p: ("POST",) for p in _POST_ROUTES},
                           "/api/image/generate": ("POST",), "/api/image/history": ("GET",),
                           "/api/library/assets": ("GET", "POST"), "/api/library/assets/upload-url": ("POST",),
                           "/api/library/assets/uploads/complete": ("POST",), **self._prompt_routes}
@@ -956,6 +1077,8 @@ class FakeForge:
                     raise _Validation("body") from None
                 if path == "/api/image/generate":
                     return self._submit(account, data)
+                if path in _POST_ROUTES:
+                    return self._submit_post(account, data, _POST_ROUTES[path])
                 return self._asset_write(account, path, data)
         except _Validation as error:
             result = copy.deepcopy(self._fixture["errors"]["validation"]["response"])
@@ -1056,7 +1179,7 @@ def mount(app, config, fake: FakeForge | None = None):
 
     app.router.add_get("/refresh", refresh)
     for path in ("/auth/me", "/api/access/summary", "/api/image/templates", "/api/image/generate", "/api/image/jobs/{job_id}",
-                 "/api/image/history", "/api/library/assets", "/api/library/assets/upload-url",
+                 *_POST_ROUTES, "/api/image/history", "/api/library/assets", "/api/library/assets/upload-url",
                  "/api/library/assets/uploads/complete", "/fake-media/{path:.+}", "/fake-upload/{key:.+}"):
         app.router.add_route("*", path, forward)
     app.router.add_route("*", "/{tail:.*}", forward)
