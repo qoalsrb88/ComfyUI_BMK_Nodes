@@ -397,7 +397,8 @@ SERVER_ENV = "BMK_DP_SERVER_MODE"  # D339 — 프로세스 플래그는 이 환�
 LOCAL_CAPS = {"jobs": False, "export_download": False, "sam3": True, "local_qwen": True, "external": True, "open_folder": True,
               "path_input": True, "ps_mask": True, "agent_approve": True}
 # UX v2 기능 플래그(V2-A D490). 로컬판은 모두 false — 서버 모드의 GET /env 가 열린 것만 true 로 바꾼다.
-V2_CAPS = ("ui_v2", "v2_spec_edit", "v2_forge_prompt", "v2_auto_prepare", "v2_crop_model", "v2_postprocess", "v2_psd_reimport")
+V2_CAPS = ("ui_v2", "v2_spec_edit", "v2_forge_prompt", "v2_auto_prepare", "v2_crop_model", "v2_postprocess", "v2_psd_reimport",
+           "v2_mask_stack")
 LOCAL_CAPS.update({name: False for name in V2_CAPS})
 _SCOPE: contextvars.ContextVar = contextvars.ContextVar("bmk_dp_scope", default=None)
 _ENV_PROVIDER: list = []           # set_env_provider — 서버 모드의 GET /env 본문을 만드는 함수(request → dict)

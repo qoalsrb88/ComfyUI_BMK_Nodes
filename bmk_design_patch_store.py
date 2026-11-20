@@ -1138,7 +1138,8 @@ _MERGE_ID_LISTS = {
     "exports": ("rev", "psd"),
     "calls": ("call_id",),
 }
-_MERGE_KEYED_DICTS = ("picks", "rejects", "rerolls", "approvals", "mask_edits", "z_order", "cand_adjust")  # z_order = 범위 단위
+_MERGE_KEYED_DICTS = ("picks", "rejects", "rerolls", "approvals", "mask_edits", "z_order", "cand_adjust",
+                      "mask_stack", "cand_post")  # z_order = 범위 단위 · mask_stack·cand_post = 후보 key 단위(UX v2-C)
 _MISSING = object()
 
 
@@ -1244,6 +1245,220 @@ def picked_adjustments(m: dict, keys=None) -> dict:
         rec = cand_adjust(m, c["key"])
         if rec:
             out[c["key"]] = cand_adjust_effect(rec)
+    return out
+
+
+# ── UX v2-C: 마스크 필터 스택(mask_stack) · 후보정 파생본(cand_post) ─────────────────────────────
+# 둘 다 매니페스트 최상위 {후보 key: 기록}이고 그 후보가 ★ 일 때만 쓰인다(mask_edits·cand_adjust 와 같은 자리·같은 단위).
+# 기록의 키 집합이 정확해야 읽힌다 — 다르면 「없음」. 해시·서명에는 「효과 있을 때만」 한 줄로 들어간다(picked_stacks·picked_posts):
+# 기록이 없거나 효과가 없는 프로젝트의 합성 서명·Export 해시·점검 서명은 이 두 기록이 생기기 전과 같다.
+MASK_STACK_LAYERS = ("brush", "edge", "transform", "opacity")   # 합성 순서(붓 → 경계 → 변형 → 불투명도)
+MASK_STACK_SIDES = ("top", "bottom", "left", "right")
+MASK_STACK_FEATHER_MAX = 32      # 전체 페더 σ(캔버스 px)
+MASK_STACK_FADE_MAX = 256        # 4면 페이드 폭(캔버스 px) — 그 변 길이의 절반을 넘으면 절반으로 낮춰 계산한다(합성 쪽)
+POST_TOOLS = ("upscale", "bg_removal")
+POST_MAX_SIDE = 4096             # 파생본 그림 한 변의 상한(마스크 창 상한 4096² 과 같은 수)
+RECORD_HIST_KEEP = 20
+_REC_AT_RE = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{1,9})?")
+_POST_FILE_RE = re.compile(r"post/([0-9a-f]{24})/out\.(png|jpg|jpeg|webp)")
+_POST_KEYS = frozenset({"on", "file", "size", "tool", "model", "opts", "input", "call", "at"})
+_STACK_KEYS = frozenset({"off", "edge", "opacity", "at"})
+
+
+def _plain_int(v, lo: int, hi: int) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+
+
+def mask_stack_defaults() -> dict:
+    """스택 기록이 없을 때의 값(모든 층 켜짐 · 페더 0 · 페이드 0 · 불투명도 100)."""
+    return {"off": [], "edge": {"feather": 0.0, "fade": dict.fromkeys(MASK_STACK_SIDES, 0)}, "opacity": 100}
+
+
+def mask_stack_values(off, edge, opacity) -> dict:
+    """스택 값 검사·정규화(off 정렬 · 페더 소수 1자리). bool 을 숫자로, 문자열을 숫자로 바꾸지 않는다. 틀리면 ValueError."""
+    if not isinstance(off, list) or any(not isinstance(x, str) or x not in MASK_STACK_LAYERS for x in off) \
+            or len(set(off)) != len(off):
+        raise ValueError("off 는 " + "·".join(MASK_STACK_LAYERS) + " 가운데 겹치지 않는 층 이름의 목록이어야 합니다")
+    if not isinstance(edge, dict) or set(edge) != {"feather", "fade"}:
+        raise ValueError("edge 는 feather 와 fade 를 가진 객체여야 합니다")
+    feather, fade = edge["feather"], edge["fade"]
+    if isinstance(feather, bool) or not isinstance(feather, (int, float)) or not 0 <= feather <= MASK_STACK_FEATHER_MAX:
+        raise ValueError(f"페더는 0 이상 {MASK_STACK_FEATHER_MAX} 이하의 숫자여야 합니다")
+    if not isinstance(fade, dict) or set(fade) != set(MASK_STACK_SIDES) \
+            or not all(_plain_int(fade[s], 0, MASK_STACK_FADE_MAX) for s in MASK_STACK_SIDES):
+        raise ValueError(f"페이드는 top·bottom·left·right 마다 0 이상 {MASK_STACK_FADE_MAX} 이하의 정수여야 합니다")
+    if not _plain_int(opacity, 0, 100):
+        raise ValueError("불투명도는 0 이상 100 이하의 정수여야 합니다")
+    return {"off": sorted(off), "edge": {"feather": round(float(feather), 1), "fade": {s: fade[s] for s in MASK_STACK_SIDES}},
+            "opacity": opacity}
+
+
+def mask_stack_record(m: dict, key: str) -> dict | None:
+    """형식이 유효한 스택 기록의 사본 {off, edge, opacity, at, hist}. 기본값뿐인 기록도 표지(at)·이력을 보존한다. 깨졌으면 None."""
+    raw = m.get("mask_stack")
+    rec = raw.get(key) if isinstance(raw, dict) else None
+    if not isinstance(rec, dict) or set(rec) != _STACK_KEYS | {"hist"}:
+        return None
+    hist = rec["hist"]
+    if not isinstance(hist, list) or len(hist) > RECORD_HIST_KEEP:
+        return None
+    versions = []
+    for v in [rec, *hist]:
+        if not isinstance(v, dict) or set(v) != (_STACK_KEYS | {"hist"} if v is rec else _STACK_KEYS):
+            return None
+        if not isinstance(v["at"], str) or not _REC_AT_RE.fullmatch(v["at"]):
+            return None
+        try:
+            versions.append(dict(mask_stack_values(v["off"], v["edge"], v["opacity"]), at=v["at"]))
+        except (ValueError, OverflowError):
+            return None
+    return dict(versions[0], hist=versions[1:])
+
+
+def mask_stack_effect(rec: dict | None) -> dict | None:
+    """합성·서명·사이드카가 함께 쓰는 효과 값 — 꺼진 층을 반영하고 영향 없는 칸을 뺀다. 아무 효과가 없으면 None.
+      off     = 꺼진 층 가운데 brush·transform 만(다른 기록의 값을 가리는 층 — 실제로 가릴 것이 있는지는 mask_stack_applied 가 본다)
+      edge    = 켜져 있고 페더나 페이드가 0 이 아닐 때만 {feather, fade}
+      opacity = 켜져 있고 100 이 아닐 때만"""
+    if rec is None:
+        return None
+    off, effect = rec["off"], {}
+    hidden = [name for name in ("brush", "transform") if name in off]
+    if hidden:
+        effect["off"] = hidden
+    edge = rec["edge"]
+    if "edge" not in off and (edge["feather"] or any(edge["fade"].values())):
+        effect["edge"] = {"feather": edge["feather"], "fade": dict(edge["fade"])}
+    if "opacity" not in off and rec["opacity"] != 100:
+        effect["opacity"] = rec["opacity"]
+    return effect or None
+
+
+def _post_version(v, top: bool) -> dict | None:
+    """cand_post 의 한 판(머리 또는 이력) 검사 → 정규화 사본(hist 제외). 깨졌으면 None."""
+    if not isinstance(v, dict) or set(v) != (_POST_KEYS | {"hist"} if top else _POST_KEYS):
+        return None
+    file, size, opts, src, call = v["file"], v["size"], v["opts"], v["input"], v["call"]
+    hit = _POST_FILE_RE.fullmatch(file) if isinstance(file, str) else None
+    if not isinstance(v["on"], bool) or hit is None or call != hit.group(1):
+        return None
+    if not isinstance(size, list) or len(size) != 2 or not all(_plain_int(x, 1, POST_MAX_SIDE) for x in size):
+        return None
+    model = v["model"]
+    if v["tool"] not in POST_TOOLS or not isinstance(model, str) or not 1 <= len(model) <= 64 or not model.isprintable():
+        return None
+    if not isinstance(opts, dict) or len(opts) > 8:
+        return None
+    for name, value in opts.items():
+        if not isinstance(name, str) or not 1 <= len(name) <= 32 or not isinstance(value, (bool, int, float, str)):
+            return None
+        if (isinstance(value, float) and not math.isfinite(value)) or (isinstance(value, str) and len(value) > 64):
+            return None
+    if not isinstance(src, dict) or set(src) != {"file", "sha"}:
+        return None
+    src_file, sha = src["file"], src["sha"]
+    if not isinstance(src_file, str) or not 1 <= len(src_file) <= 300 or "\\" in src_file or src_file.startswith("/") \
+            or ".." in src_file.split("/") or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+        return None
+    if not isinstance(v["at"], str) or not _REC_AT_RE.fullmatch(v["at"]):
+        return None
+    return {"on": v["on"], "file": file, "size": [int(size[0]), int(size[1])], "tool": v["tool"], "model": model,
+            "opts": dict(opts), "input": {"file": src_file, "sha": sha}, "call": call, "at": v["at"]}
+
+
+def cand_post_record(m: dict, key: str) -> dict | None:
+    """형식이 유효한 파생본 기록의 사본 {on, file, size, tool, model, opts, input, call, at, hist}. 깨졌으면 None."""
+    raw = m.get("cand_post")
+    rec = raw.get(key) if isinstance(raw, dict) else None
+    if not isinstance(rec, dict) or not isinstance(rec.get("hist"), list) or len(rec["hist"]) > RECORD_HIST_KEEP:
+        return None
+    try:
+        versions = [_post_version(v, v is rec) for v in [rec, *rec["hist"]]]
+    except OverflowError:
+        return None
+    if any(v is None for v in versions):
+        return None
+    return dict(versions[0], hist=versions[1:])
+
+
+def cand_post_effect(rec: dict | None) -> dict | None:
+    """켜진 파생본의 효과 값 {file, size, tool, model}. 기록이 없거나 꺼져 있으면 None."""
+    if rec is None or not rec["on"]:
+        return None
+    return {"file": rec["file"], "size": list(rec["size"]), "tool": rec["tool"], "model": rec["model"]}
+
+
+def cand_effective(m: dict, cand: dict, root: str | None = None) -> dict:
+    """합성·Export 가 읽을 그림 {file, size, post} — cand 가 ★(picked)이고 파생본 기록이 유효하고 켜져 있으면 파생본, 아니면 원본
+    (post None). root 를 주면 파생본 파일이 있는지도 본다: 없으면 원본 + "lost"(= 사라진 파일 — 호출자가 경고한다).
+    원본 후보의 줄(file·src_size)은 어느 경우에도 바꾸지 않는다."""
+    out = {"file": cand["file"], "size": list(cand["src_size"]), "post": None}
+    post = cand_post_effect(cand_post_record(m, cand["key"])) if cand.get("picked") else None
+    if post is None:
+        return out
+    if root is not None and not os.path.isfile(resolve_path(root, post["file"])):
+        return dict(out, lost=post["file"])
+    return {"file": post["file"], "size": list(post["size"]), "post": post}
+
+
+def _picked_live(m: dict, keys=None):
+    """실제로 합성하는 ★ 후보(제외 아님 · 크롭·타깃 있음) — picked_adjustments 와 같은 규칙. keys = 보드의 가상 ★ 집합."""
+    raw_candidates = m.get("candidates") if isinstance(m.get("candidates"), list) else []
+    candidates = [c for c in raw_candidates if isinstance(c, dict) and isinstance(c.get("key"), str)]
+    if keys is None:
+        picks = m.get("picks") if isinstance(m.get("picks"), dict) else {}
+        keys = {k for v in picks.values() if isinstance(v, list) for k in v if isinstance(k, str)}
+        keys.update(c["key"] for c in candidates if c.get("picked"))
+    raw_crops = m.get("crops") if isinstance(m.get("crops"), list) else []
+    crops = {c["id"]: c for c in raw_crops if isinstance(c, dict) and isinstance(c.get("id"), str)}
+    rejects = m.get("rejects") if isinstance(m.get("rejects"), dict) else {}
+    for c in candidates:
+        if c["key"] not in keys or c["key"] in rejects or not isinstance(c.get("crop_id"), str):
+            continue
+        crop = crops.get(c.get("crop_id"))
+        targets = crop.get("targets") if crop and isinstance(crop.get("targets"), list) else []
+        if any(isinstance(t, dict) and t.get("tid") == c.get("tid") for t in targets):
+            yield c
+
+
+def mask_stack_applied(m: dict, key: str) -> dict | None:
+    """그 후보가 ★ 라고 할 때 합성에 실제로 닿는 스택 효과 값 — mask_stack_effect 에서 「가릴 것이 없는 끔」을 뺀 것.
+    brush 끔은 그 후보의 마스크 편집 기록이 있을 때만, transform 끔은 후보 보정에 변형·뒤집기가 있을 때만 남는다."""
+    effect = mask_stack_effect(mask_stack_record(m, key))
+    if effect is None or "off" not in effect:
+        return effect
+    edits = m.get("mask_edits")
+    adjust = cand_adjust_effect(cand_adjust(m, key)) or {}
+    live = [name for name in effect["off"]
+            if (name == "brush" and isinstance(edits, dict) and isinstance(edits.get(key), dict))
+            or (name == "transform" and ("dx" in adjust or "flip_h" in adjust))]
+    effect = {k: v for k, v in effect.items() if k != "off"}
+    if live:
+        effect = {"off": live, **effect}
+    return effect or None
+
+
+def picked_stacks(m: dict, keys=None) -> dict:
+    """해시·서명의 mask_stack 행 = {★ 후보 key: 실제로 닿는 효과 값}. 효과 없는 기록·★ 아닌 후보의 기록은 뺀다(없으면 빈 dict)."""
+    if not isinstance(m.get("mask_stack"), dict) or not m["mask_stack"]:
+        return {}
+    out = {}
+    for c in _picked_live(m, keys):
+        effect = mask_stack_applied(m, c["key"])
+        if effect:
+            out[c["key"]] = effect
+    return out
+
+
+def picked_posts(m: dict, keys=None) -> dict:
+    """해시·서명의 cand_post 행 = {★ 후보 key: 켜진 파생본 file}. 파일 이름이 후보정 키(도구·모델·옵션·입력의 해시)를 담는다."""
+    if not isinstance(m.get("cand_post"), dict) or not m["cand_post"]:
+        return {}
+    out = {}
+    for c in _picked_live(m, keys):
+        post = cand_post_effect(cand_post_record(m, c["key"]))
+        if post:
+            out[c["key"]] = post["file"]
     return out
 
 

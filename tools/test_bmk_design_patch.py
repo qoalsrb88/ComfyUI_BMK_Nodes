@@ -40203,7 +40203,8 @@ def mask_unit():
 
     def k2():
         section("S4-K2 병합: mask_edits 키 단위 3-way — 노드 커밋 ∥ 보드 save·pick·reject(스레드 4 × 25)")
-        check(store._MERGE_KEYED_DICTS == ("picks", "rejects", "rerolls", "approvals", "mask_edits", "z_order", "cand_adjust"), "store 병합 키 단위 dict 에 mask_edits·z_order·cand_adjust")
+        check(store._MERGE_KEYED_DICTS == ("picks", "rejects", "rerolls", "approvals", "mask_edits", "z_order", "cand_adjust", "mask_stack", "cand_post"),
+              "store 병합 키 단위 dict 에 mask_edits·z_order·cand_adjust·mask_stack·cand_post")
         keys = [f"r_{i:012d}_0_0" for i in range(4)]
         root = project("k2", keys)
 
@@ -64285,6 +64286,144 @@ def ux_v2c_invariant_unit():
 def ux_v2c_core_unit():
     """UX v2-C 공용 자리(명세 §3.1·§3.2 · D575·D577·D578·D608·D610·D615·D616) — 두 기록의 읽기·검사·효과 값·해시 행 재료. --quick 포함."""
     section("UX v2-C — 공용 자리 (ux_v2c_core_unit)")
+    from tempfile import mkdtemp
+
+    st = store
+    K = "r_000000000001_0_0"
+    stack = lambda **kw: {"off": [], "edge": {"feather": 0.0, "fade": {"top": 0, "bottom": 0, "left": 0, "right": 0}}, "opacity": 100,
+                          "at": V2C_AT, "hist": []} | kw
+    edge = lambda feather=0.0, **fade: {"feather": feather, "fade": {"top": 0, "bottom": 0, "left": 0, "right": 0} | fade}
+    read = lambda rec: st.mask_stack_record({"mask_stack": {K: rec}}, K)
+
+    # ── mask_stack: 값 검사·정규화
+    check(st.mask_stack_defaults() == {k: v for k, v in stack().items() if k not in ("at", "hist")}, "V2CC1 스택 기본값")
+    v = st.mask_stack_values(["transform", "brush"], edge(6.26, bottom=48), 40)
+    check(v == {"off": ["brush", "transform"], "edge": edge(6.3, bottom=48), "opacity": 40}, "V2CC1 off 정렬·페더 소수 1자리")
+    bad_values = [(["mask"], edge(), 100), (["brush", "brush"], edge(), 100), ("brush", edge(), 100), ([1], edge(), 100),
+                  ([], {"feather": 0}, 100), ([], edge() | {"x": 1}, 100), ([], edge(-0.1), 100), ([], edge(32.1), 100),
+                  ([], edge(True), 100), ([], edge("3"), 100), ([], edge(float("nan")), 100), ([], edge(top=257), 100),
+                  ([], edge(top=-1), 100), ([], edge(top=1.5), 100), ([], edge(top=True), 100),
+                  ([], {"feather": 0, "fade": {"top": 0, "bottom": 0, "left": 0}}, 100),
+                  ([], {"feather": 0, "fade": {"top": 0, "bottom": 0, "left": 0, "right": 0, "in": 0}}, 100),
+                  ([], edge(), 101), ([], edge(), -1), ([], edge(), 50.0), ([], edge(), True), ([], edge(), "100")]
+    rejected = 0
+    for args in bad_values:
+        try:
+            st.mask_stack_values(*args)
+        except ValueError:
+            rejected += 1
+    check(rejected == len(bad_values), f"V2CC1 범위 밖·bool·문자열·모르는 칸 거절 {rejected}/{len(bad_values)}")
+
+    # ── mask_stack: 기록 읽기(키 집합이 정확해야 한다 · 이력 20 · 원본 불변)
+    old = {k: v for k, v in stack(opacity=30, at="2026-11-20 09:00:00.123456789").items() if k != "hist"}
+    rec = stack(off=["transform", "brush"], edge=edge(6, bottom=48), hist=[old])
+    snapshot = copy.deepcopy(rec)
+    got = read(rec)
+    check(got == stack(off=["brush", "transform"], edge=edge(6.0, bottom=48), hist=[old]) and rec == snapshot, "V2CC2 기록 정규화·원본 불변")
+    broken = [dict(rec, extra=1), {k: v for k, v in rec.items() if k != "opacity"}, dict(rec, at="어제"), dict(rec, at=None),
+              dict(rec, hist=[old] * 21), dict(rec, hist=[dict(old, hist=[])]), dict(rec, hist="x"), dict(rec, off=["mask"]),
+              dict(rec, opacity=101), dict(rec, edge=edge(40)), dict(rec, hist=[dict(old, opacity=True)]), "x", None, []]
+    check(all(read(b) is None for b in broken), "V2CC2 깨진 기록(모르는 키·빠진 키·시각·이력·범위)은 없음으로 읽음")
+    check(st.mask_stack_record({"mask_stack": []}, K) is None and st.mask_stack_record({}, K) is None, "V2CC2 mask_stack 이 dict 가 아니면 없음")
+
+    # ── mask_stack: 효과 값(꺼진 층 반영 · 영향 없는 칸 제외)
+    eff = lambda **kw: st.mask_stack_effect(read(stack(**kw)))
+    check(eff() is None and st.mask_stack_effect(None) is None, "V2CC3 기본값·없음 = 효과 없음")
+    check(eff(off=["edge", "opacity"], edge=edge(6, top=8), opacity=40) is None, "V2CC3 값이 있어도 그 층을 끄면 효과 없음")
+    check(eff(edge=edge(6)) == {"edge": edge(6.0)} and eff(edge=edge(left=12)) == {"edge": edge(0.0, left=12)}, "V2CC3 페더·페이드 하나만 있어도 edge")
+    check(eff(opacity=0) == {"opacity": 0} and eff(opacity=99) == {"opacity": 99}, "V2CC3 불투명도 0 도 효과")
+    check(eff(off=["brush", "edge", "opacity", "transform"], edge=edge(3), opacity=1) == {"off": ["brush", "transform"]},
+          "V2CC3 off 에는 brush·transform 만 남음")
+    full = eff(off=["transform"], edge=edge(6, bottom=48), opacity=70)
+    check(full == {"off": ["transform"], "edge": edge(6.0, bottom=48), "opacity": 70} and list(full) == ["off", "edge", "opacity"], "V2CC3 효과 값의 꼴·칸 순서")
+
+    # ── 해시 행: ★ 만 · 「가릴 것이 없는 끔」 제외
+    xf = dict(st.CAND_XFORM_DEFAULTS, base_quad=None, blur=0.0, invert=False, at=V2C_AT, hist=[])
+    crop = {"id": "001_a", "name": "001_a", "rect": [0, 0, 8, 8], "targets": [{"tid": "A"}]}
+    cand = lambda key, picked=True, tid="A": {"key": key, "crop_id": "001_a", "tid": tid, "picked": picked, "file": f"cands/{key}.png", "src_size": [8, 8]}
+    keys = ["r_%012d_0_0" % i for i in range(6)]
+    m = {"crops": [crop], "candidates": [cand(keys[0]), cand(keys[1]), cand(keys[2], picked=False), cand(keys[3]), cand(keys[4], tid="Z"), cand(keys[5])],
+         "picks": {}, "rejects": {keys[3]: True},
+         "mask_edits": {keys[0]: {"file": "masks/x.png"}}, "cand_adjust": {keys[1]: dict(xf, dx=4.0), keys[5]: dict(xf, blur=2.0)},
+         "mask_stack": {keys[0]: stack(off=["brush", "transform"]), keys[1]: stack(off=["brush", "transform"], opacity=50),
+                        keys[2]: stack(opacity=10), keys[3]: stack(opacity=10), keys[4]: stack(opacity=10),
+                        keys[5]: stack(off=["transform"])}}
+    check(st.picked_stacks(m) == {keys[0]: {"off": ["brush"]}, keys[1]: {"off": ["transform"], "opacity": 50}},
+          "V2CC4 mask_stack 행 = ★ 만 · brush 끔은 편집이 있을 때 · transform 끔은 변형이 있을 때(블러뿐이면 아님) · 대안·탈락·없는 타깃 제외")
+    check(st.mask_stack_applied(m, keys[5]) is None and st.mask_stack_applied(m, keys[2]) == {"opacity": 10}, "V2CC4 applied 는 ★ 여부를 보지 않음")
+    check(st.picked_stacks(m, keys={keys[2]}) == {keys[2]: {"opacity": 10}}, "V2CC4 가상 ★ 집합(keys)")
+    check(st.picked_stacks({}) == {} and st.picked_stacks(dict(m, mask_stack={})) == {} and st.picked_stacks(dict(m, mask_stack=[])) == {},
+          "V2CC4 기록이 없거나 비었으면 빈 dict")
+    flipped = dict(m, cand_adjust={keys[5]: dict(xf, flip_v=True)})
+    check(st.picked_stacks(flipped).get(keys[5]) == {"off": ["transform"]}, "V2CC4 뒤집기만 있어도 transform 끔은 효과")
+
+    # ── cand_post: 기록 읽기
+    post = lambda **kw: {"on": True, "file": "post/0123456789abcdef01234567/out.png", "size": [2048, 1536], "tool": "upscale",
+                         "model": "pid_upscale", "opts": {"scale": 2}, "input": {"file": "cands/abc/r0_0.png", "sha": "a" * 64},
+                         "call": "0123456789abcdef01234567", "at": V2C_AT, "hist": []} | kw
+    pread = lambda rec: st.cand_post_record({"cand_post": {K: rec}}, K)
+    prev = {k: v for k, v in post(tool="bg_removal", model="RMBG-2.0", opts={"mask_offset": -2, "mask_blur": 0},
+                                  file="post/aaaaaaaaaaaaaaaaaaaaaaaa/out.webp", call="a" * 24).items() if k != "hist"}
+    rec = post(hist=[prev])
+    snapshot = copy.deepcopy(rec)
+    check(pread(rec) == rec and rec == snapshot and pread(rec) is not rec, "V2CC5 파생본 기록 읽기(이력 포함)·사본")
+    pbad = [dict(rec, extra=1), {k: v for k, v in rec.items() if k != "call"}, dict(rec, on=1), dict(rec, file="post/x/out.png"),
+            dict(rec, file="post/0123456789abcdef01234567/out.gif"), dict(rec, file="../post/0123456789abcdef01234567/out.png"),
+            dict(rec, call="b" * 24), dict(rec, size=[0, 8]), dict(rec, size=[4097, 8]), dict(rec, size=[8]), dict(rec, size=[8.0, 8]),
+            dict(rec, size=[True, 8]), dict(rec, tool="segments"), dict(rec, model=""), dict(rec, model="x" * 65), dict(rec, model=3),
+            dict(rec, opts=[]), dict(rec, opts={"a": None}), dict(rec, opts={"a": [1]}), dict(rec, opts={"a": float("inf")}),
+            dict(rec, opts={str(i): i for i in range(9)}), dict(rec, input={"file": "a.png"}), dict(rec, input={"file": "../a.png", "sha": "a" * 64}),
+            dict(rec, input={"file": "C:\\a.png", "sha": "a" * 64}), dict(rec, input={"file": "/a.png", "sha": "a" * 64}),
+            dict(rec, input={"file": "a.png", "sha": "A" * 64}), dict(rec, at="2026"), dict(rec, hist=[prev] * 21),
+            dict(rec, hist=[dict(prev, hist=[])]), dict(rec, hist=[dict(prev, on="yes")]), dict(rec, hist=None), "x", None]
+    check(all(pread(b) is None for b in pbad), "V2CC5 깨진 파생본 기록은 없음으로 읽음")
+    check(st.cand_post_effect(pread(rec)) == {"file": rec["file"], "size": [2048, 1536], "tool": "upscale", "model": "pid_upscale"}
+          and st.cand_post_effect(pread(post(on=False))) is None and st.cand_post_effect(None) is None, "V2CC5 효과 값 = 켜진 것만")
+
+    # ── cand_effective: ★ · 유효 · 켜짐 · (root 를 주면) 파일 있음일 때만 파생본
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    root = mkdtemp(prefix="ux_v2c_core_", dir=OUT_ROOT.resolve())
+    c0, c2 = m["candidates"][0], m["candidates"][2]
+    mp = dict(m, cand_post={keys[0]: post(), keys[2]: post(), keys[1]: post(on=False)})
+    orig = {"file": c0["file"], "size": [8, 8], "post": None}
+    check(st.cand_effective(m, c0) == orig and st.cand_effective(mp, c2) == {"file": c2["file"], "size": [8, 8], "post": None},
+          "V2CC6 기록 없음·★ 아님 = 원본")
+    got = st.cand_effective(mp, c0)
+    check(got == {"file": rec["file"], "size": [2048, 1536], "post": st.cand_post_effect(pread(post()))}, "V2CC6 ★ 의 켜진 파생본")
+    check(st.cand_effective(mp, m["candidates"][1])["post"] is None, "V2CC6 꺼 둔 파생본 = 원본")
+    check(st.cand_effective(dict(mp, cand_post={keys[0]: dict(post(), extra=1)}), c0) == orig, "V2CC6 깨진 기록 = 원본")
+    check(st.cand_effective(mp, c0, root) == dict(orig, lost=rec["file"]), "V2CC6 파일이 없으면 원본 + lost")
+    Path(root, "post", "0123456789abcdef01234567").mkdir(parents=True)
+    Path(root, rec["file"]).write_bytes(b"x")
+    check(st.cand_effective(mp, c0, root) == got and c0 == cand(keys[0]), "V2CC6 파일이 있으면 파생본 · 후보 줄은 그대로")
+    check(st.picked_posts(mp) == {keys[0]: rec["file"]} and st.picked_posts(m) == {} and st.picked_posts(dict(m, cand_post={})) == {}
+          and st.picked_posts(mp, keys={keys[2]}) == {keys[2]: rec["file"]}, "V2CC7 cand_post 행 = ★ 의 켜진 파생본 file")
+
+    # ── 3-way 병합: 두 창이 서로 다른 후보의 기록을 바꿔도 둘 다 남는다 · 다른 키를 고치는 쓰기에도 두 기록이 남는다(D617)
+    base = st.new_manifest("v2c")
+    base["mask_stack"], base["cand_post"] = {keys[0]: stack()}, {keys[0]: post()}
+    ours = copy.deepcopy(base)
+    ours["mask_stack"][keys[1]] = stack(opacity=40)
+    ours["cand_post"][keys[0]] = post(on=False)
+    theirs = copy.deepcopy(base)
+    theirs["mask_stack"][keys[2]] = stack(opacity=60)
+    theirs["cand_post"][keys[1]] = post()
+    merged, conflicts = st.merge_manifest(base, ours, theirs)
+    check(not conflicts and set(merged["mask_stack"]) == set(keys[:3]) and merged["cand_post"][keys[0]]["on"] is False
+          and keys[1] in merged["cand_post"], "V2CC8 mask_stack·cand_post 는 후보 key 단위로 병합")
+    theirs2 = copy.deepcopy(base)
+    theirs2["mask_stack"][keys[0]] = stack(opacity=10)
+    ours2 = copy.deepcopy(base)
+    ours2["mask_stack"][keys[0]] = stack(opacity=20)
+    merged, conflicts = st.merge_manifest(base, ours2, theirs2)
+    check(conflicts == [f"mask_stack/{keys[0]}"] and merged["mask_stack"][keys[0]]["opacity"] == 20, "V2CC8 같은 후보를 다르게 바꾸면 충돌(ours)")
+    proj = st.project_root(root, "keep")
+    os.makedirs(proj)
+    st.save_manifest(proj, dict(st.new_manifest("keep"), mask_stack={keys[0]: stack(opacity=5)}, cand_post={keys[0]: post()}))
+    st.update_manifest(proj, lambda mm: mm["picks"].update({"001_a/A": [keys[0]]}))
+    kept = st.load_manifest(proj)
+    check(kept["mask_stack"][keys[0]]["opacity"] == 5 and kept["cand_post"][keys[0]]["on"] is True and kept["rev"] == 2,
+          "V2CC8 다른 키를 고치는 쓰기에도 두 기록이 남음")
 
 
 def ux_v2c_stack_unit():
