@@ -65684,7 +65684,12 @@ def ux_v2c_core_unit():
     check(st.cand_effective(mp, c0, root) == dict(orig, lost=rec["file"]), "V2CC6 파일이 없으면 원본 + lost")
     Path(root, "post", "0123456789abcdef01234567").mkdir(parents=True)
     Path(root, rec["file"]).write_bytes(b"x")
-    check(st.cand_effective(mp, c0, root) == got and c0 == cand(keys[0]), "V2CC6 파일이 있으면 파생본 · 후보 줄은 그대로")
+    check(st.cand_effective(mp, c0, root) == dict(orig, lost=rec["file"]), "V2CC6 그림으로 읽히지 않는 파일이면 원본 + lost")
+    Image.new("RGB", (64, 48), (10, 20, 30)).save(Path(root, rec["file"]))
+    check(st.cand_effective(mp, c0, root) == dict(orig, lost=rec["file"]), "V2CC6 그림 크기가 기록과 다르면 원본 + lost")
+    Image.new("RGB", (2048, 1536), (10, 20, 30)).save(Path(root, rec["file"]))
+    check(st.cand_effective(mp, c0, root) == got and c0 == cand(keys[0]), "V2CC6 기록 크기의 그림이 있으면 파생본 · 후보 줄은 그대로")
+    check(st.applied_posts(mp, root) == {keys[0]: rec["file"]} and st.applied_posts(m, root) == {}, "V2CC7 applied_posts = 쓸 수 있는 파생본의 행")
     outside = Path(mkdtemp(prefix="ux_v2c_outside_", dir=OUT_ROOT.resolve()))
     (outside / "out.png").write_bytes(b"x")
     linked = post(file="post/" + "b" * 24 + "/out.png", call="b" * 24)
@@ -66355,8 +66360,8 @@ def ux_v2c_route_unit():
             for method, p in (("POST", "/mask/stack"), ("GET", "/mask/stack/img")):
                 await call(app, method, p, status=404)
             d = await call(app, "GET", path)
-            check(d["stack_fx"] == {"off": ["brush"], "opacity": 20} and set(d) == set(local_view) | {"stack_fx"},
-                  "V2CM 꺼진 서버는 저장된 효과만 제공")
+            check(d["stack_fx"] == {"off": ["brush"], "opacity": 20} and set(d) == set(local_view) | {"stack_fx", "post"} and d["post"] is None,
+                  "V2CM 꺼진 서버는 저장된 효과와 후보정 표시(없으면 null)만 제공")
 
     asyncio.run(run())
 
