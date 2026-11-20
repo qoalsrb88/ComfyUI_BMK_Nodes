@@ -64661,8 +64661,245 @@ def ux_v2c_submit_unit():
 
 
 def ux_v2c_dev_unit():
-    """UX v2-C 갈래 D(명세 D625) — 가짜 Forge 의 업스케일·배경 제거 흉내. 갈래 D 가 채운다."""
+    """가짜 Forge 의 후보정 계약과 실제 승인·파생본 등록. 소켓 없이 실행한다."""
     section("UX v2-C — 가짜 Forge 의 후보정 흉내 (ux_v2c_dev_unit)")
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, patch
+    from aiohttp.test_utils import make_mocked_request
+
+    dp = _dp_package()
+    dev = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge_dev")
+    forge = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge")
+    post = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_post")
+    srv = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_server")
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))
+    account = "v2cd"
+    token = dev.issue_token(account)
+    origin = "https://forge.test"
+    config = forge.ForgeConfig(origin, media_origins=(origin,))
+    paths = {"upscale": "/api/image/upscale", "bg_removal": "/api/image/bg-removal"}
+    source = Image.fromarray(_v2c_pat(37, 71, 4, 5, 3, 2))
+    buf = io.BytesIO()
+    source.save(buf, format="PNG")
+    uri = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+    async def contract():
+        fake = dev.FakeForge(media_origin=origin, clock=lambda: 1700000000.)
+        client = forge.ForgeClient(config, transport=fake.handle)
+
+        async def call(method, path, data=None, who=token):
+            headers = {"Authorization": "Bearer " + who} if who else {}
+            status, _, raw = await fake.handle(method, path, headers, json.dumps(data).encode() if data is not None else None)
+            return status, json.loads(raw)
+
+        status, catalog = await call("GET", "/api/image/templates")
+        before = fixture["models"]["catalog"]["response"]
+        generation_rows = [r for r in before["models"] if r["id"] not in post.MODELS]
+        by_id = {r["id"]: r for r in catalog["models"]}
+        check(status == 200 and catalog["count"] == len(generation_rows) + 2 == len(by_id) == len(catalog["models"])
+              and [r for r in catalog["models"] if r["id"] not in post.MODELS] == generation_rows,
+              "V2CD 기존 모델 줄·순서 보존, 업스케일 두 줄 추가")
+        for model, name, backend, variant, limit in (("pid_upscale", "PiD 1.5 업스케일", "comfyui", None, 4),
+                                                       ("magnific_v2", "Magnific Precision V2", "magnific", "v2", 16)):
+            row = by_id[model]
+            check((row["name"], row["backend"], row["variant"], row["max_scale"]) == (name, backend, variant, limit)
+                  and row["architecture"] == "upscale" and row["supported_modes"] == ["upscale"], "V2CD 업스케일 모델 " + model)
+        old, new = post.fg.parse_catalog({"models": generation_rows}), post.fg.parse_catalog(catalog)
+        check(all(dp.models.availability(n, old) == dp.models.availability(n, new) for n in dp.models.names(True))
+              and all(m in new for m in post.MODELS), "V2CD 생성 모델별 available·사유·입력 상한 불변")
+
+        async def final_job(tool, data):
+            receipt = await client.submit_post(token, tool, data)
+            for _ in range(3):
+                job = await client.job(token, receipt["job_id"])
+                if job["status"] in ("completed", "failed"):
+                    return job
+            raise AssertionError("V2CD 후보정 잡이 끝나지 않음")
+
+        for tool, path in paths.items():
+            base = {"input_images": [[uri]]}
+            if tool == "upscale":
+                base["checkpoint"] = "pid_upscale"
+            auth_error = fixture["errors"]["invalid_token"]
+            check(await call("POST", path, base, who=None) == (auth_error["status"], auth_error["response"]),
+                  "V2CD 인증 없음 " + tool)
+            invalid = {"input_images": [None, [], [uri], [[]], [[uri], [uri]], [[uri, uri]], [[42]],
+                                        [["https://image.test/a.png"]], [["data:text/plain;base64,YQ=="]]],
+                       "request_id": [None, "", "_bad", "a/b", "a" * 129], "organization_id": [3]}
+            if tool == "upscale":
+                invalid.update(checkpoint=[[], None], scale=[0, 17, True, 2.5, "2"])
+            else:
+                invalid.update(model=[3], model_node=[None], background=[False], mask_offset=[-65, 65, False],
+                               mask_blur=[-1, 65, 1.5])
+            for field, bad_values in invalid.items():
+                for value in bad_values:
+                    status, reply = await call("POST", path, dict(base, **{field: value}))
+                    check(status == 422 and reply["detail"][0]["loc"] == ["body", field]
+                          and reply["detail"][0]["type"] == "value_error", f"V2CD {tool} {field} 잘못된 값")
+            for required in base:
+                status, reply = await call("POST", path, {k: v for k, v in base.items() if k != required})
+                check(status == 422 and reply["detail"][0]["loc"] == ["body", required], f"V2CD {tool} {required} 누락")
+            rid = (tool + ".A:-").ljust(128, "z")
+            data = dict(base, request_id=rid, organization_id="org1", extra={"ignored": True},
+                        prompt="[[fake:queue=2/3]] [[fake:delay=8]]")
+            count = len(fake.jobs)
+            status, reply = await call("POST", path, data)
+            jid = reply["job_id"]
+            check(status == 200 and reply == {"job_id": jid, "job_ids": [jid], "status": "pending"}
+                  and fake.requests[-1]["keys"] == sorted(data) and uri not in str(fake.requests[-1]),
+                  "V2CD 접수 응답·본문 없는 요청 기록 " + tool)
+            check(await call("POST", path, data) == (200, reply) and len(fake.jobs) == count + 1
+                  and fake.requests[-1]["reused"], "V2CD 같은 사용자·요청 ID 재접수 " + tool)
+            job_path = "/api/image/jobs/" + jid
+            other = dev.issue_token("other")
+            check((await call("POST", path, data, who=other))[1]["job_id"] != jid
+                  and (await call("GET", job_path, who=other))[0] == 404, "V2CD 계정별 멱등 키·조회 " + tool)
+            queued = (await call("GET", job_path))[1]
+            fake.advance(4)
+            running = (await call("GET", job_path))[1]
+            early = running["result_data"]
+            check(queued["status"] == "pending" and running["status"] == "processing" and 0 < running["progress"] < 100,
+                  "V2CD 대기·처리 상태 " + tool)
+            if tool == "bg_removal":
+                early_png = await client.fetch_media(early["images"][0])
+            fake.advance(4)
+            job = (await call("GET", job_path))[1]
+            result = job["result_data"]
+            check(all(j["job_type"] == tool and j["execution_deadline_at"] is None for j in (queued, running, job))
+                  and job["status"] == "completed" and len(result["images"]) == 1
+                  and result["result_ids"] == [jid + ":0"] and result["result_metadata"] == [{}], "V2CD 잡·결과 계약 " + tool)
+            raw = await client.fetch_media(result["images"][0])
+            with Image.open(io.BytesIO(raw)) as im:
+                if tool == "upscale":
+                    expected = source.convert("RGB").resize((142, 74), Image.Resampling.LANCZOS)
+                    check(im.format == "PNG" and im.mode == "RGB" and im.size == expected.size
+                          and im.tobytes() == expected.tobytes(), "V2CD 기본 2배 LANCZOS 픽셀")
+                else:
+                    check(im.format == "PNG" and im.mode == "RGBA" and im.size == source.size
+                          and im.getpixel((35, 18))[3] == 255 and im.getpixel((0, 0))[3] == 0
+                          and early == result and early_png == raw, "V2CD 처리 중 결과·같은 크기 타원 알파")
+                    reference_alpha = np.array(im.getchannel("A"))
+                    settings = job["request_data"]
+                    check([settings[k] for k in ("model", "model_node", "background", "mask_offset", "mask_blur")]
+                          == ["RMBG-2.0", "RMBG", "Alpha", 0, 0], "V2CD 배경 제거 기본값")
+            for broken in ("%%%", base64.b64encode(b"not an image").decode()):
+                failed = await final_job(tool, dict(base, input_images=[["data:image/png;base64," + broken]]))
+                check(failed["status"] == "failed" and failed["error_category"] == "user" and failed["error_message"]
+                      and not failed["images"], "V2CD 해독 실패·그림 오류는 접수 후 사용자 실패 " + tool)
+            failed = await final_job(tool, dict(base, prompt="[[fake:fail=ailabs]]"))
+            check(failed["status"] == "failed" and failed["error_category"] == "ailabs", "V2CD 실패 표지 " + tool)
+
+        for scale in (1, 16):
+            job = await final_job("upscale", dict(input_images=[[uri]], checkpoint="magnific_v2", scale=scale))
+            with Image.open(io.BytesIO(await client.fetch_media(job["images"][0]))) as im:
+                check(im.size == tuple(d * scale for d in source.size), f"V2CD Magnific 배율 경계 {scale}")
+        for offset, blur in ((-64, 0), (64, 0), (0, 64)):
+            job = await final_job("bg_removal", dict(input_images=[[uri]], mask_offset=offset, mask_blur=blur,
+                                                     model="test", model_node="node", background="Alpha"))
+            with Image.open(io.BytesIO(await client.fetch_media(job["images"][0]))) as im:
+                alpha = np.array(im.getchannel("A"))
+                if blur:
+                    check(np.any((alpha > 0) & (alpha < 255)), "V2CD 흐린 타원 경계")
+                else:
+                    check(alpha.sum() < reference_alpha.sum() if offset < 0 else alpha.sum() > reference_alpha.sum(),
+                          f"V2CD 타원 오프셋 {offset}")
+        failed = await final_job("upscale", dict(input_images=[[uri]], checkpoint="unknown", request_id="x"))
+        check(failed["status"] == "failed" and failed["error_message"] and failed["error_category"] == "user"
+              and await client.job(token, fake.requests[-1]["job_id"]) == failed, "V2CD 미등록 체크포인트의 실패 유지")
+
+    async def round_trip(out):
+        fake = dev.FakeForge(media_origin=origin)
+        scope = dict(_fj_scope(out / "home"), org="org1", account=account)
+        root, manifest, keys = _v2c_project(dp, Path(scope["input"]), "post")
+        targets = [keys["a1"], keys["d"]]
+        dp.board.apply_pick(root, manifest["crops"][1]["id"], "A", keys["d"], "set")
+        app = srv.make_app(srv.ServerConfig(str(out / "server"), public_origin="https://studio.test",
+                                            forge=config, postprocess=True), forge_transport=fake.handle)
+        app.freeze()
+        queue, accounts = app[srv._RUNNER_KEY], app[srv._FORGE_KEY]
+
+        async def route(name, args, status=200):
+            data = dict(args, root=post.store.root_key(root))
+            path = dp.board.API + "/postprocess/" + name
+            method = "GET" if name == "plan" else "POST"
+            if method == "GET":
+                path += "?" + urllib.parse.urlencode(dict(data, keys=",".join(data["keys"])))
+            req = make_mocked_request(method, path, app=app, headers={"Content-Type": "application/json"})
+            req.read = AsyncMock(return_value=json.dumps(data).encode())
+            res = await (await app.router.resolve(req)).handler(req)
+            check(res.status == status, f"V2CD {name} HTTP {res.status}/{status}")
+            return json.loads(res.text)
+
+        async def run(args, plan):
+            reply = await route("run", dict(args, expect=plan["expect"], approve=plan["hash"]))
+            pid = reply["prompt_id"]
+            end = time.monotonic() + 10
+            while not queue.history(scope, root, pid) and time.monotonic() < end:
+                await asyncio.sleep(0.01)
+            return queue.history(scope, root, pid)[pid]["outputs"]["dp_post"]
+
+        cache_key = (scope["org"], account)
+        scope_token = dp.board.set_scope(scope)
+        try:
+            with patch.object(accounts.tokens, "token_for", return_value=token):
+                await post.fg.ensure_catalog(cache_key, accounts.client, lambda: token, lambda _: None)
+                args = dict(tool="upscale", keys=targets)
+                plan = await route("plan", args)
+                check(plan["counts"]["new"] == 2 and plan["hash"] and not fake.requests, "V2CD ★ 둘의 승인 전 제출 0")
+                got = await run(args, plan)
+                records = post.store.load_manifest(root)["cand_post"]
+                check(got["done"] == targets and not got["failed"] and len(fake.requests) == 2, "V2CD 업스케일 둘 등록")
+                for item in plan["items"]:
+                    rec = records[item["key"]]
+                    with Image.open(Path(root) / rec["file"]) as im:
+                        check(rec["on"] and rec["size"] == [d * 2 for d in item["in"]] == list(im.size)
+                              and im.format == "PNG", "V2CD 등록 파일·입력 ×2 " + item["key"])
+                # 같은 승인을 다시 보내도, 원본을 다시 골라 같은 작업을 승인해도 추가 제출이 없다.
+                stale = await route("run", dict(args, expect=plan["expect"], approve=plan["hash"]), 409)
+                for key in targets:
+                    await route("set", dict(key=key, op="off", seen=records[key]["at"]))
+                reuse = await route("plan", args)
+                got = await run(args, reuse)
+                check(stale["reason"] == "stale" and not reuse["hash"] and got["reused"] == targets
+                      and len(fake.requests) == 2, "V2CD 이전 승인 재전송·같은 원본 재사용에 추가 제출 없음")
+                key = targets[0]
+                chain = dict(tool="bg_removal", keys=[key])
+                got = await run(chain, await route("plan", chain))
+                rec = post.store.load_manifest(root)["cand_post"][key]
+                with Image.open(Path(root) / rec["file"]) as im:
+                    check(got["done"] == [key] and not got["warnings"] and im.mode == "RGBA"
+                          and list(im.size) == records[key]["size"] and rec["input"]["file"] == records[key]["file"],
+                          "V2CD 업스케일 파생본을 입력으로 쓴 배경 제거")
+                calls = list(fake.calls)
+                jid = fake.requests[-1]["job_id"]
+                check(calls.count(("GET", "/api/image/jobs/" + jid)) == 2
+                      and calls[-1] == ("GET", f"/fake-media/{jid}/0.png"), "V2CD 처리 중 그림은 완료 조회 뒤 받음")
+                blocked = await route("plan", dict(tool="upscale", keys=[key]))
+                check(blocked["counts"]["blocked"] == 1 and not blocked["hash"] and "배경" in blocked["items"][0]["why"]
+                      and len(fake.requests) == 3, "V2CD 알파가 있는 파생본 업스케일 계획 차단")
+                # 계획을 세운 뒤 Forge 가 해당 체크포인트를 더 이상 알지 못하는 경우.
+                other = targets[1]
+                missing = dict(tool="upscale", keys=[other], model="magnific_v2")
+                approved = await route("plan", missing)
+                with patch.dict(dev._UPSCALE_MODELS):
+                    del dev._UPSCALE_MODELS["magnific_v2"]
+                    got = await run(missing, approved)
+                ledger = post.Ledger(root, approved["items"][0]["post_key"])
+                attempt = ledger.sidecar()["requests"][-1]
+                check([row["key"] for row in got["failed"]] == [other] and not got["done"]
+                      and fake.jobs[attempt["job_id"]]["status"] == attempt["state"] == "failed"
+                      and ledger.read("failed") and post.store.load_manifest(root)["cand_post"][other]["file"] == records[other]["file"],
+                      "V2CD 미등록 체크포인트 실패는 원장에 남고 앞 파생본 보존")
+        finally:
+            dp.board.reset_scope(scope_token)
+            post.fg.forget_catalog(cache_key)
+            await app.cleanup()
+
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="v2c_dev_", dir=OUT_ROOT.resolve()))
+    with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": "", "BMK_DP_MOCK_API": ""}), patch.object(post.fg, "POLL_FAST", 0.001):
+        asyncio.run(contract())
+        asyncio.run(round_trip(out))
 
 
 # ══════════════════════════════════════════════════════════════════════
