@@ -60,6 +60,7 @@ window.DPV2Store = (() => {
     histIndex: -1,
     assistBusy: false,
     runFlowBusy: false,
+    pickBusyKeys: new Set(),
     syncState: "idle", // idle | syncing | err
     syncMsg: "준비 중",
     pollTimer: null,
@@ -407,11 +408,12 @@ window.DPV2Store = (() => {
     const sentInst = fromSave && (!sentFields || sentFields.has("instruction"));
     const sentAiAuto = fromSave && (!sentFields || sentFields.has("aiAuto"));
     const sentRaw = fromSave && includedRaw;
+    const directValues = !!opts.directFieldValues;
 
-    const purposeSameAsSent = sentPurpose && (!sent || m.purpose === sent.purpose);
-    const instSameAsSent = sentInst && (!sent || (m.user_instruction_ko || "") === (sent.user_instruction_ko || ""));
-    const aiAutoSameAsSent = sentAiAuto && (!sent || !!m.aiAuto === !!sent.aiAuto);
-    const rawSameAsSent = sentRaw && (!sent || (m.body_en || "") === (sent.body_en || ""));
+    const purposeSameAsSent = sentPurpose && (directValues || !sent || m.purpose === sent.purpose);
+    const instSameAsSent = sentInst && (directValues || !sent || (m.user_instruction_ko || "") === (sent.user_instruction_ko || ""));
+    const aiAutoSameAsSent = sentAiAuto && (directValues || !sent || !!m.aiAuto === !!sent.aiAuto);
+    const rawSameAsSent = sentRaw && (directValues || !sent || (m.body_en || "") === (sent.body_en || ""));
 
     const canOverwritePurpose = !dirtyPurpose || purposeSameAsSent;
     const canOverwriteInst = !dirtyInstruction || instSameAsSent;
@@ -560,6 +562,7 @@ window.DPV2Store = (() => {
     const savingChangedAiAuto = wantAiAuto && !!(dfBefore.aiAuto || (m.dirtySpec && !dfBefore.purpose && !dfBefore.instruction));
 
     const seenToSend = (includeRaw && m.editBaseSeen) ? m.editBaseSeen : m.seen;
+    const fieldValues = (opts.fieldValues && typeof opts.fieldValues === "object") ? opts.fieldValues : null;
     const sent = {};
     const payload = {
       crop_id: patch.id,
@@ -567,19 +570,19 @@ window.DPV2Store = (() => {
       crop_sig: m.crop_sig,
     };
     if (wantPurpose) {
-      sent.purpose = m.purpose;
+      sent.purpose = (fieldValues && "purpose" in fieldValues) ? fieldValues.purpose : m.purpose;
       payload.purpose = sent.purpose;
     }
     if (wantInst) {
-      sent.user_instruction_ko = m.user_instruction_ko || "";
+      sent.user_instruction_ko = (fieldValues && "instruction" in fieldValues) ? (fieldValues.instruction || "") : (m.user_instruction_ko || "");
       payload.user_instruction_ko = sent.user_instruction_ko;
     }
     if (wantAiAuto) {
-      sent.aiAuto = !!m.aiAuto;
+      sent.aiAuto = (fieldValues && "aiAuto" in fieldValues) ? !!fieldValues.aiAuto : !!m.aiAuto;
       payload.ai_auto = sent.aiAuto;
     }
     if (includeRaw) {
-      sent.body_en = m.body_en || "";
+      sent.body_en = (fieldValues && "raw" in fieldValues) ? (fieldValues.raw || "") : (m.body_en || "");
       payload.raw_prompt_override = sent.body_en;
     }
     try {
@@ -592,6 +595,7 @@ window.DPV2Store = (() => {
           sentFields: fieldsSet,
           seenSent: seenToSend,
           confirmStaleRaw: !!opts.confirmStaleRaw,
+          directFieldValues: !!fieldValues,
         });
         // #C18-4: 목적·AI 자동이 즉시 저장이 아닌 다른 길(다중 저장 등)로 바뀌어 저장되면 낡은 실행 취소 기록을 정리한다
         if (!opts.fromQuickSpec) {
@@ -624,101 +628,127 @@ window.DPV2Store = (() => {
     }
   }
 
-  // #C13-11 · #C18-2 · #C18-3 · #C18-4 · #C18-6①: 단일 선택에서 목적·AI 자동을 바꿀 때 그 칸만 즉시 저장하고
-  // 정확한 이전 값 기준으로 토스트 [되돌리기] + Ctrl+Z 실행 취소를 제공한다
-  async function applyQuickSpecChange(patch, field, nextVal) {
-    if (!patch || !patch.meta) return null;
-    if (field !== "purpose" && field !== "aiAuto") return null;
-    if (state.runFlowBusy || state.assistBusy) return null;
+  // #C21-3②: 읽지 않은 영역의 목적·AI 자동을 누르고 응답 전에 생성을 눌러도 해당 변경이 빠지지 않도록 진행 중인 즉시 저장을 추적한다
+  const pendingQuickSpecPromises = new Set();
+
+  async function awaitPendingQuickSpecs() {
+    while (pendingQuickSpecPromises.size > 0) {
+      await Promise.allSettled([...pendingQuickSpecPromises]);
+    }
+  }
+
+  // #C13-11 · #C18-2 · #C18-3 · #C18-4 · #C18-6① · #C21-2 · #C21-3② · #C21-4:
+  // 단일 선택에서 목적·AI 자동을 바꿀 때 그 칸만 즉시 저장하고 정확한 이전 값 기준으로 토스트 [되돌리기] + Ctrl+Z 실행 취소를 제공한다
+  function applyQuickSpecChange(patch, field, nextVal) {
+    if (!patch || !patch.meta) return Promise.resolve(null);
+    if (field !== "purpose" && field !== "aiAuto") return Promise.resolve(null);
+    if (state.runFlowBusy || state.assistBusy) return Promise.resolve(null);
     const cropId = patch.id;
     const m = patch.meta;
     const normNext = field === "purpose" ? nextVal : !!nextVal;
     const seq = (m._quickSpecSeq = (m._quickSpecSeq || 0) + 1);
 
-    // #C18-6①: 영역을 처음 고르고 GET /spec 응답이 끝나기 전에 목적·AI 자동을 누른 경우
-    // 서버의 실제 이전 값을 먼저 읽어 실행 취소 기록에 화면 기본값(correct/true)이 잘못 적히지 않게 한다
-    if (Api.can("v2_spec_edit") && !m.specLoaded && !m.needsApplyForSpec) {
-      await loadSpec(cropId, false);
-      if (m._quickSpecSeq !== seq || state.runFlowBusy || state.assistBusy) return null;
-      if (!m.specLoaded && !m.needsApplyForSpec) {
-        await loadSpec(cropId, true);
-        if (m._quickSpecSeq !== seq || state.runFlowBusy || state.assistBusy) return null;
+    const task = (async () => {
+      // #C18-6① · #C21-3②: 영역을 처음 고르고 GET /spec 응답이 끝나기 전에 목적·AI 자동을 누른 경우
+      // 서버의 실제 이전 값을 먼저 읽되, 생성 버튼이 뒤이어 눌린 경우(runFlowBusy)에도 이 앞선 클릭의 변경은 누락하지 않고 마무리한다
+      if (Api.can("v2_spec_edit") && !m.specLoaded && !m.needsApplyForSpec) {
+        await loadSpec(cropId, false);
+        if (m._quickSpecSeq !== seq || state.assistBusy) return null;
+        if (!m.specLoaded && !m.needsApplyForSpec) {
+          await loadSpec(cropId, true);
+          if (m._quickSpecSeq !== seq || state.assistBusy) return null;
+        }
+        if (!m.specLoaded && !m.needsApplyForSpec) {
+          toast("서버에서 기존 스펙을 읽지 못했습니다 — 잠시 후 다시 시도해 주세요.", "err");
+          return null;
+        }
       }
-      if (!m.specLoaded && !m.needsApplyForSpec) {
-        toast("서버에서 기존 스펙을 읽지 못했습니다 — 잠시 후 다시 시도해 주세요.", "err");
+
+      const prevVal = field === "purpose" ? m.purpose : !!m.aiAuto;
+      const wasDirty = !!(m.dirtyFields && m.dirtyFields[field]);
+      if (prevVal === normNext && !wasDirty) return null;
+
+      m[field] = normNext;
+      markFieldDirty(m, field);
+      emit("selection");
+      if (!Api.can("v2_spec_edit")) return null;
+
+      try {
+        const res = await savePatchSpec(patch, {
+          fields: [field],
+          fromQuickSpec: true,
+        });
+        if (!res || res.unsupported) return res;
+        if (prevVal !== normNext) {
+          const patchName = patch.name;
+          const restoreField = async (targetVal, expectedCurVal) => {
+            const curPatch = getPatch(cropId);
+            if (!curPatch) throw new Error("해당 수정 영역을 찾을 수 없습니다.");
+            // #C21-4: 강제 GET /spec 의 실제 서버 응답 값과 기대값을 직접 대조해 다른 창의 변경을 놓치지 않는다
+            if (Api.can("v2_spec_edit")) {
+              const freshRes = await Api.getSpec(state.root, cropId);
+              if (!freshRes) throw new Error("서버에서 최신 스펙을 읽지 못했습니다.");
+              applySpecResponse(cropId, freshRes);
+              const sv2 = (freshRes.v2 && typeof freshRes.v2 === "object") ? freshRes.v2 : null;
+              const serverVal = field === "purpose"
+                ? ((sv2 && sv2.purpose) || "correct")
+                : (sv2 && typeof sv2.ai_auto === "boolean" ? sv2.ai_auto : true);
+              if (serverVal !== expectedCurVal) {
+                throw Object.assign(new Error("이미 다른 값으로 변경되어 실행 취소를 건너뛰었습니다."), {
+                  skippedStaleHistory: true,
+                });
+              }
+            }
+            const localDirty = !!(curPatch.meta.dirtyFields && curPatch.meta.dirtyFields[field]);
+            const localVal = field === "purpose" ? curPatch.meta.purpose : !!curPatch.meta.aiAuto;
+            if (localDirty && localVal !== expectedCurVal) {
+              throw Object.assign(new Error("이미 다른 값으로 변경되어 실행 취소를 건너뛰었습니다."), {
+                skippedStaleHistory: true,
+              });
+            }
+            // #C21-2: 서버 저장이 성공한 뒤에만 화면 값이 바뀌도록 fieldValues 로 전송하고 저장 전에는 화면/dirty 를 건드리지 않는다
+            await savePatchSpec(curPatch, {
+              fields: [field],
+              fieldValues: { [field]: targetVal },
+              fromQuickSpec: true,
+            });
+            emit("selection");
+          };
+          const label = field === "purpose"
+            ? `목적 변경 (${patchName}: ${Data.purposeInfo(prevVal).short} → ${Data.purposeInfo(normNext).short})`
+            : `AI 자동 ${normNext ? "켜기" : "끄기"} (${patchName})`;
+          pushHistory(
+            label,
+            () => restoreField(prevVal, normNext),
+            () => restoreField(normNext, prevVal),
+            { kind: "spec-field", cropId, field, beforeVal: prevVal, afterVal: normNext }
+          );
+          const histEntryId = state.history[state.histIndex] && state.history[state.histIndex].id;
+          const msg = field === "purpose"
+            ? `"${patchName}" 목적을 「${Data.purposeInfo(normNext).label}」(으)로 저장했습니다.`
+            : `"${patchName}" AI 자동 최적화를 ${normNext ? "켰습니다" : "껐습니다"}.`;
+          toast(msg, "ok", {
+            label: "되돌리기",
+            onClick: () => {
+              if (state.runFlowBusy || state.assistBusy) {
+                toast(state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 되돌려 주세요." : "생성 흐름이 진행 중일 때는 되돌릴 수 없습니다.");
+                return false;
+              }
+              const top = state.history[state.histIndex];
+              if (top && top.id === histEntryId) undoHistory();
+              else toast("이후 다른 변경이 있어 히스토리 패널에서 되돌려 주세요.");
+            },
+          });
+        }
+        return res;
+      } catch (err) {
+        toast(`지시문 저장 실패: ${(err && (err.userMessage || err.message)) || "저장 실패"}`, "err");
         return null;
       }
-    }
+    })();
 
-    const prevVal = field === "purpose" ? m.purpose : !!m.aiAuto;
-    const wasDirty = !!(m.dirtyFields && m.dirtyFields[field]);
-    if (prevVal === normNext && !wasDirty) return null;
-
-    m[field] = normNext;
-    markFieldDirty(m, field);
-    emit("selection");
-    if (!Api.can("v2_spec_edit")) return null;
-
-    try {
-      const res = await savePatchSpec(patch, {
-        fields: [field],
-        fromQuickSpec: true,
-      });
-      if (!res || res.unsupported) return res;
-      if (prevVal !== normNext) {
-        const patchName = patch.name;
-        const restoreField = async (targetVal, expectedCurVal) => {
-          const curPatch = getPatch(cropId);
-          if (!curPatch) throw new Error("해당 수정 영역을 찾을 수 없습니다.");
-          // #C18-4: 되돌리기/다시 실행 전 현재 값이 이 기록의 기대값과 같은지 확인해 나중 값을 덮지 않는다
-          if (Api.can("v2_spec_edit")) {
-            await loadSpec(cropId, true);
-          }
-          const actualCur = field === "purpose" ? curPatch.meta.purpose : !!curPatch.meta.aiAuto;
-          if (actualCur !== expectedCurVal) {
-            throw Object.assign(new Error("이미 다른 값으로 변경되어 실행 취소를 건너뛰었습니다."), {
-              skippedStaleHistory: true,
-            });
-          }
-          curPatch.meta[field] = targetVal;
-          markFieldDirty(curPatch.meta, field);
-          await savePatchSpec(curPatch, {
-            fields: [field],
-            fromQuickSpec: true,
-          });
-          emit("selection");
-        };
-        const label = field === "purpose"
-          ? `목적 변경 (${patchName}: ${Data.purposeInfo(prevVal).short} → ${Data.purposeInfo(normNext).short})`
-          : `AI 자동 ${normNext ? "켜기" : "끄기"} (${patchName})`;
-        pushHistory(
-          label,
-          () => restoreField(prevVal, normNext),
-          () => restoreField(normNext, prevVal),
-          { kind: "spec-field", cropId, field, beforeVal: prevVal, afterVal: normNext }
-        );
-        const histEntryId = state.history[state.histIndex] && state.history[state.histIndex].id;
-        const msg = field === "purpose"
-          ? `"${patchName}" 목적을 「${Data.purposeInfo(normNext).label}」(으)로 저장했습니다.`
-          : `"${patchName}" AI 자동 최적화를 ${normNext ? "켰습니다" : "껐습니다"}.`;
-        toast(msg, "ok", {
-          label: "되돌리기",
-          onClick: () => {
-            if (state.runFlowBusy || state.assistBusy) {
-              toast(state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 되돌려 주세요." : "생성 흐름이 진행 중일 때는 되돌릴 수 없습니다.");
-              return false;
-            }
-            const top = state.history[state.histIndex];
-            if (top && top.id === histEntryId) undoHistory();
-            else toast("이후 다른 변경이 있어 히스토리 패널에서 되돌려 주세요.");
-          },
-        });
-      }
-      return res;
-    } catch (err) {
-      toast(`지시문 저장 실패: ${(err && (err.userMessage || err.message)) || "저장 실패"}`, "err");
-      return null;
-    }
+    pendingQuickSpecPromises.add(task);
+    return task.finally(() => { pendingQuickSpecPromises.delete(task); });
   }
 
   function projectPrepareRaw() {
@@ -1129,13 +1159,15 @@ window.DPV2Store = (() => {
     if (historyBusy || state.histIndex < 0) return false;
     historyBusy = true;
     const entry = state.history[state.histIndex];
-    state.histIndex -= 1;
     try {
+      // #C21-2: 서버 저장이 성공한 뒤에만 기록 위치(histIndex)를 옮긴다
       if (typeof entry.undoFn === "function") await entry.undoFn();
+      state.histIndex -= 1;
       toast(`실행 취소: ${entry.label}`);
       return true;
     } catch (err) {
       if (err && err.skippedStaleHistory) {
+        state.histIndex -= 1;
         toast(err.message);
       } else {
         toast(`실행 취소 실패: ${err.message}`, "err");
@@ -1156,13 +1188,15 @@ window.DPV2Store = (() => {
     if (historyBusy || state.histIndex >= state.history.length - 1) return false;
     historyBusy = true;
     const entry = state.history[state.histIndex + 1];
-    state.histIndex += 1;
     try {
+      // #C21-2: 서버 저장이 성공한 뒤에만 기록 위치(histIndex)를 옮긴다
       if (typeof entry.redoFn === "function") await entry.redoFn();
+      state.histIndex += 1;
       toast(`다시 실행: ${entry.label}`);
       return true;
     } catch (err) {
       if (err && err.skippedStaleHistory) {
+        state.histIndex += 1;
         toast(err.message);
       } else {
         toast(`다시 실행 실패: ${err.message}`, "err");
@@ -1690,13 +1724,43 @@ window.DPV2Store = (() => {
     }
   }
 
+  // #C21-6: 채택(POST /pick) 요청이 도는 동안 같은 후보의 중복 클릭을 잠근다
+  function pickBusyKey(cropId, tid, key) {
+    return `${cropId || ""}|${tid || ""}|${key || ""}`;
+  }
+
+  function isPickBusy(cropId, tid, key) {
+    return state.pickBusyKeys.has(pickBusyKey(cropId, tid, key));
+  }
+
+  async function pickCandidateGuarded({ crop_id, tid, key, mode, selectTargetKey = null, successToast = "" }) {
+    if (!state.root || !crop_id || !tid || !key) return { ok: false, reason: "invalid" };
+    const bk = pickBusyKey(crop_id, tid, key);
+    if (state.pickBusyKeys.has(bk)) return { ok: false, busy: true };
+    state.pickBusyKeys.add(bk);
+    emit("selection");
+    try {
+      const res = await Api.pickCandidate(state.root, { crop_id, tid, key, mode });
+      if (selectTargetKey) selectCandidate(selectTargetKey, key);
+      if (successToast) toast(successToast, "ok");
+      await refreshAll(true);
+      return { ok: true, res };
+    } catch (err) {
+      toast(`채택 실패: ${(err && err.message) || "요청 실패"}`, "err");
+      return { ok: false, error: err && err.message };
+    } finally {
+      state.pickBusyKeys.delete(bk);
+      emit("selection");
+    }
+  }
+
   return {
     state, subscribe, emit, toast,
     loadPrefs, savePrefs, applyPrefsToDom, activeTheme, activeAccentHex, initForgeThemeListener,
-    ensurePatchMeta, getCandidateFilters, syncCandidateFiltersFromAdjust, markFieldDirty, loadSpec, savePatchSpec, applyQuickSpecChange, applySpecResponse, invalidateAllSpecs, projectPrepareRaw, projectPrepare, buildPreparePayload,
+    ensurePatchMeta, getCandidateFilters, syncCandidateFiltersFromAdjust, markFieldDirty, loadSpec, savePatchSpec, applyQuickSpecChange, awaitPendingQuickSpecs, applySpecResponse, invalidateAllSpecs, projectPrepareRaw, projectPrepare, buildPreparePayload,
     isPatchCheckedForRun, setPatchCheckedForRun, setAllCheckedForRun,
     getPatches, getPatch, primaryPatch, selectedPatches, clearSelection,
-    currentCandidate, selectCandidate, selectTargetForCrop, moveCropZ,
+    currentCandidate, selectCandidate, selectTargetForCrop, moveCropZ, isPickBusy, pickCandidateGuarded,
     selectPatch, selectAllPatches, getCommonOrMixed,
     pushHistory, undoHistory, redoHistory, jumpHistory,
     loadLayout, loadRefs, loadPipelineAndPlan, loadSeams, refreshAll,

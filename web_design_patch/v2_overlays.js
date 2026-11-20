@@ -1895,14 +1895,20 @@ window.DPV2Overlays = (() => {
     if (coPick) coPick.addEventListener("click", async () => {
       const p = Store.primaryPatch();
       if (!p || !p.target || !cmpState.candKey) return;
+      if (Store.isPickBusy(p.id, p.target.tid, cmpState.candKey)) return;
+      coPick.disabled = true;
       try {
-        // #C07-4: 다중 채택 보존 — mode: "add" 사용
-        await Api.pickCandidate(Store.state.root, { crop_id: p.id, tid: p.target.tid, key: cmpState.candKey, mode: "add" });
-        closeCompareOverlay();
-        Store.toast(`"${p.name}"에 선택한 후보를 확정 적용했습니다 ★`, "ok");
-        await Store.refreshAll(true);
-      } catch (err) {
-        Store.toast(`채택 실패: ${err.message}`, "err");
+        // #C07-4 · #C21-6: 다중 채택 보존 + 연속 클릭 중복 잠금
+        const r = await Store.pickCandidateGuarded({
+          crop_id: p.id,
+          tid: p.target.tid,
+          key: cmpState.candKey,
+          mode: "add",
+          successToast: `"${p.name}"에 선택한 후보를 확정 적용했습니다 ★`,
+        });
+        if (r && r.ok) closeCompareOverlay();
+      } finally {
+        coPick.disabled = false;
       }
     });
     const coToRt = $("co-to-retouch");
