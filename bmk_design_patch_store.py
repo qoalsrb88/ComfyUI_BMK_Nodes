@@ -2820,5 +2820,7 @@ def update_project_meta(root: str, mutate: Callable[[dict], None], *, expect_rev
         if updated == doc:
             return doc, False
         updated["rev"] += 1
+        if not os.path.isdir(root):  # 원자 쓰기는 없는 폴더를 만든다 — 사라진 프로젝트 폴더를 이 파일 하나로 되살리지 않는다
+            raise FileNotFoundError(PROJECT_META_NAME)
         write_json_atomic(os.path.join(root, PROJECT_META_NAME), updated)
         return updated, True

@@ -7878,7 +7878,8 @@ def _project_new_cleanup(state: dict, success: bool) -> None:
             if (os.path.normcase(root) == os.path.normcase(expected) and not _is_link(root)
                     and os.path.normcase(os.path.realpath(root))
                     == os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(root)), os.path.basename(root)))):
-                remove(root, shutil.rmtree)
+                with store.manifest_lock(root):  # 표시 이름·보관 쓰기(update_project_meta)와 겹치지 않게 — 지운 폴더에 파일이 다시 생기지 않는다
+                    remove(root, shutil.rmtree)
     tmp = state["tmp"]
     if tmp and os.path.isdir(tmp):
         parent = os.path.join(os.path.abspath(project_input()), _NEW_TMP_DIRNAME)

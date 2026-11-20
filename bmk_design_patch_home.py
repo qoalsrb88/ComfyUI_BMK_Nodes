@@ -35,8 +35,9 @@ def _validate(data):
 
 
 def _check_target(root):
-    if (not board.in_scope(root) or board._is_link(root)
-            or not os.path.isfile(os.path.join(root, store.MANIFEST_NAME))):
+    manifest = os.path.join(root, store.MANIFEST_NAME)
+    # 프로젝트 폴더뿐 아니라 매니페스트 파일도 링크가 아니어야 한다(응답의 줄이 그 파일에서 만들어진다)
+    if not board.in_scope(root) or board._is_link(root) or board._is_link(manifest) or not os.path.isfile(manifest):
         raise board._Reject(404, board._PROJECT_NOT_FOUND, reason="not_found")
 
 
@@ -117,6 +118,8 @@ def _update(data, runner):
             stale = str(exc)
         except ValueError:
             raise board._Reject(422, store._PROJECT_META_ERROR, reason="meta_broken") from None
+        except FileNotFoundError:  # 쓰기 직전에 프로젝트 폴더가 사라짐(만들기가 취소돼 정리됨) — 폴더를 다시 만들지 않는다
+            raise board._Reject(404, board._PROJECT_NOT_FOUND, reason="not_found") from None
         _check_target(root)
         project = board._project_row(record, True)
         archived_count = sum(store.read_project_meta(r["root"])[0]["archived"] is not None for r in board._project_records())

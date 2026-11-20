@@ -67268,8 +67268,9 @@ def ux_v2_home_unit():
             with patch.object(store, "read_project_meta", wraps=store.read_project_meta) as reads:
                 state = await call("GET", state_url)
                 tick = await call("GET", state_url + "&since_rev=" + str(state["rev"]))
+                # 파일 식별 번호를 주지 않는 파일 시스템에서는 기억하지 않고 매번 읽는다(두 번)
                 check(state["project"] == root.name and state["title"] == tick["title"] == title and tick["unchanged"]
-                      and reads.call_count == 1, "홈 state 전체·폴링은 같은 표시 이름, 파일 파싱 한 번")
+                      and reads.call_count == (1 if path.stat().st_ino else 2), "홈 state 전체·폴링은 같은 표시 이름, 파일 파싱 한 번")
 
             for group in queue:
                 queue[group] = [[1, "j_fake", "apply"]]
@@ -67354,14 +67355,36 @@ def ux_v2_home_unit():
 
             metas = {p: store.load_project_meta(str(p)) for p in (root, second)}
             holder, waiter = (root, key), (second, second_key)
-            with patch.object(store, "update_project_meta", side_effect=slow_update), patch.object(home, "_precheck", side_effect=seen_precheck):
+            # 둘째 요청이 「계정 잠금을 잡으려 했다」는 것을 본 뒤에 판정한다(시간에 기대지 않는다) — 잠금을 쓰지 않는 코드면 이 신호가 오지 않는다
+            real_locks, arrivals, second_arrived = home._HOME_LOCKS, [], threading.Event()
+
+            class Watched:
+                def __init__(self, lock):
+                    self.lock = lock
+
+                def __enter__(self):
+                    arrivals.append(threading.current_thread())
+                    if len(arrivals) == 2:
+                        second_arrived.set()
+                    self.lock.acquire()
+                    return self
+
+                def __exit__(self, *exc):
+                    self.lock.release()
+
+            class Locks(dict):
+                def setdefault(self, name, default):
+                    return Watched(real_locks.setdefault(name, default))
+
+            with patch.object(store, "update_project_meta", side_effect=slow_update), patch.object(home, "_precheck", side_effect=seen_precheck),                     patch.object(home, "_HOME_LOCKS", Locks()):
                 first_call = asyncio.ensure_future(request(app, "POST", bd.API + "/projects/meta",
                     {"op": "rename", "key": holder[1], "seen": metas[holder[0]]["rev"], "title": "줄서기"}, alice))
                 await asyncio.to_thread(writing.wait, 10)
                 second_call = asyncio.ensure_future(request(app, "POST", bd.API + "/projects/meta",
                     {"op": "rename", "key": waiter[1], "seen": metas[waiter[0]]["rev"], "title": "줄서기"}, alice))
-                await asyncio.sleep(0.5)
-                check(writing.is_set() and prechecks == [holder[1]] and not second_call.done(),
+                arrived = await asyncio.to_thread(second_arrived.wait, 10)
+                await asyncio.sleep(0.2)
+                check(arrived and writing.is_set() and prechecks == [holder[1]] and not second_call.done(),
                       "홈 한 요청이 쓰는 동안 같은 계정의 다른 요청은 사전 판정 전에 기다림")
                 release.set()
                 held = [await first_call, await second_call]
