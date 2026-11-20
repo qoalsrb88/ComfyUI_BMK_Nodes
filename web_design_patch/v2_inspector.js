@@ -903,10 +903,10 @@ window.DPV2Inspector = (() => {
     }
     if (rightEl) rightEl.textContent = models.length ? models.join(", ") : "-";
 
+    const flowBusy = !!(Store.state.runFlowBusy || Store.state.assistBusy);
     const btnRun = $("btn-run-selected");
     if (btnRun) {
       // #C15-2: AI 프롬프트 작성(assistBusy) 중에도 생성 단추를 비활성화해 이전 글로 승인 상자가 뜨지 않게 막는다
-      const flowBusy = !!(Store.state.runFlowBusy || Store.state.assistBusy);
       btnRun.disabled = targets.length === 0 || running || flowBusy;
       btnRun.textContent = running
         ? "서버에서 생성 중…"
@@ -915,6 +915,14 @@ window.DPV2Inspector = (() => {
           : Store.state.runFlowBusy
             ? "생성 준비 중…"
             : targets.length ? `선택 영역 ${targets.length}개 생성 시작` : "생성할 영역을 체크하세요";
+    }
+    const btnApply = $("btn-apply-free");
+    if (btnApply) {
+      // #C26: 생성·흐름·무료 반영 진행 중에는 [합성 적용] 단추도 흐리게(비활성) 표시한다
+      btnApply.disabled = running || flowBusy || freeApplyBusy;
+      btnApply.title = running
+        ? "생성이 실행 중입니다 — 끝난 뒤 다시 눌러 주세요."
+        : "크롭·레퍼런스·설정을 서버에 무료 반영합니다";
     }
 
     const progWrap = $("run-progress-wrap");
@@ -1225,32 +1233,40 @@ window.DPV2Inspector = (() => {
     // #C08-1①: 이미 작성이 진행 중이면 재진입을 막아 잠금 조기 해제를 방지한다
     if (Store.state.assistBusy) {
       Store.toast("AI 프롬프트 작성이 이미 진행 중입니다.");
-      return { ok: false, count: 0, aborted: true };
+      return { ok: false, count: 0, attempted: 0, calledIds: [], aborted: true, didApply: false };
     }
     const list = (patches || []).slice(0, 8);
     if (!list.length) {
       Store.toast("프롬프트를 작성할 영역을 먼저 선택해 주세요.");
-      return { ok: false, count: 0, aborted: false };
+      return { ok: false, count: 0, attempted: 0, calledIds: [], aborted: false, didApply: false };
     }
     if ((patches || []).length > 8) {
       Store.toast("한 번에 최대 8개 영역까지만 AI 프롬프트를 작성합니다. 앞 8개부터 진행합니다.");
     }
     if (!Api.can("v2_forge_prompt")) {
       Store.toast("Phase V2-A 백엔드 브릿지(prompt/assist) 연결 대기 중입니다.", "err");
-      return { ok: false, count: 0, aborted: true };
+      return { ok: false, count: 0, attempted: 0, calledIds: [], aborted: true, didApply: false };
     }
     const allowApplyRetry = opts.allowApplyRetry !== false;
     let retriedApply = false;
     let didApply = false;
+    const calledIds = new Set();
     Store.state.assistBusy = true;
     Store.emit("selection");
     let written = 0;
     let aborted = false;
     try {
+      // #C26-4: 직전에 줄 서 있던 목적·AI 자동 즉시 저장이 알림 없이 빠지지 않도록 먼저 완료를 기다린다
+      await Store.awaitPendingQuickSpecs();
       for (let idx = 0; idx < list.length; idx++) {
         const p = list[idx];
-        if (!p.meta.specLoaded) {
+        if (!p.meta.specLoaded || p.meta._lastLoadOk === false) {
           await Store.loadSpec(p.id, true);
+          if (!p.meta._lastLoadOk && !p.meta.needsApplyForSpec) {
+            Store.toast(`${p.name}: 최신 지시문 상태를 읽지 못했습니다 — 잠시 후 다시 눌러 주세요.`, "err");
+            aborted = true;
+            break;
+          }
         }
         if (p.meta.needsApplyForSpec) {
           Store.toast(`${p.name}: 새로 추가한 영역입니다 — 먼저 무료 [합성 적용] 후 AI 작성을 사용할 수 있습니다.`, "err");
@@ -1281,7 +1297,7 @@ window.DPV2Inspector = (() => {
           }
           if (saved && saved.unsupported) {
             Store.toast(saved.reason || "지시문 저장이 아직 연결되지 않았습니다.", "err");
-            return { ok: false, count: written, aborted: true, didApply };
+            return { ok: false, count: written, attempted: calledIds.size, calledIds: [...calledIds], aborted: true, didApply };
           }
         }
         // #C13-3: 자동 작성(force=false) 직전에 현재 출처·상태·자동 여부를 다시 확인해 직접 입력 글이나 이미 풀린 패치를 덮어쓰지 않는다
@@ -1297,13 +1313,15 @@ window.DPV2Inspector = (() => {
           crop_sig: p.meta.crop_sig,
           force: !!force,
         });
+        // #C26-2: 이번 클릭에서 /prompt/assist 를 호출한 영역 id 를 기록해 폴백 반영 뒤 중복 호출과 상한 초과를 막는다
+        calledIds.add(p.id);
         let res;
         try {
           res = await callAssistOnce();
         } catch (err) {
           let activeErr = err;
           let reason = activeErr && activeErr.data && activeErr.data.reason;
-          // #C21-1 · #C23-3: 옮긴 영역 등 반영 전 상태(409 apply_needed)이면 확인하는 무료 반영 후
+          // #C21-1 · #C23-3 · #C26-3: 옮긴 영역 등 반영 전 상태(409 apply_needed)이면 확인하는 무료 반영 후
           // 현재 영역과 남은 영역 모두 최신 seen·crop_sig 를 다시 읽고 딱 한 번만 다시 작성한다
           if (activeErr && activeErr.status === 409 && reason === "apply_needed" && allowApplyRetry && !retriedApply) {
             retriedApply = true;
@@ -1317,6 +1335,11 @@ window.DPV2Inspector = (() => {
             didApply = true;
             for (let j = idx; j < list.length; j++) {
               await Store.loadSpec(list[j].id, true);
+            }
+            if (!p.meta._lastLoadOk) {
+              Store.toast(`${p.name}: 반영 뒤 최신 지시문 상태를 읽지 못했습니다 — 잠시 후 다시 눌러 주세요.`, "err");
+              aborted = true;
+              break;
             }
             if (!force && (p.meta.promptSource === "manual" || p.meta.specState !== "blocked" || !p.meta.aiAuto)) {
               continue;
@@ -1389,7 +1412,7 @@ window.DPV2Inspector = (() => {
         pulseCard("#prompt-card");
         Store.toast(`${written}개 영역의 AI 스마트 프롬프트를 작성했습니다.`, "ok");
       }
-      return { ok: written > 0 && !aborted, count: written, aborted, didApply };
+      return { ok: written > 0 && !aborted, count: written, attempted: calledIds.size, calledIds: [...calledIds], aborted, didApply };
     } finally {
       Store.state.assistBusy = false;
       Store.emit("selection");
@@ -1413,6 +1436,7 @@ window.DPV2Inspector = (() => {
       return { ok: false, reason: "running" };
     }
     freeApplyBusy = true;
+    Store.emit("selection");
     try {
       if (statusToast) Store.toast(statusToast);
       const res = await Api.applyChecked(root);
@@ -1439,10 +1463,11 @@ window.DPV2Inspector = (() => {
       return { ok: false, reason: "error", error: err.message };
     } finally {
       freeApplyBusy = false;
+      Store.emit("selection");
     }
   }
 
-  // ── 7. 선택 영역 생성 실행 (#C06·#C09·#C10·#C11-1·#C13-3·#C15-2·#C21-1·#C23-1·#C23-2 선행 반영·미저장 스펙 저장 → D519 자동 assist → DPSubmit.submitPaid §3.6) ──
+  // ── 7. 선택 영역 생성 실행 (#C06·#C09·#C10·#C11-1·#C13-3·#C15-2·#C21-1·#C23-1·#C23-2·#C26-1~3 선행 반영·미저장 스펙 저장 → D519 자동 assist → DPSubmit.submitPaid §3.6) ──
   async function runSelectedGeneration(useSelectedOnly = false) {
     if (Store.state.runFlowBusy || Store.state.assistBusy) {
       Store.toast(Store.state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 생성해 주세요." : "앞선 제출을 처리하는 중입니다");
@@ -1471,6 +1496,30 @@ window.DPV2Inspector = (() => {
         || latest.rect;
       return Array.isArray(sr) && Array.isArray(lr) && sr.length === 4 && lr.length === 4
         && sr.some((v, i) => Number(v) !== Number(lr[i]));
+    };
+    const hasPendingRefsForAssist = (p) => {
+      // #C26-1: 레퍼런스 연결·역할이 아직 반영되지 않은 영역(GET /refs status === "pending")이
+      // AI 자동 작성 경로(template·manual 제외)에 있으면 선행 무료 반영 후 스펙을 다시 확인해 한 번에 작성한다
+      if (!p || !p.meta || !p.meta.aiAuto || p.meta.needsApplyForSpec) return false;
+      if (p.meta.promptSource === "manual") return false;
+      if (p.meta.specState !== "body" && p.meta.specState !== "blocked") return false;
+      const latest = Store.getPatch(p.id) || p;
+      return !!(latest && latest.refCrop && latest.refCrop.status === "pending");
+    };
+    const reloadTargetSpecs = async (list) => {
+      // #C26-3: 반영 뒤 스펙 다시 읽기가 하나라도 실패하면 옛 상태(body)로 승인 상자에 넘어가지 않도록 즉시 중단·안내한다
+      for (const p of list) {
+        await Store.loadSpec(p.id, true);
+        if (!p.meta._lastLoadOk) {
+          if (p.meta.needsApplyForSpec) {
+            Store.toast(`${p.name}: 아직 반영되지 않아 지시문을 저장할 수 없습니다 — [합성 적용]을 확인해 주세요.`, "err");
+          } else {
+            Store.toast(`${p.name}: 반영 뒤 최신 지시문 상태를 읽지 못했습니다 — 잠시 후 다시 눌러 주세요.`, "err");
+          }
+          return false;
+        }
+      }
+      return true;
     };
     const collectNeedAssist = (list) => list.filter((p) => (
       p.meta.aiAuto && !p.meta.needsApplyForSpec && p.meta.specState === "blocked" && p.meta.promptSource !== "manual"
@@ -1517,14 +1566,8 @@ window.DPV2Inspector = (() => {
             statusToast: "새 영역을 먼저 반영한 뒤 지시문을 저장합니다 (무료 반영)…",
           });
           if (!ap.ok) return;
-          // 반영 후 모든 대상 영역의 최신 seen·crop_sig·state 수신 (미저장 편집은 applySpecResponse가 칸별로 보존)
-          for (const p of targets) {
-            await Store.loadSpec(p.id, true);
-            if (p.meta.needsApplyForSpec) {
-              Store.toast(`${p.name}: 아직 반영되지 않아 지시문을 저장할 수 없습니다 — [합성 적용]을 확인해 주세요.`, "err");
-              return;
-            }
-          }
+          // 반영 후 모든 대상 영역의 최신 seen·crop_sig·state 수신 (하나라도 조회 실패 시 승인 전 중단 — #C26-3)
+          if (!(await reloadTargetSpecs(targets))) return;
         }
 
         // #C18-5: 앞선 409 충돌로 확인이 필요한 미저장 원문이 남아 있으면 새 레퍼런스 기준으로 몰래 저장되지 않게 즉시 중단한다
@@ -1556,37 +1599,39 @@ window.DPV2Inspector = (() => {
       // #C09-2: 출처가 "manual" 인 직접 입력 글은 레퍼런스 변경 등으로 blocked 가 되어도 AI 작성으로 덮어쓰지 않는다
       if (checkManualBlocked(targets)) return;
 
-      // D519 · #C06-4 · #C09-2 · #C21-1 · #C23-1 · #C23-2:
+      // D519 · #C06-4 · #C09-2 · #C21-1 · #C23-1 · #C23-2 · #C26-1~3:
       // 서버 판정 state === "blocked" 이고 aiAuto 켜짐 + manual 출처가 아닌 패치만 자동 작성한다.
-      // 사각형이 달라진 미반영 영역이 포함되면 무료 반영을 먼저 실행한 뒤 targets 전체 스펙을 다시 읽어
-      // 반영으로 새로 blocked 가 된 다른 선택 영역(예: 레퍼런스 변경 미반영 영역)까지 포함해 자동 작성 대상을 재계산한다.
+      // 사각형이 달라진 미반영 영역 또는 AI 작성 대상의 미반영 레퍼런스 변경이 포함되면
+      // 무료 반영을 먼저 실행한 뒤 targets 전체 스펙을 다시 읽어(실패 시 중단) 자동 작성 대상을 재계산한다.
       let needAssist = collectNeedAssist(targets);
-      if (needAssist.length && Api.can("v2_forge_prompt")) {
-        let appliedForMoved = false;
-        if (needAssist.some(isMovedRectUnapplied)) {
-          const ap = await runGuardedFreeApply(Store.state.root, {
-            statusToast: "변경된 영역을 먼저 반영한 뒤 AI 프롬프트를 작성합니다 (무료 반영)…",
-          });
+      const hasRefPendingForAssist = targets.some(hasPendingRefsForAssist);
+      const hasMovedPendingForAssist = needAssist.some(isMovedRectUnapplied);
+      if (Api.can("v2_forge_prompt") && (needAssist.length || hasRefPendingForAssist)) {
+        let appliedBeforeAssist = false;
+        if (hasMovedPendingForAssist || hasRefPendingForAssist) {
+          const statusToast = hasMovedPendingForAssist
+            ? "변경된 영역을 먼저 반영한 뒤 AI 프롬프트를 작성합니다 (무료 반영)…"
+            : "변경된 레퍼런스를 먼저 반영한 뒤 AI 프롬프트를 확인합니다 (무료 반영)…";
+          const ap = await runGuardedFreeApply(Store.state.root, { statusToast });
           if (!ap.ok) return;
-          appliedForMoved = true;
-          for (const p of targets) {
-            await Store.loadSpec(p.id, true);
-          }
+          appliedBeforeAssist = true;
+          if (!(await reloadTargetSpecs(targets))) return;
           if (checkManualBlocked(targets)) return;
           needAssist = collectNeedAssist(targets);
         }
         if (needAssist.length) {
-          const ar = await runAssistForPatches(needAssist, false, { allowApplyRetry: !appliedForMoved });
+          const ar = await runAssistForPatches(needAssist, false, { allowApplyRetry: !appliedBeforeAssist });
           if (ar.aborted) return;
           let extraOverCap = 0;
-          if (ar.didApply && !appliedForMoved) {
-            for (const p of targets) {
-              await Store.loadSpec(p.id, true);
-            }
+          if (ar.didApply && !appliedBeforeAssist) {
+            if (!(await reloadTargetSpecs(targets))) return;
             if (checkManualBlocked(targets)) return;
-            const extraAssist = collectNeedAssist(targets);
+            // #C26-2: 이번 클릭에서 이미 호출한 영역은 재호출하지 않고, 예산(8)도 성공 수가 아닌 호출 수 기준으로 계산한다
+            const alreadyCalled = new Set(ar.calledIds || []);
+            const extraAssist = collectNeedAssist(targets).filter((p) => !alreadyCalled.has(p.id));
             if (extraAssist.length) {
-              const remainingBudget = Math.max(0, 8 - (ar.count || 0));
+              const usedBudget = Number.isFinite(ar.attempted) ? ar.attempted : alreadyCalled.size;
+              const remainingBudget = Math.max(0, 8 - usedBudget);
               if (remainingBudget > 0) {
                 const ar2 = await runAssistForPatches(extraAssist.slice(0, remainingBudget), false, { allowApplyRetry: false });
                 if (ar2.aborted) return;
