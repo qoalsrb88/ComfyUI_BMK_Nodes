@@ -1621,11 +1621,7 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
         picked_manifest = dict(m, rejects={k: v for k, v in m["rejects"].items() if k != swap[2]})
     if stacks := store.picked_stacks(picked_manifest, keys):
         extra.append({"mask_stack": stacks})
-    if posts := store.picked_posts(picked_manifest, keys):
-        for c in picks:
-            key = c["key"]
-            if key in posts and store.cand_effective(picked_manifest, dict(c, picked=True), root).get("lost"):
-                posts[key] = [posts[key], "unusable"]
+    if posts := store.applied_posts(picked_manifest, root, keys):
         extra.append({"cand_post": posts})
     tie_order = [[cid, [t["tid"] for t in crop["targets"] if t["tid"] in first[cid]]]
                  for cid, crop in crops.items() if cid in first]
@@ -2974,7 +2970,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     export_state = None if ex is None else "unknown"
     if ex is not None and ex.get("state_sig"):
         try:
-            export_state = "same" if ex["state_sig"] == store.export_state_sig(m) else "changed"
+            export_state = "same" if ex["state_sig"] == store.export_state_sig(m, root) else "changed"
         except Exception:  # 점검표 서명 오류가 state 폴링을 중단시키지 않게
             pass
     flags = {"running": running, "drain": running and drain_requested(root), "drafting": drafting, "agent_approve": _agent_state(root),
@@ -7954,11 +7950,13 @@ def _project_summary(root: str) -> dict:
     ex = store.last_export(root, m)
     state = None if ex is None else "unknown"
     if ex is not None and ex.get("state_sig"):
-        state = "same" if ex["state_sig"] == store.export_state_sig(m) else "changed"
+        state = "same" if ex["state_sig"] == store.export_state_sig(m, root) else "changed"
     last = {"rev": ex.get("rev") if type(ex.get("rev")) is int else None, "time": _project_time(ex.get("time"))} if ex else None
     row = {"openable": True, "crops": len(m["crops"]), "stars": stars, "candidates": len(m["candidates"]),
            "before_import": not bool(m.get("base")), "export_last": last, "export_state": state,
            "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))}
+    if state in ("same", "changed") and store.picked_posts(m):
+        return row  # 파생본 파일만 바뀌면 매니페스트·설정의 시각이 그대로여도 최신 판정이 달라진다.
     with _PROJECT_MEMO_LOCK:
         if len(_PROJECT_MEMO) >= 512:
             _PROJECT_MEMO.clear()

@@ -111,6 +111,7 @@ import logging
 import math
 import os
 import re
+import struct
 import threading
 import time
 import unicodedata
@@ -1264,6 +1265,7 @@ RECORD_HIST_KEEP = 20
 _REC_AT_RE = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{1,9})?")
 _POST_FILE_RE = re.compile(r"post/([0-9a-f]{24})/out\.(png|jpg|jpeg|webp)")
 _POST_KEYS = frozenset({"on", "file", "size", "tool", "model", "opts", "input", "call", "at"})
+_POST_OK: dict[tuple, bool] = {}  # 실제 경로·mtime_ns·바이트 수·기록 크기별 그림 검사 결과
 _STACK_KEYS = frozenset({"off", "edge", "opacity", "at"})
 
 
@@ -1400,21 +1402,46 @@ def post_label(rec: dict) -> str:
 
 def cand_effective(m: dict, cand: dict, root: str | None = None) -> dict:
     """합성·Export 가 읽을 그림 {file, size, post} — cand 가 ★(picked)이고 파생본 기록이 유효하고 켜져 있으면 파생본, 아니면 원본
-    (post None). root 를 주면 파생본 파일이 있는지도 본다: 없으면 원본 + "lost"(= 사라진 파일 — 호출자가 경고한다).
+    (post None). root 를 주면 경로·그림·기록 크기를 확인한다. 사용할 수 없으면 원본 + "lost"(호출자가 경고한다).
     원본 후보의 줄(file·src_size)은 어느 경우에도 바꾸지 않는다."""
-    out = {"file": cand["file"], "size": list(cand["src_size"]), "post": None}
+    src_size = cand.get("src_size")
+    out = {"file": cand["file"], "size": src_size.copy() if isinstance(src_size, list) else src_size, "post": None}
     post = cand_post_effect(cand_post_record(m, cand["key"])) if cand.get("picked") else None
     if post is None:
         return out
-    if root is not None:
+    chosen = {"file": post["file"], "size": list(post["size"]), "post": post}
+    if root is None:
+        return chosen
+    lost = dict(out, lost=post["file"])
+    try:
         path, home = os.path.realpath(resolve_path(root, post["file"])), os.path.realpath(root)
-        try:
-            inside = os.path.commonpath([home, path]) == home  # post/ 아래 폴더가 프로젝트 밖을 가리키는 링크면 쓰지 않는다
-        except ValueError:
-            inside = False
-        if not inside or not os.path.isfile(path):
-            return dict(out, lost=post["file"])
-    return {"file": post["file"], "size": list(post["size"]), "post": post}
+        if os.path.commonpath([home, path]) != home or not os.path.isfile(path):
+            return lost
+        # 검사 뒤에 잠겼을 수 있어 파일은 매번 연다. 그림 검사는 같은 파일·기록 크기에서 한 번만 한다.
+        with open(path, "rb") as fp:
+            info = os.fstat(fp.fileno())
+            size = tuple(post["size"])
+            key = (path, info.st_mtime_ns, info.st_size, size)
+            ok = _POST_OK.get(key)
+            if ok is not None:
+                return chosen if ok else lost
+            try:
+                with Image.open(fp) as im:
+                    ok = im.size == size
+                    if ok:
+                        im.verify()
+            except OSError as exc:
+                if exc.errno is not None:
+                    return lost  # 잠금·권한 오류는 풀리는 즉시 다시 검사한다.
+                ok = False
+            except (ValueError, SyntaxError, EOFError, struct.error, Image.DecompressionBombError):
+                ok = False
+    except (OSError, ValueError):
+        return lost
+    if len(_POST_OK) >= 2048:
+        _POST_OK.clear()
+    _POST_OK[key] = ok
+    return chosen if ok else lost
 
 
 def _picked_live(m: dict, keys=None):
@@ -1491,6 +1518,17 @@ def picked_posts(m: dict, keys=None) -> dict:
         if post:
             out[c["key"]] = post["file"]
     return out
+
+
+def applied_posts(m: dict, root: str, keys=None) -> dict:
+    """합성과 Export가 실제로 쓸 파생본의 서명 행. 사용할 수 없는 파일은 원본으로 그린 상태를 구분한다."""
+    posts = picked_posts(m, keys)
+    if posts:
+        for cand in _picked_live(m, posts):
+            effective = cand_effective(m, dict(cand, picked=True), root)
+            if lost := effective.get("lost"):
+                posts[cand["key"]] = [lost, "unusable"]
+    return posts
 
 
 def z_order(m: dict) -> dict:
@@ -1847,8 +1885,8 @@ def save_board_export(root: str, export_hash: str) -> None:
     _save_board_pref_key(root, "export", export_hash, "보드 편집 창·★ 합성과 Studio 처음 값이 이전 Export 기록의 설정을 따름")
 
 
-def export_state_sig(m: dict) -> str:
-    """점검표의 Export 이후 사용자 변경 지문(파일 I/O 없음). Export 내용 해시와 별개이며 분석·Export 설정은 제외한다.
+def export_state_sig(m: dict, root: str | None = None) -> str:
+    """점검표의 Export 이후 사용자 변경 지문. root를 주면 켜진 ★ 파생본 파일만 확인한다. 분석·Export 설정은 제외한다.
     베이스·캔버스·작업 영역·크롭·★ 집합(선택 순서 무관)·제외와 지금 ★ 의 출력 필드·편집 file/rect 를 읽는다.
     옛 매니페스트의 후보 picked 도 보드처럼 합친다. 후보 출처·분석 이력은 제외하고 후보 key 순으로 직렬화한다.
     손상된 컬렉션 형식은 빈 값으로 읽으며 원본 매니페스트는 바꾸지 않는다.
@@ -1888,7 +1926,7 @@ def export_state_sig(m: dict) -> str:
         payload["cand_adjust"] = adjustments
     if stacks := picked_stacks(m):
         payload["mask_stack"] = stacks
-    if posts := picked_posts(m):
+    if posts := (picked_posts(m) if root is None else applied_posts(m, root)):
         payload["cand_post"] = posts
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 

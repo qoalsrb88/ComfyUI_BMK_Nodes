@@ -64151,10 +64151,15 @@ def ux_v2c_post_pixels_unit():
     _, rows, objects, _ = export(with_tone, "tone")
     baked = objects[rows[a]["name"]].data
     check(rows[a]["toned"] and np.array_equal(dp._decode(baked), want)
-          and any(p.read_bytes() == baked for p in Path(root, "derived").glob("*ptoned_*.png"))
+          and any(p.read_bytes() == baked for p in Path(root, "derived").glob("*ptone_*.png"))
           and Path(root, cache).read_bytes() == cache_bytes
           and np.array_equal(pixels(dict(m, cand_post={a: dict(toned, on=False)})), initial),
           "후보정 톤 SO 전용 캐시·원본 캐시 파일 보존·끄면 원래 합성")
+    run_item = dict(it, cand=dict(it["cand"], key="r_0123456789ab_0_0"))
+    run_bytes, run_format = dp.BMKDesignPatchExportPSD._so_bytes(root, run_item, got, True)
+    check(run_format == "png" and np.array_equal(dp._decode(run_bytes), want)
+          and run_item["entry"]["tone"]["full"] == cache and Path(root, cache).read_bytes() == cache_bytes,
+          "18자 Run 후보의 후보정 톤 SO 저장·원본 톤 캐시 보존")
 
     adj = dict(st.CAND_XFORM_DEFAULTS, blur=2., invert=False, base_quad=None, at=V2C_AT, hist=[])
     blur = dict(m, cand_adjust=m["cand_adjust"] | {c: adj})
@@ -64191,8 +64196,88 @@ def ux_v2c_post_pixels_unit():
     warns = bd._star_plan(root, active, None)[-1]
     check(sigs(active)[0] != signatures[0] and np.array_equal(pixels(active), initial) and "post" not in items(active)[c]
           and warns.count(f"{c} ({m['crops'][1]['name']}): 후보정 결과 파일 없음 → 원본 그림으로") == 1, "파생본 파일 소실 시 경고·원본 합성·별도 서명")
+    original_bytes = Path(root, source["file"]).read_bytes()
+    # 서로 다른 이력에서 두 방향을 검사한다. 한 쌍에서는 같은 prefix와 첫 Export의 매니페스트를 그대로 쓴다.
+    for restore in (True, False):
+        prefix = "restore" if restore else "remove"
+        first, _, _, _ = export(active, prefix)
+        check(bd.build_state(root)["export_state"] == bd._project_summary(root)["export_state"] == "same",
+              f"후보정 {prefix}: 파일 변경 전 Export 최신")
+        if restore:
+            file.write_bytes(data)
+        else:
+            file.unlink()
+        check(bd.build_state(root)["export_state"] == "changed", f"후보정 {prefix}: 보드 최신 판정 갱신")
+        check(bd._project_summary(root)["export_state"] == "changed", f"후보정 {prefix}: 프로젝트 목록 최신 판정 갱신")
+        second, rows, objects, _ = export(st.load_manifest(root), prefix)
+        check(first != second and objects[rows[c]["name"]].data == (data if restore else original_bytes),
+              f"후보정 {prefix}: 같은 prefix로 현재 그림의 새 PSD 저장")
+
+    def disk_sigs(mm):
+        return bd._composite_sig(root, mm, None), dp._export_hash(mm, {}, {}, {}, root=root), st.export_state_sig(mm, root)
+
+    lost_sigs = disk_sigs(active)
+    check(st.applied_posts(active, root) == {c: [rec["file"], "unusable"]}, "유실 파생본의 서명 행")
     file.write_bytes(data)
+    check(all(x != y for x, y in zip(disk_sigs(active), lost_sigs)) and disk_sigs(active) == signatures,
+          "파일 유실과 복구를 세 서명 모두 반영·사용 가능하면 기존 서명")
+    alt = keys["d"]
+    alternative = dict(m, cand_post={alt: rec})
+    check(st.applied_posts(active, root) == {c: rec["file"]}
+          and st.applied_posts(alternative, root, keys={alt}) == {alt: rec["file"]}
+          and all(st.applied_posts(mm, root) == {} for mm in (alternative, dict(m, cand_post={}), dict(m, cand_post={c: dict(rec, on=False)}))),
+          "파생본 서명 행은 실제 또는 가정한 ★만 포함·효과 없는 기록 생략")
     check(sigs(active) == signatures and np.array_equal(pixels(active), expected(cut)), "파일 복구 시 원래 서명·합성")
+    warning = f"{c} ({m['crops'][1]['name']}): 후보정 결과 파일 없음 → 원본 그림으로"
+    wrong_size = png_bytes(cut[:-1])
+    for label, bad in (("빈 파일", b""), ("그림 아님", b"x"), ("잘린 PNG", data[:len(data) // 2]), ("크기 불일치", wrong_size)):
+        file.write_bytes(bad)
+        check(disk_sigs(active) == lost_sigs and bd._star_plan(root, active, None)[-1].count(warning) == 1
+              and np.array_equal(pixels(active), initial), f"후보정 {label}: unusable 서명·경고 한 줄·원본 합성")
+        file.write_bytes(data)
+        check(disk_sigs(active) == signatures and np.array_equal(pixels(active), expected(cut)), f"후보정 {label}: 바른 파일 복구")
+    wrong_record = dict(m, cand_post={c: dict(rec, size=[80, 79])})
+    check(disk_sigs(wrong_record) == lost_sigs and disk_sigs(active) == signatures, "같은 파일에서도 기록 크기별로 판정")
+
+    locked = write_post(root, source, cut, 7, "bg_removal")
+    lock_manifest = dict(m, cand_post={c: locked})
+    lock_path = Path(root, locked["file"])
+    stamp = lock_path.stat()
+    open_image = Image.open
+
+    def deny_locked(fp, *args, **kwargs):
+        path = fp if isinstance(fp, (str, os.PathLike)) else getattr(fp, "name", None)
+        if isinstance(path, (str, os.PathLike)) and Path(path) == lock_path:
+            raise PermissionError(13, "시험용 공유 잠금")
+        return open_image(fp, *args, **kwargs)
+
+    with patch.object(Image, "open", side_effect=deny_locked):
+        check(st.applied_posts(lock_manifest, root) == {c: [locked["file"], "unusable"]}
+              and bd._star_plan(root, lock_manifest, None)[-1].count(warning) == 1
+              and np.array_equal(pixels(lock_manifest), initial), "잠긴 파생본은 경고 한 줄·원본 합성")
+    with patch.object(Image, "open", wraps=open_image) as reader:
+        check(st.applied_posts(lock_manifest, root) == {c: locked["file"]} and reader.called
+              and lock_path.stat().st_mtime_ns == stamp.st_mtime_ns and lock_path.stat().st_size == stamp.st_size,
+              "권한 오류는 기억하지 않고 같은 파일을 다시 확인")
+        verified = reader.call_count
+        check(st.applied_posts(lock_manifest, root) == {c: locked["file"]} and reader.call_count == verified,
+              "검증된 같은 파일은 이미지 검사를 재사용")
+    for label in ("누락", "null"):
+        legacy = copy.deepcopy(m)
+        cand = bd._cand(legacy, c)
+        if label == "누락":
+            del cand["src_size"]
+        else:
+            cand["src_size"] = None
+        try:
+            original = st.cand_effective(legacy, cand, root)
+            item = items(legacy)[c]
+        except (KeyError, TypeError) as exc:
+            check(False, f"파생본 없는 옛 후보 src_size {label}: {exc!r}")
+            continue
+        check(original == {"file": cand["file"], "size": None, "post": None} and "post" not in item
+              and np.array_equal(dp._cand_pixels(root, item, False)[0], original_image),
+              f"파생본 없는 옛 후보 src_size {label}: 원본 합성 계획")
     broken = dict(m, cand_post={c: dict(rec, size=[0, 0])})
     check(sigs(broken) == sigs(m) and np.array_equal(pixels(broken), initial) and "post" not in items(broken)[c]
           and bd._star_plan(root, broken, None)[-1].count(f"{c} ({m['crops'][1]['name']}): 후보정 기록을 읽지 못함 → 원본 그림으로") == 1,

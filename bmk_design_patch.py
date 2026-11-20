@@ -2461,7 +2461,7 @@ def _outline(w: int, h: int, px: int = 4, color=(255, 64, 64)) -> np.ndarray:
     return o
 
 
-def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | None = None) -> str:
+def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | None = None, root: str | None = None) -> str:
     """edits = {★ 후보 key: [편집 file, rect]} — _plan 이 그룹 마스크로 적용한 ★ 의 마스크 편집(S4)."""
     payload = {"v": _EXPORT_VERSION, "opts": opts, "base": m["base"], "canvas": m["canvas"], "work_rect": m["work_rect"],
                "crops": [[c["id"], c["name"], c["rect"], c["targets"]] for c in m["crops"]],
@@ -2477,7 +2477,7 @@ def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | N
         payload["cand_adjust"] = adjustments
     if stacks := store.picked_stacks(m):
         payload["mask_stack"] = stacks
-    if posts := store.picked_posts(m):
+    if posts := (store.picked_posts(m) if root is None else store.applied_posts(m, root)):
         payload["cand_post"] = posts
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
@@ -2606,9 +2606,9 @@ class BMKDesignPatchExportPSD:
                 # 옛 정합으로 이미 창이 어긋난 편집도 새 채움 규칙으로 다시 Export 한다.
                 edits[it["cand"]["key"]].append({"outside_base": dmask.base_fp(it["cand"], it["entry"], mask_source)})
         # 해시의 하위 폴더 = 이 OS 의 폴더 같음(Windows 는 대소문자 무시 — 외주_A·외주_a 는 같은 폴더라 '변경 없음'), 기록 options 는 입력 그대로
-        eh = _export_hash(m, entries, comp, dict(opts, subfolder=os.path.normcase(sub)) if sub else opts, edits)
+        eh = _export_hash(m, entries, comp, dict(opts, subfolder=os.path.normcase(sub)) if sub else opts, edits, root=root)
         try:
-            state_sig = store.export_state_sig(m)
+            state_sig = store.export_state_sig(m, root)
         except Exception:  # 점검표 서명 실패는 PSD 출력·재사용을 막지 않는다
             state_sig = None
             warns.append("Export 변경 여부를 계산하지 못함 — 서명 없이 기록")
@@ -2770,7 +2770,7 @@ class BMKDesignPatchExportPSD:
             ext = os.path.splitext(file)[1].lower().lstrip(".")
             return _read(_abs(root, file)), ("jpg" if ext == "jpeg" else ext)
         if it.get("post"):
-            prefix = _derived_prefix(c["key"], entry["params_hash"]) + "ptoned_"
+            prefix = _derived_prefix(c["key"], entry["params_hash"]) + "ptone_"
             rel = store.save_png_ca(root, "derived", pix, prefix=prefix)
             return _read(_abs(root, rel)), "png"
         tone = entry["tone"]
