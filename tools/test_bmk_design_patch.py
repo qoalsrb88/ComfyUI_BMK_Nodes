@@ -67596,13 +67596,16 @@ def ux_v2_home_unit():
                   and row(all_rows).keys() == api["projects_home_off"]["response"]["projects"][0].keys()
                   and row(all_rows)["title"] == (await call("GET", state_url))["title"] == "보관함 표시",
                   "홈 꺼지면 보관 표지를 무시하고 표시 이름만 제공")
-            check((await call("POST", "/projects/open", {"key": key}))["ok"]
-                  and await call("POST", new_url, b"", 409, mime="application/octet-stream")
-                  == {"error": "같은 이름의 프로젝트가 있습니다 — 폴더 목록을 확인하세요"}, "홈 꺼진 서버 열기·새로 만들기")
             with patch.object(store, "read_project_meta", wraps=read_meta) as reads:
+                check((await call("POST", "/projects/open", {"key": key}))["ok"]
+                      and await call("POST", new_url, b"", 409, mime="application/octet-stream")
+                      == {"error": "같은 이름의 프로젝트가 있습니다 — 폴더 목록을 확인하세요"}, "홈 꺼진 서버 열기·새로 만들기")
+            check(reads.call_count == 0, "홈 꺼진 서버는 열기·같은 폴더 거절에서도 메타 파일을 읽지 않음")
+            # 꺼진 서버의 새 프로젝트는 계정 잠금을 잡지 않는다(잡으려 하면 이 patch 가 실패시킨다)
+            with patch.object(store, "read_project_meta", wraps=read_meta) as reads,                     patch.object(bd, "_project_account_lock", side_effect=AssertionError("꺼진 서버가 계정 잠금을 잡음")):
                 created = await create("겨울")
             check(created.get("name") == "겨울" and (owner.parent / "겨울" / store.MANIFEST_NAME).is_file() and reads.call_count == 0,
-                  "홈 꺼진 서버는 표시 이름이 겹쳐도 메타를 읽지 않고 새 프로젝트 생성")
+                  "홈 꺼진 서버는 표시 이름이 겹쳐도 메타를 읽지 않고 계정 잠금 없이 새 프로젝트 생성")
 
         # 일꾼은 실제로 시작하되 대기 작업을 가져가지 못하게 한다. 제출·조회·취소·종료는 실제 큐를 쓴다.
         with patch.object(jobs.JobRunner, "_take", return_value=None):
