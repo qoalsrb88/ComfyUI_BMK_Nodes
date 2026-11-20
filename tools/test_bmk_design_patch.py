@@ -64213,7 +64213,7 @@ def _v2c_psd_rows(path):
 def _v2c_digests(dp, out, name, mutate=None, after=None):
     """합성 프로젝트를 만들고(mutate(m, K) 로 매니페스트를 고친 뒤 · after(root, K) 로 라우트 함수를 부른 뒤) Compose·Export 한
     다이제스트 → (글, 픽셀, 부가)."""
-    import folder_paths
+    from unittest.mock import patch
     st, bd = dp.store, dp.board
     root, m, K = _v2c_project(dp, out, name)
     if mutate is not None:
@@ -64231,17 +64231,18 @@ def _v2c_digests(dp, out, name, mutate=None, after=None):
     pixel["board"] = _v2c_sha(np.ascontiguousarray(bd._compose_full(root, m, None)[0]).tobytes())
     hashes = lambda mm: {k: sorted(v) for k, v in mm["analysis"].items() if k != K["a2"]}  # a2 = 부분 패치(건너뜀 항목이 처음 생긴다)
     analysis_before = hashes(m)
-    old_output, old_board_output = folder_paths.get_output_directory(), bd._OUTPUT_DIR[:]
+    # 노드 모듈이 쥔 folder_paths 는 그 모듈을 처음 import 한 묶음에 따라 진짜일 수도 서버 모드 대역일 수도 있다(--only 조합) — 그 객체를 고친다
+    old_board_output = bd._OUTPUT_DIR[:]
     try:
-        folder_paths.set_output_directory(str(out / "output"))
         bd.set_output_dir(str(out / "output"))
-        handle, image, union, report = dp.BMKDesignPatchCompose().run(dp._handle(root, m), "hand_else_auto", True, True, "auto_small_on_top")
-        pixel["compose"] = _v2c_sha(np.rint(image[0].cpu().numpy() * 255.0).astype(np.uint8).tobytes())
-        pixel["union"] = _v2c_sha(np.rint(union.cpu().numpy() * 255.0).astype(np.uint8).tobytes())
-        result = dp.BMKDesignPatchExportPSD().run(handle, "pin", "smart_object", "hidden_all", "toned", "hand_else_auto", True, True)
+        with patch.object(dp.folder_paths, "get_output_directory", return_value=str(out / "output")), \
+                patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}):
+            handle, image, union, report = dp.BMKDesignPatchCompose().run(dp._handle(root, m), "hand_else_auto", True, True, "auto_small_on_top")
+            pixel["compose"] = _v2c_sha(np.rint(image[0].cpu().numpy() * 255.0).astype(np.uint8).tobytes())
+            pixel["union"] = _v2c_sha(np.rint(union.cpu().numpy() * 255.0).astype(np.uint8).tobytes())
+            result = dp.BMKDesignPatchExportPSD().run(handle, "pin", "smart_object", "hidden_all", "toned", "hand_else_auto", True, True)
     finally:
-        folder_paths.set_output_directory(old_output)
-        bd.set_output_dir(old_board_output[0] if old_board_output else old_output)
+        bd._OUTPUT_DIR[:] = old_board_output
     path = Path(result["result"][0])
     m2 = st.load_manifest(root)
     rec = m2["exports"][-1]
