@@ -1359,8 +1359,9 @@ def _post_version(v, top: bool) -> dict | None:
     if not isinstance(src, dict) or set(src) != {"file", "sha"}:
         return None
     src_file, sha = src["file"], src["sha"]
-    if not isinstance(src_file, str) or not 1 <= len(src_file) <= 300 or "\\" in src_file or src_file.startswith("/") \
-            or ".." in src_file.split("/") or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+    if not isinstance(src_file, str) or not 1 <= len(src_file) <= 300 or "\\" in src_file or ":" in src_file \
+            or src_file.startswith("/") or ".." in src_file.split("/") or not isinstance(sha, str) \
+            or not re.fullmatch(r"[0-9a-f]{64}", sha):
         return None
     if not isinstance(v["at"], str) or not _REC_AT_RE.fullmatch(v["at"]):
         return None
@@ -1405,8 +1406,14 @@ def cand_effective(m: dict, cand: dict, root: str | None = None) -> dict:
     post = cand_post_effect(cand_post_record(m, cand["key"])) if cand.get("picked") else None
     if post is None:
         return out
-    if root is not None and not os.path.isfile(resolve_path(root, post["file"])):
-        return dict(out, lost=post["file"])
+    if root is not None:
+        path, home = os.path.realpath(resolve_path(root, post["file"])), os.path.realpath(root)
+        try:
+            inside = os.path.commonpath([home, path]) == home  # post/ 아래 폴더가 프로젝트 밖을 가리키는 링크면 쓰지 않는다
+        except ValueError:
+            inside = False
+        if not inside or not os.path.isfile(path):
+            return dict(out, lost=post["file"])
     return {"file": post["file"], "size": list(post["size"]), "post": post}
 
 
@@ -1430,17 +1437,32 @@ def _picked_live(m: dict, keys=None):
             yield c
 
 
+def _mask_edit_valid(m: dict, key: str) -> bool:
+    """그 후보에 합성이 읽는 꼴의 마스크 편집 기록이 있는가(마스크 모듈의 check_record — 형식이 깨진 기록은 합성도 기준 마스크로 간다)."""
+    edits = m.get("mask_edits")
+    rec = edits.get(key) if isinstance(edits, dict) else None
+    if not isinstance(rec, dict):
+        return False
+    try:
+        from . import bmk_design_patch_mask as dmask  # 마스크 모듈이 store 를 import 한다 — 여기서는 부를 때만
+    except ImportError:
+        import bmk_design_patch_mask as dmask
+    try:
+        dmask.check_record(rec)
+    except (ValueError, TypeError, KeyError):
+        return False
+    return True
+
+
 def mask_stack_applied(m: dict, key: str) -> dict | None:
     """그 후보가 ★ 라고 할 때 합성에 실제로 닿는 스택 효과 값 — mask_stack_effect 에서 「가릴 것이 없는 끔」을 뺀 것.
     brush 끔은 그 후보의 마스크 편집 기록이 있을 때만, transform 끔은 후보 보정에 변형·뒤집기가 있을 때만 남는다."""
     effect = mask_stack_effect(mask_stack_record(m, key))
     if effect is None or "off" not in effect:
         return effect
-    edits = m.get("mask_edits")
     adjust = cand_adjust_effect(cand_adjust(m, key)) or {}
     live = [name for name in effect["off"]
-            if (name == "brush" and isinstance(edits, dict) and isinstance(edits.get(key), dict))
-            or (name == "transform" and ("dx" in adjust or "flip_h" in adjust))]
+            if (name == "brush" and _mask_edit_valid(m, key)) or (name == "transform" and ("dx" in adjust or "flip_h" in adjust))]
     effect = {k: v for k, v in effect.items() if k != "off"}
     if live:
         effect = {"off": live, **effect}

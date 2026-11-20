@@ -64378,9 +64378,11 @@ def ux_v2c_core_unit():
     crop = {"id": "001_a", "name": "001_a", "rect": [0, 0, 8, 8], "targets": [{"tid": "A"}]}
     cand = lambda key, picked=True, tid="A": {"key": key, "crop_id": "001_a", "tid": tid, "picked": picked, "file": f"cands/{key}.png", "src_size": [8, 8]}
     keys = ["r_%012d_0_0" % i for i in range(6)]
+    edit_rec = {"file": "masks/r_00000000_e_0123456789ab.png", "rect": [0, 0, 8, 8], "ops": "붓", "at": V2C_AT, "hist": [],
+                "base": {"src": "none", "file": None, "ph": None, "ms": "hand_else_auto"}}
     m = {"crops": [crop], "candidates": [cand(keys[0]), cand(keys[1]), cand(keys[2], picked=False), cand(keys[3]), cand(keys[4], tid="Z"), cand(keys[5])],
          "picks": {}, "rejects": {keys[3]: True},
-         "mask_edits": {keys[0]: {"file": "masks/x.png"}}, "cand_adjust": {keys[1]: dict(xf, dx=4.0), keys[5]: dict(xf, blur=2.0)},
+         "mask_edits": {keys[0]: edit_rec}, "cand_adjust": {keys[1]: dict(xf, dx=4.0), keys[5]: dict(xf, blur=2.0)},
          "mask_stack": {keys[0]: stack(off=["brush", "transform"]), keys[1]: stack(off=["brush", "transform"], opacity=50),
                         keys[2]: stack(opacity=10), keys[3]: stack(opacity=10), keys[4]: stack(opacity=10),
                         keys[5]: stack(off=["transform"])}}
@@ -64390,6 +64392,9 @@ def ux_v2c_core_unit():
     check(st.picked_stacks(m, keys={keys[2]}) == {keys[2]: {"opacity": 10}}, "V2CC4 가상 ★ 집합(keys)")
     check(st.picked_stacks({}) == {} and st.picked_stacks(dict(m, mask_stack={})) == {} and st.picked_stacks(dict(m, mask_stack=[])) == {},
           "V2CC4 기록이 없거나 비었으면 빈 dict")
+    for broken_edit in ({}, {"file": "masks/x.png"}, dict(edit_rec, extra=1), dict(edit_rec, rect=[0, 0, 8]), "x"):
+        check(st.picked_stacks(dict(m, mask_edits={keys[0]: broken_edit})) == {keys[1]: {"off": ["transform"], "opacity": 50}},
+              f"V2CC4 깨진 마스크 편집 기록의 brush 끔은 효과 없음(합성도 기준 마스크) {broken_edit!r:.30}")
     flipped = dict(m, cand_adjust={keys[5]: dict(xf, flip_v=True)})
     check(st.picked_stacks(flipped).get(keys[5]) == {"off": ["transform"]}, "V2CC4 뒤집기만 있어도 transform 끔은 효과")
 
@@ -64410,6 +64415,7 @@ def ux_v2c_core_unit():
             dict(rec, opts=[]), dict(rec, opts={"a": None}), dict(rec, opts={"a": [1]}), dict(rec, opts={"a": float("inf")}),
             dict(rec, opts={str(i): i for i in range(9)}), dict(rec, input={"file": "a.png"}), dict(rec, input={"file": "../a.png", "sha": "a" * 64}),
             dict(rec, input={"file": "C:\\a.png", "sha": "a" * 64}), dict(rec, input={"file": "/a.png", "sha": "a" * 64}),
+            dict(rec, input={"file": "C:/images/a.png", "sha": "a" * 64}),
             dict(rec, input={"file": "a.png", "sha": "A" * 64}), dict(rec, at="2026"), dict(rec, hist=[prev] * 21),
             dict(rec, hist=[dict(prev, hist=[])]), dict(rec, hist=[dict(prev, on="yes")]), dict(rec, hist=None), "x", None]
     check(all(pread(b) is None for b in pbad), "V2CC5 깨진 파생본 기록은 없음으로 읽음")
@@ -64434,6 +64440,19 @@ def ux_v2c_core_unit():
     Path(root, "post", "0123456789abcdef01234567").mkdir(parents=True)
     Path(root, rec["file"]).write_bytes(b"x")
     check(st.cand_effective(mp, c0, root) == got and c0 == cand(keys[0]), "V2CC6 파일이 있으면 파생본 · 후보 줄은 그대로")
+    outside = Path(mkdtemp(prefix="ux_v2c_outside_", dir=OUT_ROOT.resolve()))
+    (outside / "out.png").write_bytes(b"x")
+    linked = post(file="post/" + "b" * 24 + "/out.png", call="b" * 24)
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(outside), str(Path(root, "post", "b" * 24)))
+    except (ImportError, AttributeError, OSError):
+        note("V2CC6 정션을 만들 수 없는 환경 — 프로젝트 밖을 가리키는 링크 확인은 건너뜀")
+    else:
+        check(os.path.isfile(Path(root, linked["file"]))
+              and st.cand_effective(dict(mp, cand_post={keys[0]: linked}), c0, root) == dict(orig, lost=linked["file"]),
+              "V2CC6 post/ 아래 폴더가 프로젝트 밖을 가리키는 링크면 파생본으로 쓰지 않음")
+        os.rmdir(Path(root, "post", "b" * 24))  # 정션만 끊는다(대상 폴더는 그대로)
     check(st.picked_posts(mp) == {keys[0]: rec["file"]} and st.picked_posts(m) == {} and st.picked_posts(dict(m, cand_post={})) == {}
           and st.picked_posts(mp, keys={keys[2]}) == {keys[2]: rec["file"]}, "V2CC7 cand_post 행 = ★ 의 켜진 파생본 file")
 
@@ -64903,10 +64922,12 @@ def ux_v2c_flow_unit():
         for name, at in ats.items():
             post(root, K[name], at, op="reset")
 
+    base_text, base_pixel, _extra = _v2c_digests(dp, out, "flow-base")  # 같은 환경의 스택 없는 기준(라이브러리 지문과 무관하게 대조)
     text, pixel, extra = _v2c_digests(dp, out, "flow-toggle", after=toggle)
     check(seen_on["changed"] and set(seen_on["rows"]) == set(V2C_KEYS[n] for n in ("a1", "a2", "c"))
           and seen_on["rows"][V2C_KEYS["a2"]] == {"off": ["transform"], "opacity": 55}, "V2CF1 라우트로 켠 스택이 서명 행에 실림")
     check(text == V2C_PINNED_TEXT and extra["problems"] == 0, "V2CF1 켰다가 지우면 서명·해시·PSD 구조·사이드카가 기준 값")
+    check(text == base_text and pixel == base_pixel, "V2CF1 켰다가 지우면 스택 없는 프로젝트와 모든 다이제스트(픽셀 포함)가 같음")
     if pixels_ok:
         check(pixel == V2C_PINNED_PIXEL, "V2CF1 켰다가 지우면 ★ 합성·PSD 픽셀이 기준 값")
     check(st.load_manifest(extra["root"]).get("mask_stack") == {}, "V2CF1 지운 뒤 기록은 빈 dict")
@@ -64942,6 +64963,37 @@ def ux_v2c_flow_unit():
     off_view = bd._server_mask_view(root, key, False)
     check("stack" not in off_view and "final" not in off_view and off_view["stack_fx"] == st.mask_stack_applied(st.load_manifest(root), key),
           "V2CF2 플래그가 꺼져도 stack_fx 는 싣고 stack·final 은 싣지 않음")
+
+    # ── 붓 층을 꺼 둔 ★ 의 편집 파일이 사라지면: 편집 주소 = 기준 주소(편집 창이 기준으로 열린다 — 읽지 못한 편집과 같은 처리)
+    root, m, K = _v2c_project(dp, out, "flow-lost")
+    key = K["a1"]
+    post(root, key, "", op="set", off=["brush"])
+    kept = bd.mask_view(root, key)
+    lost_file = Path(st.resolve_path(root, m["mask_edits"][key]["file"]))
+    lost_bytes = lost_file.read_bytes()
+    lost_file.unlink()
+    bd._EDIT_OK.clear()
+    gone_view = bd.mask_view(root, key)
+    check(kept["edit"]["url"] != kept["base"]["url"] and gone_view["edit"]["url"] == gone_view["base"]["url"],
+          "V2CF3 붓을 끈 ★ 의 편집 파일이 없으면 편집 주소 = 기준 주소")
+    lost_file.write_bytes(lost_bytes)
+    bd._EDIT_OK.clear()
+
+    # ── 다시 수확: 사라진 후보의 기록 넷을 지운다 — 수확이 도는 동안 보드가 새로 쓴 기록도(병합이 보존하므로 저장 직전에 한 번 더)
+    root, m, K = _v2c_project(dp, out, "flow-harvest")
+    gone, kept_key = K["a2"], K["c"]
+    before = dp._snapshot(m)
+    ours = st.load_manifest(root)
+    ours["candidates"] = [c for c in ours["candidates"] if c["key"] != gone]
+    dp._drop_vanished(ours, [gone])
+    post(root, gone, "", op="set", opacity=0)        # 수확이 도는 동안 보드가 사라질 후보에 스택을 씀
+    post(root, kept_key, "", op="set", opacity=30)    # 남는 후보의 쓰기는 보존돼야 한다
+    merged, _rev, _conflicts = st.commit_merge(root, before, ours, finalize=lambda mm: dp._drop_vanished(mm, [gone]))
+    check(gone not in merged.get("mask_stack", {}) and gone not in merged["cand_adjust"]
+          and merged["mask_stack"][kept_key]["opacity"] == 30 and kept_key in merged["cand_adjust"] and K["a1"] in merged["mask_edits"],
+          "V2CF4 사라진 후보의 기록은 수확 중에 쓰인 것도 지우고, 남는 후보의 기록은 둠")
+    plain_merge, _rev, _conflicts = st.commit_merge(root, before, ours)
+    check(dp._drop_vanished.__doc__ and gone not in plain_merge.get("mask_stack", {}), "V2CF4 지운 뒤의 병합은 그 기록을 되살리지 않음")
 
     # ── 붓 저장과 스택: 창이 줄어든 뒤의 저장이 기록 창 밖의 획을 그대로 둔다(경계·불투명도가 걸렸을 때 · 붓 층을 껐을 때)
     for case, body in (("edge", {"edge": loud, "opacity": 70}), ("brush_off", {"off": ["brush"]})):

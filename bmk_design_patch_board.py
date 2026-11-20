@@ -2150,8 +2150,8 @@ def mask_view(root: str, key) -> dict:
         warns.insert(0, "분석 없음 — 반영(Analyze) 뒤 편집 권장")
     base = {"src": t["it"]["base_msrc"], "sig": t["base_sig"], "url": _murl(rk, key, "base", t["base_sig"])}
     edit = _edit_view(rk, key, _edit_rec(m, key), t["fp"], t["rect"], _edit_placement(m, cand, t["it"]["entry"], t["fp"]))
-    if edit is not None and t["it"]["mask_edit"] is None and "brush" not in t["it"].get("stack_off", []):
-        edit["url"] = base["url"]
+    if edit is not None and t["it"]["mask_edit"] is None and _brush_mask(root, _edit_rec(m, key), t["it"], t["rect"]) is None:
+        edit["url"] = base["url"]  # 편집을 읽지 못함 — 붓 층을 꺼 둔 ★ 는 저장된 래스터가 읽히면 그것을 내준다(_brush_mask)
     adjust = store.cand_adjust_record(m, key)
     effect = store.cand_adjust_effect(adjust)
     base_quad = t["it"]["base_quad"]

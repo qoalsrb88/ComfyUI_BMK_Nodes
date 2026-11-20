@@ -414,6 +414,21 @@ def _commit(root: str, m: dict, before: str, src: dict | None = None, *, finaliz
     return _handle(root, m, src, **branch), [f"매니페스트 병합 충돌(이 노드의 값으로 저장): {c}" for c in conflicts]
 
 
+_CAND_RECORD_FIELDS = ("mask_edits", "cand_adjust", "mask_stack", "cand_post")  # 후보 key 마다 붙는 기록(★ 일 때만 쓰임)
+
+
+def _drop_vanished(m: dict, gone) -> None:
+    """매니페스트에서 사라진 후보(gone 가운데 지금 후보 목록에 없는 key)의 기록을 지운다. 탈락·★ 해제는 기록을 둔다 — 사라진 후보만.
+    수확 노드가 병합 저장의 마지막(finalize — 잠금 안)에도 부른다: 수확이 도는 동안 보드가 그 후보에 새로 쓴 기록은 3-way 병합이
+    보존하므로, 같은 key 의 후보가 나중에 다시 들어오면 옛 기록이 되살아난다."""
+    live = {c["key"] for c in m.get("candidates") or [] if isinstance(c, dict) and isinstance(c.get("key"), str)}
+    for field in _CAND_RECORD_FIELDS:
+        records = m.get(field)
+        if isinstance(records, dict):
+            for k in set(gone) - live:
+                records.pop(k, None)
+
+
 def _abs(root: str, rel: str) -> str:
     return store.resolve_path(root, rel)
 
@@ -1761,14 +1776,11 @@ class BMKDesignPatchCandidateIn:
         m["candidates"] = _plain(merged)
         for k in removed:
             m["analysis"].pop(k, None)
-            for field in ("mask_edits", "cand_adjust", "mask_stack", "cand_post"):  # 탈락·★ 해제는 기록을 둠 — 사라진 후보만
-                records = m.get(field)
-                if isinstance(records, dict):
-                    records.pop(k, None)
+        _drop_vanished(m, removed)
         if source == "folder":
             self._autopick(m, {c["key"] for c in new}, warns)
         _sync_picks(m)
-        handle, conflicts = _commit(root, m, before, project)
+        handle, conflicts = _commit(root, m, before, project, finalize=lambda merged: _drop_vanished(merged, removed))
         per: dict[str, list[int]] = {}
         for c in m["candidates"]:
             row = per.setdefault(c["crop_id"], [0, 0])
