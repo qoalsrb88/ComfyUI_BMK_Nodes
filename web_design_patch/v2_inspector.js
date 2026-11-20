@@ -10,6 +10,7 @@ window.DPV2Inspector = (() => {
   const $ = (id) => document.getElementById(id);
   let popoverAnchor = null;
   let draggedPatchId = null;
+  let lastAutoOpenRawKey = "";
 
   function pulseCard(sel) {
     const el = document.querySelector(sel);
@@ -366,6 +367,7 @@ window.DPV2Inspector = (() => {
     const cont1 = $("instruct-content");
     if (empty1) empty1.classList.toggle("hidden", !!patch);
     if (cont1) cont1.classList.toggle("hidden", !patch);
+    if (!patch) lastAutoOpenRawKey = "";
 
     if (patch) {
       // #C13-3: 생성 흐름 또는 AI 프롬프트 작성이 도는 동안 지시문·목적·AI 자동·원문·저장·프리셋 입력을 잠근다
@@ -534,15 +536,17 @@ window.DPV2Inspector = (() => {
         aiDraftBtn.disabled = specLocked;
       }
 
-      // D503 차단 상태 또는 미반영 새 크롭 배너
+      // D503 · #C18-5 차단 상태 · 미저장 충돌 원문 확인 · 미반영 새 크롭 배너
       const blockedEl = $("spec-blocked-note");
       if (blockedEl) {
-        const showBlocked = patch.meta.specState === "blocked" || patch.meta.needsApplyForSpec;
+        const showBlocked = patch.meta.rawNeedsConfirm || patch.meta.specState === "blocked" || patch.meta.needsApplyForSpec;
         blockedEl.classList.toggle("hidden", !showBlocked);
         if (showBlocked) {
           blockedEl.textContent = patch.meta.needsApplyForSpec
             ? "새로 추가한 영역입니다 — 무료 [합성 적용] 후 지시문 저장 및 AI 작성을 사용할 수 있습니다."
-            : (patch.meta.specWhy || "지시문에 맞는 최신 프롬프트가 필요합니다. [AI 스마트 프롬프트 미리 작성] 또는 생성 시 자동 작성됩니다.");
+            : patch.meta.rawNeedsConfirm
+              ? "레퍼런스가 바뀌어 저장하지 못한 원문 프롬프트 확인이 필요합니다 — 아래 원문의 그림 번호(@imageN)를 확인한 뒤 [저장]을 눌러 주세요."
+              : (patch.meta.specWhy || "지시문에 맞는 최신 프롬프트가 필요합니다. [AI 스마트 프롬프트 미리 작성] 또는 생성 시 자동 작성됩니다.");
         }
       }
 
@@ -584,9 +588,24 @@ window.DPV2Inspector = (() => {
           }
         }
       }
-      // #C08-3: 원문 프롬프트 칸은 작성본 유무와 무관하게 항상 접근·동기화 가능 (AI 자동 꺼짐 시 자동 펼침)
+      // #C08-3 · #C18-1 · #C18-5: 원문 프롬프트 칸은 항상 접근·동기화 가능하며,
+      // AI 자동 꺼짐 또는 단일 선택된 막힌 직접 입력/충돌 원문 영역을 고르는 순간 자동으로 펼친다
       const rawDet = $("raw-prompt-details");
-      if (rawDet && !patch.meta.aiAuto) rawDet.open = true;
+      const isSingleManualBlocked = !isMulti && (
+        patch.meta.rawNeedsConfirm
+        || (patch.meta.promptSource === "manual" && patch.meta.specState === "blocked")
+      );
+      const rawAutoKey = isSingleManualBlocked
+        ? `${patch.id}|${patch.meta.seen}|${patch.meta.specState}|${patch.meta.rawNeedsConfirm ? "1" : "0"}`
+        : `${patch.id}|ok`;
+      if (rawDet) {
+        if (!patch.meta.aiAuto) {
+          rawDet.open = true;
+        } else if (isSingleManualBlocked && lastAutoOpenRawKey !== rawAutoKey) {
+          rawDet.open = true;
+        }
+      }
+      lastAutoOpenRawKey = rawAutoKey;
       const rawEl = $("inp-raw-prompt");
       if (rawEl) {
         if (document.activeElement !== rawEl) rawEl.value = patch.meta.body_en || "";
@@ -754,20 +773,19 @@ window.DPV2Inspector = (() => {
                   type: "button",
                   className: "mini-btn" + (isPicked ? " accent-outline" : ""),
                   text: isPicked ? "적용됨 ★" : "★ 채택",
+                  disabled: !!(patch.target && Store.isPickBusy(patch.id, patch.target.tid, cand.key)),
                   onClick: async (e) => {
                     e.stopPropagation();
                     if (!patch.target) return;
-                    try {
-                      await Api.pickCandidate(Store.state.root, {
-                        crop_id: patch.id, tid: patch.target.tid, key: cand.key,
-                        mode: isPicked ? "remove" : "add",
-                      });
-                      Store.selectCandidate(patch.target.key, cand.key);
-                      Store.toast(isPicked ? "채택을 해제했습니다." : `"${patch.name}"에 후보 #${cand.n || idx + 1}을 확정 적용했습니다 ★`, "ok");
-                      await Store.refreshAll(true);
-                    } catch (err) {
-                      Store.toast(`채택 실패: ${err.message}`, "err");
-                    }
+                    // #C21-6: POST /pick 요청이 도는 동안 연속 클릭 중복 전송을 잠근다
+                    await Store.pickCandidateGuarded({
+                      crop_id: patch.id,
+                      tid: patch.target.tid,
+                      key: cand.key,
+                      mode: isPicked ? "remove" : "add",
+                      selectTargetKey: patch.target.key,
+                      successToast: isPicked ? "채택을 해제했습니다." : `"${patch.name}"에 후보 #${cand.n || idx + 1}을 확정 적용했습니다 ★`,
+                    });
                   },
                 }),
                 Data.el("button", {
@@ -1203,7 +1221,7 @@ window.DPV2Inspector = (() => {
   }
 
   // ── 6. AI 스마트 프롬프트 작성 (계약 §3.4 · 최대 8패치 직렬 · 확인 창 없이 즉시 호출 D521 · 429/5xx/timeout/401/전송오류 즉시 중단 D520) ──
-  async function runAssistForPatches(patches, force = true) {
+  async function runAssistForPatches(patches, force = true, opts = {}) {
     // #C08-1①: 이미 작성이 진행 중이면 재진입을 막아 잠금 조기 해제를 방지한다
     if (Store.state.assistBusy) {
       Store.toast("AI 프롬프트 작성이 이미 진행 중입니다.");
@@ -1221,6 +1239,8 @@ window.DPV2Inspector = (() => {
       Store.toast("Phase V2-A 백엔드 브릿지(prompt/assist) 연결 대기 중입니다.", "err");
       return { ok: false, count: 0, aborted: true };
     }
+    const allowApplyRetry = opts.allowApplyRetry !== false;
+    let retriedApply = false;
     Store.state.assistBusy = true;
     Store.emit("selection");
     let written = 0;
@@ -1235,6 +1255,12 @@ window.DPV2Inspector = (() => {
           aborted = true;
           break;
         }
+        // #C18-5: 레퍼런스 변경 충돌(409) 뒤 확인이 필요한 미저장 원문은 해당 영역을 골라 저장하기 전까지 진행하지 않는다
+        if (p.meta.rawNeedsConfirm) {
+          Store.toast(`${p.name}: 레퍼런스가 바뀐 뒤 원문 프롬프트 확인이 필요합니다 — 그 영역을 골라 그림 번호를 확인하고 [저장]해 주세요.`, "err");
+          aborted = true;
+          break;
+        }
         // §3.4: 미저장 편집이 있으면 먼저 POST /spec 으로 최신 한국어 지시·목적 저장
         if (p.meta.dirtySpec || p.meta.rawDirty) {
           let saved;
@@ -1243,7 +1269,9 @@ window.DPV2Inspector = (() => {
           } catch (err) {
             Store.toast(`${p.name}: ${(err && (err.userMessage || err.message)) || "저장 실패"}`, "err");
             if (!err || !err.status || err.status === 401 || err.status === 403
-                || err.status === 429 || err.status >= 500 || err.data?.reason === "apply_needed" || err.staleRaw) {
+                || err.status === 429 || err.status >= 500
+                || (!force && err.status === 409)
+                || err.data?.reason === "apply_needed" || err.staleRaw) {
               aborted = true;
               break;
             }
@@ -1261,30 +1289,58 @@ window.DPV2Inspector = (() => {
         // #C08-1③: 응답 대기 중 사용자가 원문 칸을 직접 고쳤는지 판별하기 위해 호출 전 스냅샷 보관
         const rawSnapshot = p.meta.body_en || "";
         const rawDirtyBefore = !!p.meta.rawDirty;
+        const callAssistOnce = () => Api.assistPrompt(Store.state.root, {
+          crop_id: p.id,
+          seen: p.meta.seen,
+          crop_sig: p.meta.crop_sig,
+          force: !!force,
+        });
         let res;
         try {
-          res = await Api.assistPrompt(Store.state.root, {
-            crop_id: p.id,
-            seen: p.meta.seen,
-            crop_sig: p.meta.crop_sig,
-            force: !!force,
-          });
+          res = await callAssistOnce();
         } catch (err) {
-          const reason = err && err.data && err.data.reason;
-          if (err && err.status === 409 && reason === "stale") {
+          let activeErr = err;
+          let reason = activeErr && activeErr.data && activeErr.data.reason;
+          // #C21-1: 옮긴 영역 등 반영 전 상태(409 apply_needed)이면 확인하는 무료 반영 후 딱 한 번만 다시 작성한다
+          if (activeErr && activeErr.status === 409 && reason === "apply_needed" && allowApplyRetry && !retriedApply) {
+            retriedApply = true;
+            const ap = await runGuardedFreeApply(Store.state.root, {
+              statusToast: "변경된 영역을 먼저 반영한 뒤 AI 프롬프트를 작성합니다 (무료 반영)…",
+            });
+            if (!ap.ok) {
+              aborted = true;
+              break;
+            }
             await Store.loadSpec(p.id, true);
-            Store.toast(`${p.name}: 다른 곳에서 변경되어 최신 상태로 다시 읽었습니다 — 다시 눌러 주세요.`, "err");
-          } else {
-            Store.toast(`${p.name}: ${err.message}`, "err");
+            if (!force && (p.meta.promptSource === "manual" || p.meta.specState !== "blocked" || !p.meta.aiAuto)) {
+              continue;
+            }
+            try {
+              res = await callAssistOnce();
+              activeErr = null;
+            } catch (retryErr) {
+              activeErr = retryErr;
+              reason = activeErr && activeErr.data && activeErr.data.reason;
+            }
           }
-          // D520 / §7.3 C1 / #C08-1②: 전송 오류(status 없음)·401·403·429·5xx·timeout·busy·no_backend 이면 남은 패치 즉시 중단
-          if (!err || !err.status || err.isTimeout || err.status === 401 || err.status === 403
-              || err.status === 429 || err.status >= 500
-              || ["busy", "rate_limited", "no_backend", "no_session", "forge_auth", "no_access", "forge_unreachable"].includes(reason)) {
-            aborted = true;
-            break;
+          if (activeErr) {
+            if (activeErr.status === 409 && reason === "stale") {
+              await Store.loadSpec(p.id, true);
+              Store.toast(`${p.name}: 다른 곳에서 변경되어 최신 상태로 다시 읽었습니다 — 다시 눌러 주세요.`, "err");
+            } else {
+              Store.toast(`${p.name}: ${activeErr.message}`, "err");
+            }
+            // D520 / §7.3 C1 / #C08-1② / #C18-3: 전송 오류·401·403·429·5xx·timeout·busy·no_backend·apply_needed 및
+            // 자동 작성(!force) 중 모든 409 거절 시 남은 패치와 생성 흐름을 즉시 중단한다
+            if (!activeErr.status || activeErr.isTimeout || activeErr.status === 401 || activeErr.status === 403
+                || activeErr.status === 429 || activeErr.status >= 500
+                || (!force && activeErr.status === 409)
+                || ["busy", "rate_limited", "no_backend", "no_session", "forge_auth", "no_access", "forge_unreachable", "apply_needed"].includes(reason)) {
+              aborted = true;
+              break;
+            }
+            continue;
           }
-          continue;
         }
         if (res && res.ok && res.status === "written") {
           p.meta.seen = res.seen || p.meta.seen;
@@ -1486,6 +1542,9 @@ window.DPV2Inspector = (() => {
     Store.state.runFlowBusy = true;
     Store.emit("selection");
     try {
+      // #C21-3②: 생성 직전에 눌린 목적·AI 자동 즉시 저장(미로드 패치 조회 대기 포함)이 끝난 뒤 이어서 진행한다
+      await Store.awaitPendingQuickSpecs();
+
       // 1) 미로드 패치 스펙 동기화(칸별 dirty 보존) 및 반영 전 새 영역 선행 반영(#C06·#C09-1·#C10)
       if (Api.can("v2_spec_edit")) {
         for (const p of targets) {
@@ -1515,6 +1574,18 @@ window.DPV2Inspector = (() => {
               return;
             }
           }
+        }
+
+        // #C18-5: 앞선 409 충돌로 확인이 필요한 미저장 원문이 남아 있으면 새 레퍼런스 기준으로 몰래 저장되지 않게 즉시 중단한다
+        const rawConfirmPending = targets.filter((p) => p.meta.rawNeedsConfirm);
+        if (rawConfirmPending.length) {
+          const first = rawConfirmPending[0];
+          if (Store.state.primaryId === first.id && Store.state.selectedIds.size === 1) {
+            const det = $("raw-prompt-details");
+            if (det) det.open = true;
+          }
+          Store.toast(`${first.name}: 레퍼런스가 바뀐 뒤 원문 프롬프트 확인이 필요합니다 — 그 영역을 골라 그림 번호를 확인하고 [저장]해 주세요.`, "err");
+          return;
         }
 
         // 미저장 변경이 있는 모든 대상 패치를 서버에 저장 (직접 입력 포함)
@@ -1547,7 +1618,9 @@ window.DPV2Inspector = (() => {
         Store.toast(`${first.name}: ${whyMsg}`, "err");
       }
 
-      // D519 · #C06-4 · #C09-2: 서버 판정 state === "blocked" 이고 aiAuto 켜짐 + manual 출처가 아닌 패치만 자동 작성
+      // D519 · #C06-4 · #C09-2 · #C21-1: 서버 판정 state === "blocked" 이고 aiAuto 켜짐 + manual 출처가 아닌 패치만 자동 작성
+      // 옮긴 뒤 아직 반영되지 않은 영역(layout_status === "changed" 또는 레이아웃/매니페스트 사각형 불일치)이 포함되면
+      // 새 영역과 같이 확인하는 무료 반영을 먼저 실행한 뒤 작성한다(D562 409 apply_needed 방지)
       const needAssist = targets.filter((p) => {
         if (!p.meta.aiAuto || p.meta.needsApplyForSpec) return false;
         if (p.meta.specState !== "blocked") return false;
@@ -1555,7 +1628,27 @@ window.DPV2Inspector = (() => {
         return true;
       });
       if (needAssist.length && Api.can("v2_forge_prompt")) {
-        const ar = await runAssistForPatches(needAssist, false);
+        const isMovedUnapplied = (p) => {
+          const latest = Store.getPatch(p.id) || p;
+          if (!latest || !latest.stateCrop) return false;
+          if (latest.stateCrop.layout_status === "changed") return true;
+          const sr = latest.stateCrop.rect;
+          const lr = latest.rect;
+          return Array.isArray(sr) && Array.isArray(lr) && sr.length === 4 && lr.length === 4
+            && sr.some((v, i) => v !== lr[i]);
+        };
+        let appliedForMoved = false;
+        if (needAssist.some(isMovedUnapplied)) {
+          const ap = await runGuardedFreeApply(Store.state.root, {
+            statusToast: "변경된 영역을 먼저 반영한 뒤 AI 프롬프트를 작성합니다 (무료 반영)…",
+          });
+          if (!ap.ok) return;
+          appliedForMoved = true;
+          for (const p of needAssist) {
+            await Store.loadSpec(p.id, true);
+          }
+        }
+        const ar = await runAssistForPatches(needAssist, false, { allowApplyRetry: !appliedForMoved });
         if (ar.aborted) return;
         if (needAssist.length > 8) {
           Store.toast(`상한(8개)을 넘은 ${needAssist.length - 8}개 영역은 작성 대기 상태로 남습니다.`);
@@ -1816,31 +1909,82 @@ window.DPV2Inspector = (() => {
       const sel = Store.selectedPatches();
       if (!sel.length) return;
       const isMulti = sel.length > 1;
-      // #C13-1 · #C13-2 · #C15-1:
-      // - 「다시 확인」(원문을 고치지 않고 재전송)은 그 글이 원문 칸에 보이는 단일 선택(!isMulti)으로만 한정한다.
-      // - 다중 선택(isMulti)은 실제로 바뀐 칸(dirtySpec || rawDirty)이 있는 영역만 reconfirmBlockedManual=false 로 저장하고,
-      //   막힌 직접 입력 영역이 섞여 있으면 개별 선택해 확인하도록 별도로 알린다.
+      // #C13-1 · #C13-2 · #C15-1 · #C18-1 · #C18-5:
+      // - 「다시 확인」(막힌 직접 입력 글 무수정 재전송 및 409 충돌 원문 확인 저장)은
+      //   단일 선택(!isMulti)에서 원문 칸(#raw-prompt-details)이 펼쳐져 있을 때만 허용한다.
+      // - 단일 선택에서 원문 칸이 접혀 있으면 첫 [저장] 은 원문 칸을 펼쳐 확인하도록 안내한다.
+      // - 다중 선택(isMulti)은 실제로 바뀐 일반 칸만 원문 확인 해제 없이 저장하고,
+      //   확인이 필요한 막힌/충돌 직접 입력 영역은 개별 선택해 확인하도록 별도로 알린다.
       const isBlockedManual = (p) => !!(
         p && p.meta && p.meta.promptSource === "manual"
         && p.meta.specState === "blocked"
         && !!(p.meta.body_en || "").trim()
       );
-      const blockedManualInSel = isMulti ? sel.filter(isBlockedManual) : [];
-      const changed = isMulti ? sel.filter((p) => !!(p.meta.dirtySpec || p.meta.rawDirty)) : [sel[0]];
+      const needsRawConfirm = (p) => !!(p && p.meta && p.meta.rawNeedsConfirm);
+
+      if (!isMulti) {
+        const p0 = sel[0];
+        // #C21-3①: 막힌 영역을 처음 고르고 첫 스펙 조회가 끝나기 전에 [저장] 을 누른 경우,
+        // 먼저 조회를 끝낸 뒤 막힌 직접 입력 글이 드러났으면 이번 클릭으로 바로 풀지 않고 원문 칸을 펼쳐 확인시킨다
+        const wasLoadedBeforeClick = !!p0.meta.specLoaded;
+        if (Api.can("v2_spec_edit") && !wasLoadedBeforeClick && !p0.meta.needsApplyForSpec) {
+          await Store.loadSpec(p0.id, false);
+          if (!p0.meta.specLoaded && !p0.meta.needsApplyForSpec) {
+            await Store.loadSpec(p0.id, true);
+          }
+          if (Store.state.runFlowBusy || Store.state.assistBusy) return;
+        }
+        const rawDet = $("raw-prompt-details");
+        const rawCollapsed = !!(rawDet && !rawDet.open);
+        const justRevealedBlockedManual = !wasLoadedBeforeClick && isBlockedManual(p0) && !p0.meta.rawDirty;
+        const needOpenToConfirm = needsRawConfirm(p0) || (isBlockedManual(p0) && !p0.meta.rawDirty);
+        if (justRevealedBlockedManual || (needOpenToConfirm && rawCollapsed)) {
+          if (rawDet) rawDet.open = true;
+          if (!p0.meta.dirtySpec) {
+            Store.toast("직접 입력한 원문 프롬프트의 그림 번호를 확인한 뒤 다시 [저장]을 눌러 주세요.");
+            return;
+          }
+          // 다른 일반 칸(지시문·목적·AI 자동)이 바뀌어 있었다면 그 칸만 원문 없이 저장하고 원문 확인을 안내
+          try {
+            const res = await Store.savePatchSpec(p0, {
+              fields: ["purpose", "instruction", "aiAuto"],
+            });
+            if (res && res.unsupported) {
+              Store.toast(res.reason, "err");
+              return;
+            }
+            Store.toast("지시문을 저장했습니다 — 펼쳐진 원문 프롬프트의 그림 번호를 확인한 뒤 다시 [저장]해 주세요.");
+          } catch (err) {
+            Store.toast(`지시문 저장 실패: ${(err && (err.userMessage || err.message)) || "저장 실패"}`, "err");
+          }
+          return;
+        }
+      }
+
+      // #C21-5: 다중 선택 [저장] 에서 rawNeedsConfirm 인 영역은 다른 칸도 포함해 통째로 건너뛰고 이름을 알린다
+      const rawConfirmInSel = isMulti ? sel.filter(needsRawConfirm) : [];
+      const blockedManualInSel = isMulti ? sel.filter((p) => !needsRawConfirm(p) && isBlockedManual(p)) : [];
+      const changed = isMulti
+        ? sel.filter((p) => !needsRawConfirm(p) && !!(p.meta.dirtySpec || p.meta.rawDirty))
+        : [sel[0]];
       const targetsToSave = isMulti
         ? (changed.length
           ? changed
-          : (blockedManualInSel.length ? [] : [Store.primaryPatch() || sel[0]].filter(Boolean)))
+          : ((blockedManualInSel.length || rawConfirmInSel.length) ? [] : [Store.primaryPatch() || sel[0]].filter(Boolean)))
         : [sel[0]];
 
       let savedCount = 0;
       const failed = [];
       for (const p of targetsToSave) {
         try {
-          const res = await Store.savePatchSpec(p, {
-            includeRaw: !!p.meta.rawDirty,
-            reconfirmBlockedManual: !isMulti,
-          });
+          const saveOpts = isMulti
+            ? { includeRaw: !!p.meta.rawDirty, reconfirmBlockedManual: false }
+            : {
+              includeRaw: !!p.meta.rawDirty,
+              reconfirmBlockedManual: true,
+              confirmStaleRaw: true,
+            };
+          const res = await Store.savePatchSpec(p, saveOpts);
           if (res && res.unsupported) {
             Store.toast(res.reason, "err");
             return;
@@ -1860,6 +2004,10 @@ window.DPV2Inspector = (() => {
         Store.toast(`${savedCount}개 영역의 지시문을 저장했습니다.`, "ok");
       } else if (savedCount === 1) {
         Store.toast("지시문을 저장했습니다.", "ok");
+      }
+      if (isMulti && rawConfirmInSel.length) {
+        const names = rawConfirmInSel.map((p) => p.name).join(", ");
+        Store.toast(`${names}: 레퍼런스가 바뀐 뒤 원문 프롬프트 확인이 필요해 저장을 건너뛰었습니다 — 그 영역을 골라 확인한 뒤 저장해 주세요.`, "err");
       }
       if (isMulti && blockedManualInSel.length) {
         const stillBlocked = blockedManualInSel.filter(isBlockedManual);
@@ -2082,6 +2230,16 @@ window.DPV2Inspector = (() => {
         const rotVal = rotChanged ? (f.transformEnabled ? Number(f.rot || 0) : 0) : (typeof prev.rot === "number" ? prev.rot : 0);
         const sxVal = scaleChanged ? scaleVal : (typeof prev.sx === "number" ? prev.sx : 1.0);
         const syVal = scaleChanged ? scaleVal : (typeof prev.sy === "number" ? prev.sy : 1.0);
+        // #C18-6②: 서버 응답을 기다리는 사이 사용자가 만진 축은 응답으로 덮지 않도록 전송 직전 UI 값을 기록한다
+        const sentSnapshot = {
+          feather: f.feather,
+          dx: f.dx,
+          dy: f.dy,
+          rot: f.rot,
+          scale: f.scale,
+          edgeEnabled: f.edgeEnabled,
+          transformEnabled: f.transformEnabled,
+        };
 
         const res = await Api.adjustMask(Store.state.root, {
           key: cand.key,
@@ -2100,8 +2258,8 @@ window.DPV2Inspector = (() => {
         const appliedAdj = (res && res.adjust && typeof res.adjust === "object")
           ? res.adjust
           : { blur: blurVal, dx: dxVal, dy: dyVal, rot: rotVal, sx: sxVal, sy: syVal };
-        // #C15-6: 눈 끄기 후 적용 → 다시 켜기 시 옛 값이 남지 않도록 적용 직후 슬라이더를 서버 응답값으로 맞춘다
-        Store.syncCandidateFiltersFromAdjust(p.id, cand.key, appliedAdj, true);
+        // #C15-6 · #C18-6②: 보낼 때의 값과 같은 축만 서버 응답값으로 맞추고 _touched 를 해제한다
+        Store.syncCandidateFiltersFromAdjust(p.id, cand.key, appliedAdj, sentSnapshot);
         if (Store.state.mask && Store.state.mask.key === cand.key && res && res.adjust) {
           Store.state.mask.adjust = res.adjust;
         }

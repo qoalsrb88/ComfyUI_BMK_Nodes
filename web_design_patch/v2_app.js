@@ -62,9 +62,11 @@
       if (syncTxt.textContent !== nextMsg) syncTxt.textContent = nextMsg;
     }
 
+    // #C18-3: 생성 흐름·AI 프롬프트 작성 진행 중에는 상단 실행 취소/다시 실행 버튼도 잠근다
+    const histLocked = !!(Store.state.runFlowBusy || Store.state.assistBusy);
     const btnUndo = $("btn-undo"), btnRedo = $("btn-redo");
-    if (btnUndo) btnUndo.disabled = Store.state.histIndex < 0;
-    if (btnRedo) btnRedo.disabled = Store.state.histIndex >= Store.state.history.length - 1;
+    if (btnUndo) btnUndo.disabled = histLocked || Store.state.histIndex < 0;
+    if (btnRedo) btnRedo.disabled = histLocked || Store.state.histIndex >= Store.state.history.length - 1;
 
     const vf = Store.state.viewFlags;
     const bOrig = $("btn-view-original");

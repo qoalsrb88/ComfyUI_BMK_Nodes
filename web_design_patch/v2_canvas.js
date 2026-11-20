@@ -1233,21 +1233,24 @@ window.DPV2Canvas = (() => {
     const hudDone = $("btn-hud-done-mask");
     if (hudDone) hudDone.addEventListener("click", () => setTool("select"));
 
-    // 라이브 후보 프리뷰 즉시 채택 버튼
+    // 라이브 후보 프리뷰 즉시 채택 버튼 (#C07-4 · #C21-6: 다중 채택 보존 + 연속 클릭 중복 잠금)
     const livePick = $("btn-live-pick");
     if (livePick) livePick.addEventListener("click", async () => {
       const patch = Store.primaryPatch();
       const cand = Store.currentCandidate(patch);
       if (!patch || !patch.target || !cand) return;
+      if (Store.isPickBusy(patch.id, patch.target.tid, cand.key)) return;
+      livePick.disabled = true;
       try {
-        // #C07-4: 다중 채택 보존 — mode: "add" 사용
-        await Api.pickCandidate(Store.state.root, {
-          crop_id: patch.id, tid: patch.target.tid, key: cand.key, mode: "add",
+        await Store.pickCandidateGuarded({
+          crop_id: patch.id,
+          tid: patch.target.tid,
+          key: cand.key,
+          mode: "add",
+          successToast: `${patch.name}에 후보 #${cand.n || 1}을 확정 적용했습니다 ★`,
         });
-        Store.toast(`${patch.name}에 후보 #${cand.n || 1}을 확정 적용했습니다 ★`, "ok");
-        await Store.refreshAll(true);
-      } catch (err) {
-        Store.toast(`채택 실패: ${err.message}`, "err");
+      } finally {
+        livePick.disabled = false;
       }
     });
 
