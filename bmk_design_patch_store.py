@@ -1258,6 +1258,8 @@ MASK_STACK_FEATHER_MAX = 32      # 전체 페더 σ(캔버스 px)
 MASK_STACK_FADE_MAX = 256        # 4면 페이드 폭(캔버스 px) — 그 변 길이의 절반을 넘으면 절반으로 낮춰 계산한다(합성 쪽)
 POST_TOOLS = ("upscale", "bg_removal")
 POST_MAX_SIDE = 4096             # 파생본 그림 한 변의 상한(마스크 창 상한 4096² 과 같은 수)
+POST_TOOL_NAMES = {"upscale": "업스케일", "bg_removal": "배경 제거"}
+POST_MODEL_NAMES = {"pid_upscale": "PiD 1.5 업스케일", "magnific_v2": "Magnific Precision V2", "RMBG-2.0": "RMBG 2.0"}  # 화면 표시 이름
 RECORD_HIST_KEEP = 20
 _REC_AT_RE = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{1,9})?")
 _POST_FILE_RE = re.compile(r"post/([0-9a-f]{24})/out\.(png|jpg|jpeg|webp)")
@@ -1386,6 +1388,13 @@ def cand_post_effect(rec: dict | None) -> dict | None:
     if rec is None or not rec["on"]:
         return None
     return {"file": rec["file"], "size": list(rec["size"]), "tool": rec["tool"], "model": rec["model"]}
+
+
+def post_label(rec: dict) -> str:
+    """파생본 한 판의 표시 글 — 「업스케일 · PiD 1.5 업스케일 ×2」·「배경 제거 · RMBG 2.0」(모르는 모델은 id 그대로)."""
+    text = f"{POST_TOOL_NAMES.get(rec['tool'], rec['tool'])} · {POST_MODEL_NAMES.get(rec['model'], rec['model'])}"
+    scale = rec["opts"].get("scale") if rec["tool"] == "upscale" else None
+    return text + (f" ×{scale}" if type(scale) is int else "")
 
 
 def cand_effective(m: dict, cand: dict, root: str | None = None) -> dict:

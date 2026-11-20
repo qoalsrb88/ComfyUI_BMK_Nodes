@@ -64010,6 +64010,38 @@ def ux_v2b_dev_unit():
 
 
 # ══════════════════════════════════════════════════════════════════════
+# UX v2 Phase V2-C 2차(후보정 브릿지) — 갈래마다 자기 묶음 안만 채운다(서로의 묶음·1차 묶음을 고치지 않는다)
+# ══════════════════════════════════════════════════════════════════════
+def ux_v2c_post_pixels_unit():
+    """UX v2-C 갈래 S2(명세 D576–D578·D585) — 합성·Export 가 읽는 효과 그림(파생본)·세 서명의 cand_post 행·사이드카·레이어 이름. 갈래 S2 가 채운다."""
+    section("UX v2-C — 후보정 파생본의 합성·Export (ux_v2c_post_pixels_unit)")
+
+
+# (갈래 S2 ↑ · 갈래 P ↓)
+
+
+def ux_v2c_post_unit():
+    """UX v2-C 갈래 P(명세 D583·D584·D588–D606 · §3.3–§3.5) — 후보정 키·원장·계획·실행·결과 검사·라우트·기능 플래그. 갈래 P 가 채운다."""
+    section("UX v2-C — 후보정 호출·원장·라우트 (ux_v2c_post_unit)")
+
+
+# (갈래 P ↑ · 갈래 A ↓)
+
+
+def ux_v2c_submit_unit():
+    """UX v2-C 갈래 A(명세 D593·D594·D621 · §3.7) — 공용 모듈의 후보정 제출·승인 상자의 글·v1 의 읽기 표시. 갈래 A 가 채운다."""
+    section("UX v2-C — 후보정 승인(공용 모듈) (ux_v2c_submit_unit)")
+
+
+# (갈래 A ↑ · 갈래 D ↓)
+
+
+def ux_v2c_dev_unit():
+    """UX v2-C 갈래 D(명세 D625) — 가짜 Forge 의 업스케일·배경 제거 흉내. 갈래 D 가 채운다."""
+    section("UX v2-C — 가짜 Forge 의 후보정 흉내 (ux_v2c_dev_unit)")
+
+
+# ══════════════════════════════════════════════════════════════════════
 # UX v2 Phase V2-C (STUDIO_UX_V2C_SPEC — 마스크 필터 스택 · 후보정 파생본 · --only 이름 = 묶음)
 # ══════════════════════════════════════════════════════════════════════
 # 불변 기준(D586 ①): 구현 전 판 1efbf8b 에서 아래 합성 프로젝트(_v2c_project — ★ 셋·마스크 편집·후보 보정(블러·뒤집기·변형·색반전)·
@@ -64379,6 +64411,8 @@ def ux_v2c_core_unit():
     check(all(pread(b) is None for b in pbad), "V2CC5 깨진 파생본 기록은 없음으로 읽음")
     check(st.cand_post_effect(pread(rec)) == {"file": rec["file"], "size": [2048, 1536], "tool": "upscale", "model": "pid_upscale"}
           and st.cand_post_effect(pread(post(on=False))) is None and st.cand_post_effect(None) is None, "V2CC5 효과 값 = 켜진 것만")
+    check(st.post_label(pread(rec)) == "업스케일 · PiD 1.5 업스케일 ×2" and st.post_label(prev) == "배경 제거 · RMBG 2.0"
+          and st.post_label(pread(post(model="new_model", opts={}))) == "업스케일 · new_model", "V2CC5 표시 글(도구 · 모델 이름 · 배율)")
 
     # ── cand_effective: ★ · 유효 · 켜짐 · (root 를 주면) 파일 있음일 때만 파생본
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -76669,6 +76703,14 @@ if __name__ == "__main__":
         ux_v2c_stack_unit()
     if want("ux_v2c_route_unit"):
         ux_v2c_route_unit()
+    if want("ux_v2c_post_pixels_unit"):
+        ux_v2c_post_pixels_unit()
+    if want("ux_v2c_post_unit"):
+        ux_v2c_post_unit()
+    if want("ux_v2c_submit_unit"):
+        ux_v2c_submit_unit()
+    if want("ux_v2c_dev_unit"):
+        ux_v2c_dev_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
