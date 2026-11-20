@@ -60256,6 +60256,7 @@ def ux_v2a_entry_unit():
     section("UX v2-A — 진입점 (ux_v2a_entry_unit)")
     import asyncio
     import tempfile
+    import yarl
     from aiohttp import web as aio_web
     from aiohttp.test_utils import TestClient, TestServer
     from unittest.mock import patch
@@ -60336,8 +60337,9 @@ def ux_v2a_entry_unit():
     env_js = (web / "env.js").read_text(encoding="utf-8")
     local_js = env_js[env_js.index("const LOCAL_CAPS = {"):env_js.index("};", env_js.index("const LOCAL_CAPS = {"))]
     # 불리언 칸은 true/false, 문자열 칸(ui_default)은 따옴표 붙은 글자값으로 적혀 있다
-    check(all((f'{name}: "{value}"' if isinstance(value, str) else f"{name}: {'true' if value else 'false'}") in local_js
-              for name, value in bd.LOCAL_CAPS.items()),
+    check(all(type(value) is bool for name, value in bd.LOCAL_CAPS.items() if name != "ui_default") and bd.LOCAL_CAPS["ui_default"] == "v1"
+          and all((f'{name}: "{value}"' if name == "ui_default" else f"{name}: {'true' if value else 'false'}") in local_js
+                  for name, value in bd.LOCAL_CAPS.items()),
           "V2E env.js 의 로컬 기능 표가 서버 표(LOCAL_CAPS)와 같음")
 
     # ── 서버: ?ui=v2 분기 · caps.ui_v2 · 파일 제공
@@ -60423,7 +60425,10 @@ def ux_v2a_entry_unit():
                 ):
                     url = bd.API + "/board/" + suffix
                     with patch.object(bd, "v2_available", wraps=bd.v2_available) as probe:
-                        response = await client.get(url)
+                        # 퍼센트 인코딩은 클라이언트가 풀지 않은 채 서버까지 보낸다(encoded=True) — 서버가 푼 값으로 판정하는지 본다
+                        response = await client.get(yarl.URL(url, encoded=True) if "%" in suffix else url)
+                    if "%" in suffix:
+                        check("%76%3" in response.url.raw_query_string, f"V2E 인코딩된 쿼리가 그대로 서버로 감 {url}")
                     check(probe.call_count == probe_count, f"V2E v2 선택 때만 가용성 조회 {url}")
                     if entry is None:
                         check(response.status == 404, "V2E 이름을 지정한 v2.html 파일이 없으면 404")
@@ -60433,9 +60438,12 @@ def ux_v2a_entry_unit():
                           and response.headers.get("Cache-Control") == "no-store"
                           and response.headers.get("X-Content-Type-Options") == "nosniff",
                           f"V2E {web_dir.name} {url} → {entry} 본문·헤더")
-                response = await client.head(bd.API + "/board/")
-                check(response.status == 200 and response.headers["Content-Type"].startswith("text/html"),
-                      f"V2E 설정 v2·{web_dir.name} HEAD 도 같은 처리기")
+                with patch.object(bd, "v2_available", wraps=bd.v2_available) as probe:
+                    response = await client.head(bd.API + "/board/")
+                    head_v1 = await client.head(bd.API + "/board/?ui=v1")
+                # 두 화면 파일의 길이가 같아 본문 없이는 가릴 수 없다 — 새 화면을 고르는 길에서만 화면 파일을 찾아본다는 것으로 가린다
+                check(response.status == 200 and head_v1.status == 200 and response.headers["Content-Type"].startswith("text/html")
+                      and probe.call_count == 1, f"V2E 설정 v2·{web_dir.name} HEAD 도 GET 과 같은 분기")
                 for path, query in (("/", "parent_origin=x"), (bd.API + "/board", "root=abc")):
                     response = await client.get(path + "?" + query, allow_redirects=False)
                     check(response.status == 302 and response.headers["Location"] == bd.API + "/board/?" + query,
