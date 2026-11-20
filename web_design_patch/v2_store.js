@@ -349,11 +349,15 @@ window.DPV2Store = (() => {
     if (!meta.dirtyFields) {
       meta.dirtyFields = { purpose: false, instruction: false, aiAuto: false, raw: false };
     }
+    if (!meta._dirtyVer || typeof meta._dirtyVer !== "object") {
+      meta._dirtyVer = { purpose: 0, instruction: 0, aiAuto: 0, raw: 0 };
+    }
     // #C11-2: 원문/지시 편집 시작 시점의 seen 스냅샷을 기억해 두 창 간 레퍼런스 변경 충돌을 서버 409로 안전하게 감지한다
     if (field === "raw" && !meta.editBaseSeen && meta.specLoaded && meta.seen && meta.seen !== "null") {
       meta.editBaseSeen = meta.seen;
     }
     if (field in meta.dirtyFields) meta.dirtyFields[field] = true;
+    if (field in meta._dirtyVer) meta._dirtyVer[field] = (meta._dirtyVer[field] || 0) + 1;
     meta.dirtySpec = !!(meta.dirtyFields.purpose || meta.dirtyFields.instruction || meta.dirtyFields.aiAuto);
     meta.rawDirty = !!meta.dirtyFields.raw;
   }
@@ -409,16 +413,35 @@ window.DPV2Store = (() => {
     const sentAiAuto = fromSave && (!sentFields || sentFields.has("aiAuto"));
     const sentRaw = fromSave && includedRaw;
     const directValues = !!opts.directFieldValues;
+    const preValues = opts.preSendValues || null;
+    const preVer = opts.preSendDirtyVer || null;
+    const curVer = m._dirtyVer || {};
+    // #C23-6: 실행 취소(fieldValues) 응답은 전송 직전 화면 값·편집 버전과 현재가 모두 같을 때만 반영해
+    // 응답 대기 중 사용자가 새로 고친 값과 dirty 상태를 덮어쓰지 않는다
+    const sameDirect = (fieldKey, curVal, preVal) => {
+      if (!preValues) return true;
+      const valSame = curVal === preVal;
+      const verSame = !preVer || ((curVer[fieldKey] || 0) === (preVer[fieldKey] || 0));
+      return valSame && verSame;
+    };
 
-    const purposeSameAsSent = sentPurpose && (directValues || !sent || m.purpose === sent.purpose);
-    const instSameAsSent = sentInst && (directValues || !sent || (m.user_instruction_ko || "") === (sent.user_instruction_ko || ""));
-    const aiAutoSameAsSent = sentAiAuto && (directValues || !sent || !!m.aiAuto === !!sent.aiAuto);
-    const rawSameAsSent = sentRaw && (directValues || !sent || (m.body_en || "") === (sent.body_en || ""));
+    const purposeSameAsSent = sentPurpose && (directValues
+      ? sameDirect("purpose", m.purpose, preValues ? preValues.purpose : undefined)
+      : (!sent || m.purpose === sent.purpose));
+    const instSameAsSent = sentInst && (directValues
+      ? sameDirect("instruction", m.user_instruction_ko || "", preValues ? preValues.user_instruction_ko : undefined)
+      : (!sent || (m.user_instruction_ko || "") === (sent.user_instruction_ko || "")));
+    const aiAutoSameAsSent = sentAiAuto && (directValues
+      ? sameDirect("aiAuto", !!m.aiAuto, preValues ? !!preValues.aiAuto : undefined)
+      : (!sent || !!m.aiAuto === !!sent.aiAuto));
+    const rawSameAsSent = sentRaw && (directValues
+      ? sameDirect("raw", m.body_en || "", preValues ? preValues.body_en : undefined)
+      : (!sent || (m.body_en || "") === (sent.body_en || "")));
 
-    const canOverwritePurpose = !dirtyPurpose || purposeSameAsSent;
-    const canOverwriteInst = !dirtyInstruction || instSameAsSent;
-    const canOverwriteAiAuto = !dirtyAiAuto || aiAutoSameAsSent;
-    const canOverwriteRaw = !dirtyRaw || rawSameAsSent;
+    const canOverwritePurpose = (directValues && sentPurpose) ? purposeSameAsSent : (!dirtyPurpose || purposeSameAsSent);
+    const canOverwriteInst = (directValues && sentInst) ? instSameAsSent : (!dirtyInstruction || instSameAsSent);
+    const canOverwriteAiAuto = (directValues && sentAiAuto) ? aiAutoSameAsSent : (!dirtyAiAuto || aiAutoSameAsSent);
+    const canOverwriteRaw = (directValues && sentRaw) ? rawSameAsSent : (!dirtyRaw || rawSameAsSent);
 
     if (res.v2 && typeof res.v2 === "object") {
       if (canOverwritePurpose) m.purpose = res.v2.purpose || "correct";
@@ -563,6 +586,16 @@ window.DPV2Store = (() => {
 
     const seenToSend = (includeRaw && m.editBaseSeen) ? m.editBaseSeen : m.seen;
     const fieldValues = (opts.fieldValues && typeof opts.fieldValues === "object") ? opts.fieldValues : null;
+    const preSendValues = fieldValues ? {
+      purpose: m.purpose,
+      user_instruction_ko: m.user_instruction_ko || "",
+      aiAuto: !!m.aiAuto,
+      body_en: m.body_en || "",
+    } : null;
+    const preSendDirtyVer = fieldValues ? Object.assign(
+      { purpose: 0, instruction: 0, aiAuto: 0, raw: 0 },
+      m._dirtyVer || {}
+    ) : null;
     const sent = {};
     const payload = {
       crop_id: patch.id,
@@ -596,6 +629,8 @@ window.DPV2Store = (() => {
           seenSent: seenToSend,
           confirmStaleRaw: !!opts.confirmStaleRaw,
           directFieldValues: !!fieldValues,
+          preSendValues,
+          preSendDirtyVer,
         });
         // #C18-4: 목적·AI 자동이 즉시 저장이 아닌 다른 길(다중 저장 등)로 바뀌어 저장되면 낡은 실행 취소 기록을 정리한다
         if (!opts.fromQuickSpec) {
@@ -628,8 +663,10 @@ window.DPV2Store = (() => {
     }
   }
 
-  // #C21-3②: 읽지 않은 영역의 목적·AI 자동을 누르고 응답 전에 생성을 눌러도 해당 변경이 빠지지 않도록 진행 중인 즉시 저장을 추적한다
+  // #C21-3② · #C23-5: 읽지 않은 영역의 목적·AI 자동을 누르고 응답 전에 생성을 눌러도 빠지지 않도록 추적하며,
+  // 서로 다른 두 칸을 잇달아 바꿔도 앞의 것이 취소되거나 같은 seen 으로 409 나지 않게 크롭별 직렬 큐 + 칸별 시퀀스로 처리한다
   const pendingQuickSpecPromises = new Set();
+  const quickSpecQueues = new Map();
 
   async function awaitPendingQuickSpecs() {
     while (pendingQuickSpecPromises.size > 0) {
@@ -637,7 +674,7 @@ window.DPV2Store = (() => {
     }
   }
 
-  // #C13-11 · #C18-2 · #C18-3 · #C18-4 · #C18-6① · #C21-2 · #C21-3② · #C21-4:
+  // #C13-11 · #C18-2 · #C18-3 · #C18-4 · #C18-6① · #C21-2 · #C21-3② · #C21-4 · #C23-5:
   // 단일 선택에서 목적·AI 자동을 바꿀 때 그 칸만 즉시 저장하고 정확한 이전 값 기준으로 토스트 [되돌리기] + Ctrl+Z 실행 취소를 제공한다
   function applyQuickSpecChange(patch, field, nextVal) {
     if (!patch || !patch.meta) return Promise.resolve(null);
@@ -646,17 +683,22 @@ window.DPV2Store = (() => {
     const cropId = patch.id;
     const m = patch.meta;
     const normNext = field === "purpose" ? nextVal : !!nextVal;
-    const seq = (m._quickSpecSeq = (m._quickSpecSeq || 0) + 1);
+    if (!m._quickSpecSeqByField || typeof m._quickSpecSeqByField !== "object") {
+      m._quickSpecSeqByField = {};
+    }
+    const seq = (m._quickSpecSeqByField[field] = (m._quickSpecSeqByField[field] || 0) + 1);
 
-    const task = (async () => {
-      // #C18-6① · #C21-3②: 영역을 처음 고르고 GET /spec 응답이 끝나기 전에 목적·AI 자동을 누른 경우
-      // 서버의 실제 이전 값을 먼저 읽되, 생성 버튼이 뒤이어 눌린 경우(runFlowBusy)에도 이 앞선 클릭의 변경은 누락하지 않고 마무리한다
+    const prevChain = quickSpecQueues.get(cropId) || Promise.resolve();
+    const task = prevChain.catch(() => null).then(async () => {
+      if (m._quickSpecSeqByField[field] !== seq || state.assistBusy) return null;
+      // #C18-6① · #C21-3② · #C23-5: 영역을 처음 고르고 GET /spec 응답이 끝나기 전에 목적·AI 자동을 누른 경우
+      // 서버의 실제 이전 값을 먼저 읽되, 같은 칸의 연속 클릭만 대체하고 서로 다른 칸은 직렬로 모두 반영한다
       if (Api.can("v2_spec_edit") && !m.specLoaded && !m.needsApplyForSpec) {
         await loadSpec(cropId, false);
-        if (m._quickSpecSeq !== seq || state.assistBusy) return null;
+        if (m._quickSpecSeqByField[field] !== seq || state.assistBusy) return null;
         if (!m.specLoaded && !m.needsApplyForSpec) {
           await loadSpec(cropId, true);
-          if (m._quickSpecSeq !== seq || state.assistBusy) return null;
+          if (m._quickSpecSeqByField[field] !== seq || state.assistBusy) return null;
         }
         if (!m.specLoaded && !m.needsApplyForSpec) {
           toast("서버에서 기존 스펙을 읽지 못했습니다 — 잠시 후 다시 시도해 주세요.", "err");
@@ -706,7 +748,7 @@ window.DPV2Store = (() => {
                 skippedStaleHistory: true,
               });
             }
-            // #C21-2: 서버 저장이 성공한 뒤에만 화면 값이 바뀌도록 fieldValues 로 전송하고 저장 전에는 화면/dirty 를 건드리지 않는다
+            // #C21-2 · #C23-6: 서버 저장이 성공한 뒤에만 화면 값이 바뀌도록 fieldValues 로 전송하고 저장 전에는 화면/dirty 를 건드리지 않는다
             await savePatchSpec(curPatch, {
               fields: [field],
               fieldValues: { [field]: targetVal },
@@ -745,10 +787,15 @@ window.DPV2Store = (() => {
         toast(`지시문 저장 실패: ${(err && (err.userMessage || err.message)) || "저장 실패"}`, "err");
         return null;
       }
-    })();
+    });
 
-    pendingQuickSpecPromises.add(task);
-    return task.finally(() => { pendingQuickSpecPromises.delete(task); });
+    const tracked = task.finally(() => {
+      pendingQuickSpecPromises.delete(tracked);
+      if (quickSpecQueues.get(cropId) === tracked) quickSpecQueues.delete(cropId);
+    });
+    quickSpecQueues.set(cropId, tracked);
+    pendingQuickSpecPromises.add(tracked);
+    return tracked;
   }
 
   function projectPrepareRaw() {
