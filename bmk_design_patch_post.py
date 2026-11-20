@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import struct
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -170,16 +171,18 @@ def _available(model, catalog):
 
 
 def _blocked(src, tool, model, opts, catalog):
-    if src.get("error") or tool != "upscale":
-        return src.get("error")
-    if src["alpha"]:
+    if src.get("error"):
+        return src["error"]
+    if tool == "upscale" and src["alpha"]:
         return "배경을 지운 그림은 업스케일할 수 없습니다 — 업스케일을 먼저 한 뒤 배경을 지워 주세요"
     side = max(src["size"])
-    if side * 2 > store.POST_MAX_SIDE:
-        return "이미 충분히 큰 그림입니다"
-    if side * opts["scale"] > store.POST_MAX_SIDE:
+    if side * opts.get("scale", 1) > store.POST_MAX_SIDE:
+        if tool == "bg_removal":
+            return "그림의 변이 4096 을 넘어 후보정 결과를 붙일 수 없습니다"
+        if side * 2 > store.POST_MAX_SIDE:
+            return "이미 충분히 큰 그림입니다"
         return "지금 그림의 변 × 배율 이 4096 을 넘습니다"
-    return _available(model, catalog)
+    return _available(model, catalog) if tool == "upscale" else None
 
 
 class Ledger:
@@ -254,11 +257,26 @@ class Ledger:
             raise _bad_record()
         if type(attempt) is not int or attempt < 1:
             raise _bad_record()
+        failed = self.read("failed")
+        if failed and failed.get("unusable") is True:
+            return "unusable", attempt
         if self.done() is not None:
             return "reuse", attempt
         if self.receipt() is not None:
             return "recover", attempt
-        return "new", attempt + int(self.read("failed") is not None)
+        if failed is not None:
+            return "new", attempt + 1
+        if req is not None:
+            # 거절 표지를 쓴 뒤 실패 파일을 쓰기 전에 중단되어도 지난 승인을 다시 쓰지 않는다.
+            rows = self.sidecar()["requests"]
+            if rows and rows[-1]["state"] == "rejected" and rows[-1]["attempt"] == attempt:
+                return "new", attempt + 1
+        return "new", attempt
+
+    def unusable_reason(self):
+        failed = self.read("failed") or {}
+        reason = fg._safe_message(failed.get("error"), "결과 그림을 읽을 수 없습니다.")
+        return f"받은 결과를 쓸 수 없습니다({reason}) — 같은 조건으로는 다시 요청하지 않습니다. 다른 옵션으로 해 보세요"
 
 
 def _model(model):
@@ -279,7 +297,12 @@ def _plan(root, args, catalog):
         inputs[key] = {k: src[k] for k in ("file", "size", "sha") if k in src}
         why = _blocked(src, tool, model, opts, catalog)
         pk = post_key(tool, _settings(tool, model, opts), src["sha"]) if "sha" in src else None
-        state, attempt = ("blocked", 0) if why else Ledger(root, pk).state()
+        state, attempt = "blocked", 0
+        if not why:
+            ledger = Ledger(root, pk)
+            state, attempt = ledger.state()
+            if state == "unusable":
+                state, why = "blocked", ledger.unusable_reason()
         if not why and pk in scheduled:
             state = "reuse"  # 앞 후보의 결과만 등록한다. 앞 후보가 실패해도 추가 제출하지 않는다.
         if not why:
@@ -347,15 +370,26 @@ async def _submit(ctx, poller, tool, body, *, uncertain):
                              phase="request", retryable=True, maybe_billed=True)
 
 
+class _NoResult(runner.CallError):
+    """접수한 잡에 결과가 없어 새 승인이 필요하다."""
+
+
+class _Unusable(runner.CallError):
+    """같은 잡의 결과를 다시 받아도 등록할 수 없다."""
+
+    def __init__(self, message, *, phase="response", status=None):
+        super().__init__(message, status=status, phase=phase, retryable=False, maybe_billed=True)
+
+
 def _check_result(data, tool, src_size):
     if not isinstance(data, bytes) or len(data) > MEDIA_LIMIT:
-        raise runner.CallError("결과 그림의 형식 또는 크기가 잘못되었습니다.", phase="download", maybe_billed=True)
+        raise _Unusable("결과 그림의 형식 또는 크기가 잘못되었습니다.", phase="download")
     try:
         with Image.open(io.BytesIO(data)) as im:
             if im.format not in FORMATS:
                 raise ValueError
             if max(im.size) > store.POST_MAX_SIDE:
-                raise runner.CallError("결과 그림의 변이 4096 을 넘습니다.", phase="response", maybe_billed=True)
+                raise _Unusable("결과 그림의 변이 4096 을 넘습니다.")
             im.verify()
         with Image.open(io.BytesIO(data)) as im:
             im.load()
@@ -369,8 +403,8 @@ def _check_result(data, tool, src_size):
             if tool == "bg_removal" and not _alpha(im):
                 warnings.append(OPAQUE)
             return FORMATS[im.format][0], [w, h], warnings
-    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
-        raise runner.CallError("결과 그림을 읽을 수 없습니다.", phase="response", maybe_billed=True) from None
+    except (OSError, ValueError, SyntaxError, EOFError, struct.error, Image.DecompressionBombError):
+        raise _Unusable("결과 그림을 읽을 수 없습니다.") from None
 
 
 async def _request(ledger, ctx, poller, item, plan, src, crop_id, data):
@@ -423,24 +457,23 @@ async def _receive(ledger, ctx, poller, resp, tool, size):
         ledger.write("resp", resp)
     try:
         result = await poller._poll(job_id, ledger.key, submitted, recovery=True)
+    except runner.CallError as exc:
+        if exc.status in (404, 410) and exc.retryable is False:
+            raise _NoResult("Forge 후보정 작업이 만료되어 결과를 조회할 수 없습니다.", status=exc.status,
+                            phase=exc.phase, retryable=False, maybe_billed=True) from None
+        raise
     finally:
         poller._clear_progress(ledger.key)
     if result["status"] == "failed":
-        side = ledger.sidecar()
-        if side["requests"]:
-            side["requests"][-1]["state"] = "failed"
-            ledger.write("forge", side)
-        # 실패와 새 승인 번호를 먼저 확정한다. 여기서 중단돼도 같은 유료 키로 되돌아가지 않는다.
-        exc = runner.CallError("Forge 후보정 작업이 실패로 끝났습니다.", phase="response", maybe_billed=True)
-        _failed(ledger, exc)
-        ledger.path("resp.json").unlink()
-        raise exc
+        raise _NoResult("Forge 후보정 작업이 실패로 끝났습니다.", phase="response", maybe_billed=True)
     images = result.get("images")
     if not isinstance(images, list) or not images or not isinstance(images[0], str) or not images[0]:
-        raise runner.CallError("Forge 결과 그림이 없습니다.", phase="download", maybe_billed=True)
+        raise _NoResult("Forge 결과 그림이 없습니다.", phase="download", maybe_billed=True)
     try:
         data = await ctx["client"].fetch_media(images[0], limit=MEDIA_LIMIT)
     except ForgeError as exc:
+        if exc.status == 413 and exc.kind == "format":
+            raise _Unusable("결과 그림의 형식 또는 크기가 잘못되었습니다.", phase="download", status=413) from None
         raise fg._pressure_error("Forge 결과 그림을 받지 못했습니다.", overloaded=fg._is_overload(exc), status=exc.status,
                                  phase="download", retryable=exc.status != 413, maybe_billed=True) from None
     except Exception as exc:
@@ -448,14 +481,14 @@ async def _receive(ledger, ctx, poller, resp, tool, size):
                                  phase="download", maybe_billed=True) from None
     ext = runner._sniff_ext(data) if isinstance(data, bytes) and len(data) <= MEDIA_LIMIT else None
     if ext is None:
-        raise runner.CallError("결과 그림의 형식 또는 크기가 잘못되었습니다.", phase="download", maybe_billed=True)
+        raise _Unusable("결과 그림의 형식 또는 크기가 잘못되었습니다.", phase="download")
     name = "out." + ext
     # 소실된 완료 그림을 복구할 때는 이미 매니페스트가 이 이름을 가리킬 수 있다.
     # 옛 done 과 다른 바이트가 합성에 노출되지 않게, 원본 지문과 일치할 때만 되살린다.
     digest = hashlib.sha256(data).hexdigest()
     previous = ledger.read("done")
     if previous is not None and previous.get("sha") != digest:
-        raise runner.CallError("기존 완료 그림과 복구 결과가 다릅니다.", phase="response", maybe_billed=True)
+        raise _Unusable("기존 완료 그림과 복구 결과가 다릅니다.")
     store._atomic_write_bytes(ledger.path(name), data)
     _, result_size, warnings = _check_result(data, tool, size)
     done = {"file": f"post/{ledger.key}/{name}", "size": result_size, "sha": digest,
@@ -470,7 +503,17 @@ def _failed(ledger, exc):
            "maybe_billed": exc.maybe_billed, "time": runner._now()}
     if exc.status is not None:
         doc["status"] = exc.status
+    if isinstance(exc, _Unusable):
+        doc["unusable"] = True
+    if isinstance(exc, _NoResult):
+        side = ledger.sidecar()
+        if side["requests"]:
+            side["requests"][-1]["state"] = "failed"
+            ledger.write("forge", side)
     ledger.write("failed", doc)
+    if isinstance(exc, _NoResult):
+        # 시도 번호를 올릴 실패 기록이 영속화된 뒤에만 접수표를 지운다.
+        ledger.path("resp.json").unlink()
 
 
 def _at(previous):
@@ -521,6 +564,8 @@ async def _execute(root, bundle):
             writing = False
             try:
                 state, attempt = ledger.state()
+                if state == "unusable":
+                    raise board._Reject(409, ledger.unusable_reason())
                 done = ledger.done()
                 if done is None:
                     if item["state"] == "reuse":
@@ -612,14 +657,14 @@ def _view(root, scope, queue):
         src = _source(root, m, cand, fingerprint=False)
         quad = board._adjust_base_quad(cand, board._entry_for(m, key, pref), registration)
         adj = store.cand_adjust_effect(store.cand_adjust(m, key))
-        if adj and "dx" in adj:
+        if adj and "dx" in adj and "transform" not in (store.mask_stack_applied(m, key) or {}).get("off", []):
             quad = board.an.xform_quad(quad, **{k: adj[k] for k in ("dx", "dy", "rot", "sx", "sy")})
         edges = [math.dist(quad[:2], quad[2:4]), math.dist(quad[:2], quad[6:8])]
         density = round(min(s / length for s, length in zip(src["size"], edges)), 2) if min(edges) > 0 else None
         model = next((r["id"] for r in models if r["available"]), MODELS[0])
         reasons = {s: _blocked(src, "upscale", model, {"scale": s}, catalog) for s in (2, 4)}
         scales = [s for s, why in reasons.items() if not why]
-        bg = src.get("error")
+        bg = _blocked(src, "bg_removal", "RMBG-2.0", {}, catalog)
         can = {"upscale": {"ok": bool(scales), "why": reasons[2], "scales": scales},
                "bg_removal": {"ok": bg is None, "why": bg}}
         candidates.append({"key": key, "crop_id": cand["crop_id"], "tid": cand["tid"], "size": cand["src_size"],
