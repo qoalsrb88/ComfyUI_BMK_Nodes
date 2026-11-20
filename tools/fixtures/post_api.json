@@ -1,0 +1,232 @@
+{
+  "view": {
+    "method": "GET",
+    "path": "/bmk/design_patch/postprocess",
+    "query": {
+      "root": "aaaaaaaaaaaa"
+    },
+    "response": {
+      "ok": true,
+      "tools": {
+        "upscale": {
+          "models": [
+            {
+              "id": "pid_upscale",
+              "name": "PiD 1.5 업스케일",
+              "external": false,
+              "available": true,
+              "why": null
+            },
+            {
+              "id": "magnific_v2",
+              "name": "Magnific Precision V2",
+              "external": true,
+              "available": true,
+              "why": null
+            }
+          ],
+          "default_model": "pid_upscale",
+          "scales": [
+            2,
+            4
+          ],
+          "max_side": 4096
+        },
+        "bg_removal": {
+          "model": "RMBG-2.0",
+          "opts": {
+            "mask_offset": [
+              -64,
+              64
+            ],
+            "mask_blur": [
+              0,
+              64
+            ]
+          }
+        }
+      },
+      "limits": {
+        "per_request": 8
+      },
+      "cands": [
+        {
+          "key": "h_00000000c0a1",
+          "crop_id": "crop1",
+          "tid": "A",
+          "size": [
+            64,
+            64
+          ],
+          "placed": [
+            32,
+            32
+          ],
+          "density": 4,
+          "post": {
+            "on": true,
+            "tool": "upscale",
+            "model": "pid_upscale",
+            "opts": {
+              "scale": 2
+            },
+            "size": [
+              128,
+              128
+            ],
+            "label": "업스케일 · PiD 1.5 업스케일 ×2",
+            "at": "2026-11-20 15:04:05.123456789",
+            "hist": 0,
+            "url": "postprocess/img?root=aaaaaaaaaaaa&key=h_00000000c0a1&v=83f128a8a72a7c25",
+            "warnings": []
+          },
+          "can": {
+            "upscale": {
+              "ok": true,
+              "why": null,
+              "scales": [
+                2,
+                4
+              ]
+            },
+            "bg_removal": {
+              "ok": true,
+              "why": null
+            }
+          }
+        }
+      ],
+      "running": null
+    }
+  },
+  "plan": {
+    "method": "GET",
+    "path": "/bmk/design_patch/postprocess/plan",
+    "blocked_examples": {
+      "bg_removal_input_size": {
+        "state": "blocked",
+        "why": "그림의 변이 4096 을 넘어 후보정 결과를 붙일 수 없습니다"
+      },
+      "unusable_result": {
+        "state": "blocked",
+        "why": "받은 결과를 쓸 수 없습니다(결과 그림의 변이 4096 을 넘습니다.) — 같은 조건으로는 다시 요청하지 않습니다. 다른 옵션으로 해 보세요"
+      }
+    },
+    "query": {
+      "root": "aaaaaaaaaaaa",
+      "keys": "h_00000000c0a1",
+      "tool": "upscale",
+      "model": "pid_upscale",
+      "scale": "2"
+    },
+    "response": {
+      "ok": true,
+      "expect": "3:e3b0c44298fc",
+      "hash": "d982bc627739",
+      "tool": "upscale",
+      "model": {
+        "id": "pid_upscale",
+        "name": "PiD 1.5 업스케일",
+        "external": false
+      },
+      "opts": {
+        "scale": 2
+      },
+      "items": [
+        {
+          "key": "h_00000000c0a1",
+          "crop": "001_alpha · A",
+          "state": "new",
+          "post_key": "bbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": 1,
+          "in": [
+            64,
+            64
+          ],
+          "out": [
+            128,
+            128
+          ],
+          "why": null
+        }
+      ],
+      "counts": {
+        "new": 1,
+        "reuse": 0,
+        "recover": 0,
+        "blocked": 0
+      }
+    }
+  },
+  "run": {
+    "method": "POST",
+    "path": "/bmk/design_patch/postprocess/run",
+    "body": {
+      "root": "aaaaaaaaaaaa",
+      "keys": [
+        "h_00000000c0a1"
+      ],
+      "tool": "upscale",
+      "model": "pid_upscale",
+      "scale": 2,
+      "expect": "3:e3b0c44298fc",
+      "approve": "d982bc627739"
+    },
+    "response": {
+      "ok": true,
+      "prompt_id": "j_3333333333333333",
+      "number": 1,
+      "summary": {
+        "new": 1,
+        "reuse": 0,
+        "recover": 0,
+        "blocked": 0
+      }
+    }
+  },
+  "set": {
+    "method": "POST",
+    "path": "/bmk/design_patch/postprocess/set",
+    "body": {
+      "root": "aaaaaaaaaaaa",
+      "key": "h_00000000c0a1",
+      "seen": "2026-11-20 15:04:05.123456789",
+      "op": "off"
+    },
+    "response": {
+      "ok": true,
+      "post": {
+        "on": false,
+        "tool": "upscale",
+        "model": "pid_upscale",
+        "opts": {
+          "scale": 2
+        },
+        "size": [
+          128,
+          128
+        ],
+        "label": "업스케일 · PiD 1.5 업스케일 ×2",
+        "at": "2026-11-20 15:04:06.123456789",
+        "hist": 0,
+        "url": "postprocess/img?root=aaaaaaaaaaaa&key=h_00000000c0a1&v=0d3543fa9574f13a",
+        "warnings": []
+      },
+      "rev": 5,
+      "composite_sig": "4444444444444444"
+    }
+  },
+  "img": {
+    "method": "GET",
+    "path": "/bmk/design_patch/postprocess/img",
+    "query": {
+      "root": "aaaaaaaaaaaa",
+      "key": "h_00000000c0a1",
+      "v": "83f128a8a72a7c25"
+    },
+    "response": {
+      "status": 200,
+      "content_type": "image/png"
+    }
+  }
+}

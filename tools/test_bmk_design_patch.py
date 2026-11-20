@@ -64348,8 +64348,632 @@ def ux_v2c_post_pixels_unit():
 
 
 def ux_v2c_post_unit():
-    """UX v2-C 갈래 P(명세 D583·D584·D588–D606 · §3.3–§3.5) — 후보정 키·원장·계획·실행·결과 검사·라우트·기능 플래그. 갈래 P 가 채운다."""
+    """후보정 원장과 승인 경계. Forge 전송·인증은 메모리 안의 대역만 쓴다."""
     section("UX v2-C — 후보정 호출·원장·라우트 (ux_v2c_post_unit)")
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, patch
+    from aiohttp.test_utils import make_mocked_request
+
+    dp = _dp_package()
+    post = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_post")
+    srv = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_server")
+    forge = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_forge")
+    bd, st, fb = post.board, post.store, post.fg
+    fixture = json.loads((PKG / "tools/fixtures/post_api.json").read_text(encoding="utf-8"))
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="v2c_post_", dir=OUT_ROOT))
+    scope = dict(_fj_scope(out / "home"), org="private-org-marker")
+    catalog = dict.fromkeys(post.MODELS)
+    marks = [scope["org"], "private-token-marker", "replacement-token-marker", "https://post.example"]
+    log = io.StringIO()
+    handler = logging.StreamHandler(log)
+
+    def picture(size, color, fmt="PNG"):
+        buf = io.BytesIO()
+        Image.new("RGBA" if len(color) == 4 else "RGB", size, color).save(buf, format=fmt)
+        return buf.getvalue()
+
+    class Wire:
+        def __init__(self):
+            self.calls, self.submits, self.results, self.before = [], [], {}, []
+            self.submit_tokens = []
+            self.fail_submit, self.fail_poll, self.fail_download = [], [], []
+            self.token = marks[1]
+            self.output, self.on_poll = None, None
+            self.processing = False
+            self.empty_result = False
+            self.root = None
+
+        def reject(self, token):
+            check(token == self.token, "거절된 토큰만 폐기")
+            self.token = marks[2]
+
+        async def send(self, method, url, headers, raw, timeout):
+            path = urllib.parse.urlsplit(url).path
+            self.calls.append((method, path))
+            def response(status, data):
+                return status, {}, json.dumps(data).encode()
+
+            if path in ("/api/image/upscale", "/api/image/bg-removal"):
+                body = json.loads(raw)
+                self.submits.append(body)
+                self.submit_tokens.append(headers["Authorization"])
+                rid = body["request_id"]
+                pk = re.fullmatch(r"dp-[0-9a-f]{12}-p([0-9a-f]{24})-a[1-9][0-9]*", rid)
+                ledger = post.Ledger(self.root, pk[1])
+                req, side = ledger.read("req"), ledger.sidecar()
+                self.before.append((req["approved_by"], side["requests"][-1]["state"], side["requests"][-1]["id"]))
+                data = base64.b64decode(body["input_images"][0][0].split(",", 1)[1])
+                size = tuple(dim * body.get("scale", 1) for dim in req["input"]["size"])
+                if path.endswith("upscale"):
+                    check(body.keys() == {"checkpoint", "scale", "organization_id", "request_id", "input_images"},
+                          "업스케일 본문 키 집합")
+                else:
+                    check(body.keys() == {"model", "model_node", "mask_offset", "mask_blur", "background", "organization_id",
+                                          "request_id", "input_images"} and body["background"] == "Alpha"
+                          and body["model_node"] == "RMBG" and body["model"] == "RMBG-2.0", "배경 제거 본문")
+                check(len(body["input_images"]) == len(body["input_images"][0]) == 1
+                      and data == (Path(self.root) / req["input"]["file"]).read_bytes(), "파일 바이트와 일치하는 단일 입력")
+                check(req["input"]["sha"] == hashlib.sha256(data).hexdigest() and body["organization_id"] == marks[0],
+                      "요청 원장의 입력 지문·전송 조직")
+                jid = "job_" + rid
+                self.results.setdefault(jid, self.output if self.output is not None else picture(size, (7, 9, 11)))
+                if self.fail_submit:
+                    code = self.fail_submit.pop(0)
+                    if code == 0:
+                        raise TimeoutError(" ".join(marks))
+                    return response(code, {"detail": " ".join(marks)})
+                return response(200, {"job_ids": [jid], "status": "pending"})
+            if path.startswith("/api/image/jobs/"):
+                jid = path.split("/")[-1]
+                if self.on_poll:
+                    action, self.on_poll = self.on_poll, None
+                    action()
+                receipt = post.Ledger(self.root, jid.split("-p")[1].split("-")[0]).read("resp")
+                check(receipt["job_id"] == jid and set(receipt) == {"post_key", "received", "backend", "job_id"},
+                      "폴링 전 응답 원장 기록")
+                if self.fail_poll:
+                    code = self.fail_poll.pop(0)
+                    return response(code, {"status": "failed", "error_message": " ".join(marks)})
+                check(headers["Authorization"] == "Bearer " + self.token, "폴링에 현재 토큰 사용")
+                phase = "processing" if self.processing else "completed"
+                self.processing = False
+                images = [] if self.empty_result else [marks[3] + "/media/" + jid]
+                return response(200, {"status": phase, "result_data": {"images": images}})
+            if path.startswith("/media/"):
+                if self.fail_download:
+                    return response(self.fail_download.pop(0), {})
+                return 200, {}, self.results[path.split("/")[-1]]
+            raise AssertionError("예상 밖의 전송")
+
+    wire = Wire()
+    config = forge.ForgeConfig(api=marks[3], media_origins=(marks[3],))
+    client = forge.ForgeClient(config, transport=wire.send)
+    ctx = dict(client=client, token_of=lambda: wire.token, reject_token=wire.reject,
+               organization_id=scope["org"], account=scope["account"], stop=lambda: False, options={})
+
+    def project(name):
+        root, m, keys = _v2c_project(dp, Path(scope["input"]), name)
+        wire.root, ctx["root"] = root, root
+        return root, m, keys
+
+    def plan(root, keys, tool="bg_removal", **kw):
+        args = post._arguments({"keys": keys, "tool": tool, **kw}, query=False)
+        return post._plan(root, args, catalog)
+
+    async def execute(root, bundle):
+        token = post.runner.set_forge(ctx)
+        try:
+            return (await post._execute(root, bundle))["outputs"]["dp_post"]
+        finally:
+            post.runner.reset_forge(token)
+
+    def record(root, key):
+        return st.cand_post_record(st.load_manifest(root), key)
+
+    def edit(root, key, op):
+        return post._set(root, {"key": key, "op": op, "seen": (record(root, key) or {}).get("at", "")})
+
+    async def ledger_cases():
+        root, m, keys = project("ledger")
+        a, b, c = (keys[k] for k in ("a1", "a2", "c"))
+        p = plan(root, [a], "upscale")
+        pk, h = p[0]["items"][0]["post_key"], p[0]["hash"]
+        details = post._settings("upscale", "pid_upscale", {"scale": 2})
+        sha = p[1][a]["sha"]
+        check(pk == post.post_key("upscale", dict(details, organization_id="x", request_id="y", input_images=[]), sha)
+              and pk != post.post_key("upscale", details, "0" * 64)
+              and pk != plan(root, [a], "upscale", scale=4)[0]["items"][0]["post_key"], "키의 입력·옵션과 제외 칸")
+        wire.fail_submit = [0]
+        got = await execute(root, p)
+        check(got["done"] == [a] and len(wire.submits) == 2 and wire.submits[0] == wire.submits[1]
+              and all(row == ("hash:" + h, "open", wire.submits[0]["request_id"]) for row in wire.before),
+              "응답 유실 뒤 같은 키, 호출 직전 req·forge 존재")
+        first = record(root, a)
+        check(first["on"] and first["file"] == f"post/{pk}/out.png" and first["size"] == [128, 128],
+              "업스케일 머리와 실제 결과 크기")
+        chain = plan(root, [a])
+        check(chain[1][a]["file"] == first["file"], "연쇄 입력은 현재 파생본")
+        wire.processing = True
+        wire.fail_poll = [401]
+        wire.calls.clear()
+        got = await execute(root, chain)
+        second = record(root, a)
+        check([path.split("/")[3] for _, path in wire.calls if path.startswith("/api/")] == ["bg-removal", "jobs", "jobs", "jobs"]
+              and wire.token == marks[2] and second["input"]["file"] == first["file"] and len(second["hist"]) == 1
+              and second["at"] > first["at"] and got["warnings"] == [{"key": a, "text": post.OPAQUE}],
+              "거절 토큰 갱신·중간 이미지 무시·이력·알파 경고")
+        off = edit(root, a, "off")["post"]
+        check(not off["on"] and record(root, a)["hist"] == second["hist"] and (Path(root) / second["file"]).is_file(),
+              "off 는 파일과 과거 판 보존")
+        check(edit(root, a, "on")["post"]["on"] and edit(root, a, "undo")["post"]["model"] == "pid_upscale",
+              "on·undo 로 복원")
+        check(edit(root, a, "reset")["post"] is None, "reset 은 머리 제거")
+        wire.calls.clear()
+        reuse = plan(root, [a], "upscale")
+        got = await execute(root, reuse)
+        check(reuse[0]["hash"] == "" and got["reused"] == [a] and wire.calls == [], "reset 후 무료 재사용, Forge 전송 0회")
+        # 같은 승인 안의 중복 입력은 첫 요청에 의존한다.
+        clone = dict(m["candidates"][0], key="same_pixels")
+        st.update_manifest(root, lambda doc: doc["candidates"].append(clone))
+        edit(root, a, "reset")
+        duplicate = plan(root, [clone["key"], a], "upscale", scale=4)
+        count = len(wire.submits)
+        got = await execute(root, duplicate)
+        check(duplicate[0]["counts"] == {"new": 1, "recover": 0, "reuse": 1, "blocked": 0}
+              and len(wire.submits) == count + 1 and got["done"] == [clone["key"]] and got["reused"] == [a],
+              "서로 다른 후보의 같은 픽셀은 1회만 승인·제출")
+        edit(root, a, "reset")
+        wire.fail_download = [503]
+        job = plan(root, [b])
+        got = await execute(root, job)
+        ledger = post.Ledger(root, job[0]["items"][0]["post_key"])
+        check(got["failed"] and ledger.read("resp") and ledger.read("failed")["maybe_billed"], "내려받기 실패 뒤 응답 보존")
+        ledger.path("resp.json").unlink()  # 접수 정보가 forge.json 에만 남은 쓰기 경계
+        check(plan(root, [b])[0]["items"][0]["state"] == "recover", "사이드카의 접수 번호로 무료 복구")
+        # a 의 bg 결과는 128px 입력으로 만들었으므로 원본 64px 에 대해서는 아직 new.
+        await execute(root, plan(root, [c]))
+        edit(root, c, "reset")
+        mixed = plan(root, [a, b, c])
+        only_new = plan(root, [a])
+        check(mixed[0]["counts"] == {"new": 1, "recover": 1, "reuse": 1, "blocked": 0}
+              and mixed[0]["hash"] == only_new[0]["hash"], "혼합 상태에서 new 만 승인 해시에 포함")
+        wire.calls.clear()
+        got = await execute(root, plan(root, [b]))
+        check(got["recovered"] == [b] and [m for m, _ in wire.calls] == ["GET", "GET"],
+              "recover 는 잡 조회·그림 받기만")
+        before = st.load_manifest(root)
+        check(before["jobs"] == m["jobs"] and before["calls"] == m["calls"]
+              and sorted(p.name for p in (Path(root) / "cands").iterdir()) == ["_forge.json"],
+              "생성 호출·작업·개별 생성 원장 보존")
+        # 동일 rev 에도 at 이 달라지면 expect 가 달라진다.
+        snapshot = copy.deepcopy(before)
+        with patch.object(st, "load_manifest", return_value=snapshot):
+            x = plan(root, [b])[0]["expect"]
+            snapshot["cand_post"][b]["at"] = "2030-01-02 03:04:05.123456789"
+            y = plan(root, [b])[0]["expect"]
+            snapshot["rev"] += 1
+            check(x != y != plan(root, [b])[0]["expect"], "expect 에 기록 시각과 rev 포함")
+        old = record(root, b)
+        missing = Path(root) / old["file"]
+        missing.unlink()
+        jid = ledger.read("resp")["job_id"]
+        saved = wire.results[jid]
+        restored = await execute(root, plan(root, [b]))
+        check(restored["recovered"] == [b] and missing.read_bytes() == saved, "기존 머리의 그림을 같은 잡에서 복구")
+        missing.unlink()
+        wire.results[jid] = picture((4097, 2), (4, 5, 6))
+        got = await execute(root, plan(root, [b]))
+        check(got["failed"] and not missing.exists(), "기존 머리의 그림 소실 후 다른 바이트를 붙이지 않음")
+        await check_unusable(root, b, ledger, "기존 완료 그림과 복구 결과가 다릅니다.")
+
+    async def check_unusable(root, key, ledger, reason, **kw):
+        failed = ledger.read("failed") or {}
+        blocked = plan(root, [key], **kw)
+        why = f"받은 결과를 쓸 수 없습니다({reason}) — 같은 조건으로는 다시 요청하지 않습니다. 다른 옵션으로 해 보세요"
+        check(failed.get("unusable") is True and failed.get("error") == reason and ledger.read("resp")
+              and ledger.state()[0] == "unusable", "사용 불가 표지·사유·접수표 보존 " + reason)
+        check(blocked[0]["items"][0]["why"] == why and blocked[0]["items"][0]["state"] == "blocked"
+              and blocked[0]["counts"] == {"new": 0, "reuse": 0, "recover": 0, "blocked": 1}
+              and blocked[0]["hash"] == "", "사용 불가 결과는 승인 목록에서 제외 " + reason)
+        if reason == "결과 그림의 변이 4096 을 넘습니다.":
+            item = blocked[0]["items"][0]
+            check({k: item[k] for k in ("state", "why")} == fixture["plan"]["blocked_examples"]["unusable_result"],
+                  "사용 불가 결과의 공개 계획 정본")
+        calls = list(wire.calls)
+        await execute(root, blocked)
+        check(wire.calls == calls, "사용 불가 결과는 재조회·재제출하지 않음 " + reason)
+
+    async def queued_cases():
+        root, m, keys = project("queued")
+        a = keys["a1"]
+        async def denied(bundle, label):
+            before = len(wire.submits)
+            result = await execute(root, bundle)
+            check(len(result["failed"]) == 1 and result["failed"][0]["key"] == a and result["failed"][0]["error"]
+                  and not result["done"] and len(wire.submits) == before, "큐 실행 전 변경 거절·추가 제출 0 " + label)
+
+        first = plan(root, [a])
+        src = Path(root) / first[1][a]["file"]
+        original = src.read_bytes()
+        src.write_bytes(picture((64, 64), (1, 2, 3)))
+        await denied(first, "입력 바이트")
+        src.write_bytes(original)
+        await execute(root, first)
+        result_file = Path(root) / record(root, a)["file"]
+        previous = result_file.read_bytes()
+        result_file.unlink()  # on 과 off 의 실효 경로를 같게 해 at 검사만 분리한다.
+        queued = plan(root, [a], opts={"mask_offset": 1})
+        edit(root, a, "off")
+        await denied(queued, "기록 at")
+        result_file.write_bytes(previous)
+
+        fresh = plan(root, [a], opts={"mask_offset": 2})
+        ledger = post.Ledger(root, fresh[0]["items"][0]["post_key"])
+        post._failed(ledger, post.runner.CallError("이전 요청 실패", maybe_billed=False))
+        await denied(fresh, "attempt 증가")
+
+        free = plan(root, [a])
+        check(free[0]["items"][0]["state"] == "reuse", "큐 진입 시 reuse")
+        result_file.unlink()
+        await denied(free, "재사용 그림 소실")
+        recover = plan(root, [a])
+        check(recover[0]["items"][0]["state"] == "recover" and recover[0]["hash"] == "", "큐 진입 시 복구만 승인")
+        ledger = post.Ledger(root, recover[0]["items"][0]["post_key"])
+        side = ledger.sidecar()
+        side["requests"][-1]["state"] = "failed"
+        ledger.write("forge", side)
+        ledger.path("resp.json").unlink()
+        await denied(recover, "무료 복구에서 신규 제출로 변경")
+
+    async def interrupted_cases():
+        root, _, keys = project("interrupted")
+        a = keys["a1"]
+        first = plan(root, [a])
+        ledger = post.Ledger(root, first[0]["items"][0]["post_key"])
+        wire.token, wire.fail_submit = marks[1], [401]
+        start = len(wire.submits)
+        with patch.object(fb, "DEADLINE_DEFAULT", -1):
+            wire.processing = True
+            result = await execute(root, first)
+        check(len(wire.submits) == start + 2 and wire.submits[-2] == wire.submits[-1]
+              and wire.submit_tokens[-2:] == ["Bearer " + t for t in marks[1:3]], "제출 401 뒤 새 토큰·동일 request_id")
+        failed = ledger.read("failed")
+        check(result["failed"] and failed["retryable"] and failed["phase"] == "poll" and ledger.read("resp")
+              and ledger.state() == ("recover", 1), "폴링 마감·failed와 resp 공존 → recover")
+        ledger.path("failed.json").unlink()
+        ledger.path("out.png").write_bytes(wire.results[ledger.read("resp")["job_id"]])
+        check(ledger.read("done") is None and ledger.state() == ("recover", 1), "out만 받은 접수 잡은 아직 recover")
+        ledger.path("out.png").unlink()
+        ledger.path("resp.json").unlink()
+        ledger.path("forge.json").unlink()
+        check(ledger.read("req") and ledger.state() == ("new", 1)
+              and plan(root, [a])[0]["hash"] == first[0]["hash"], "req만 쓰고 중단 → 같은 attempt로 new")
+        wire.fail_submit = [422]
+        await execute(root, first)
+        ledger.path("failed.json").unlink()  # rejected 저장 직후 중단된 원장
+        next_plan = plan(root, [a])
+        check(ledger.sidecar()["requests"][-1]["state"] == "rejected" and ledger.state() == ("new", 2)
+              and next_plan[0]["hash"] != first[0]["hash"], "rejected 뒤 중단 → 새 attempt·새 승인")
+
+    async def result_cases():
+        root, _, keys = project("results")
+        a = keys["a1"]
+        for offset, (raw, reason) in enumerate((
+                (b"unsupported", "결과 그림의 형식 또는 크기가 잘못되었습니다."),
+                (b"\x89PNG\r\n\x1a\n", "결과 그림을 읽을 수 없습니다."),
+                (picture((8, 4097), (0, 0, 0)), "결과 그림의 변이 4096 을 넘습니다."))):
+            kw = {"opts": {"mask_offset": offset}}
+            bundle = plan(root, [a], **kw)
+            ledger = post.Ledger(root, bundle[0]["items"][0]["post_key"])
+            wire.output = raw
+            got = await execute(root, bundle)
+            check(got["failed"] and ledger.read("done") is None and record(root, a) is None, "쓸 수 없는 그림 등록 차단")
+            await check_unusable(root, a, ledger, reason, **kw)
+            before = list(wire.calls)
+            stale = await execute(root, bundle)
+            check(stale["failed"] and wire.calls == before and (ledger.read("failed") or {}).get("unusable") is True,
+                  "큐 대기 중 사용 불가가 된 원장은 보존하고 호출하지 않음")
+        wire.output = None
+        kw = {"opts": {"mask_offset": 5}}
+        bundle = plan(root, [a], **kw)
+        ledger = post.Ledger(root, bundle[0]["items"][0]["post_key"])
+        with patch.object(post, "MEDIA_LIMIT", 16):
+            await execute(root, bundle)
+        await check_unusable(root, a, ledger, "결과 그림의 형식 또는 크기가 잘못되었습니다.", **kw)
+        for outcome, offset in (("이미지 없음", 3), ("만료 404", 4)):
+            opts = {"mask_offset": offset}
+            bundle = plan(root, [a], opts=opts)
+            ledger = post.Ledger(root, bundle[0]["items"][0]["post_key"])
+            if outcome == "이미지 없음":
+                wire.empty_result = True
+            else:
+                wire.fail_poll = [404]
+                await execute(root, bundle)
+                receipt = ledger.read("resp")
+                check(receipt and ledger.state() == ("recover", 1), "만료 전 404는 복구 가능")
+                ledger.write("resp", dict(receipt, received="2000-01-01 00:00:00"))
+                wire.fail_poll = [404]
+            got = await execute(root, plan(root, [a], opts=opts))
+            wire.empty_result = False
+            again = plan(root, [a], opts=opts)[0]
+            check(got["failed"] and ledger.read("failed") and not ledger.read("resp")
+                  and ledger.sidecar()["requests"][-1]["state"] == "failed" and ledger.state() == ("new", 2)
+                  and again["counts"]["new"] == 1 and again["hash"] != bundle[0]["hash"], outcome + " → 새 승인 필요")
+            before = len(wire.submits)
+            old_approval = await execute(root, bundle)
+            check(old_approval["failed"] and len(wire.submits) == before, outcome + " 뒤 지난 승인으로 전송 0")
+            retried = await execute(root, plan(root, [a], opts=opts))
+            check(retried["done"] == [a] and len(wire.submits) == before + 1 and wire.submits[-1]["request_id"].endswith("-a2"),
+                  outcome + " 뒤 새 승인으로 1회 제출")
+
+    async def failure_cases():
+        root, m, keys = project("failures")
+        a, b, c = (keys[k] for k in ("a1", "a2", "c"))
+        wire.fail_submit = [429, 429]
+        count = len(wire.submits)
+        bundle = plan(root, [a, b, c])
+        failed = await execute(root, bundle)
+        check(failed["stopped_reason"] == "overload" and len(wire.submits) == count + 2 and len(failed["failed"]) == 2,
+              "과부하 두 번 뒤 나머지 제출 중단")
+        retry = plan(root, [a])
+        check(retry[0]["items"][0]["attempt"] == 2 and retry[0]["hash"] != plan_hash(bundle, 0),
+              "명시적 실패 재실행은 새 승인")
+        wire.fail_poll = [200]
+        await execute(root, retry)
+        ledger = post.Ledger(root, retry[0]["items"][0]["post_key"])
+        check(ledger.read("resp") is None and ledger.sidecar()["requests"][-1]["state"] == "failed"
+              and plan(root, [a])[0]["items"][0]["attempt"] == 3, "원격 실패로 끝난 경우만 접수표 제거")
+        wire.fail_submit = [0, 0, 0]
+        ambiguous = plan(root, [a])
+        await execute(root, ambiguous)
+        old_id = wire.submits[-1]["request_id"]
+        check(len({v["request_id"] for v in wire.submits[-3:]}) == 1 and ledger.sidecar()["requests"][-1]["state"] == "open",
+              "응답 유실 세 번은 같은 멱등 키 보존")
+        wire.fail_submit = [429]
+        got = await execute(root, plan(root, [a]))
+        check(got["failed"] and ledger.sidecar()["requests"][-1]["state"] == "open"
+              and ledger.read("failed")["maybe_billed"], "불명확한 요청을 재전송할 때 받은 거절로 기존 키를 폐기하지 않음")
+        wire.on_poll = lambda: check(bd.is_running(root) and bd.set_drain(root), "실행 중 drain 수락")
+        count = len(wire.submits)
+        got = await execute(root, plan(root, [a, b, c]))
+        check(len(wire.submits) == count + 1 and wire.submits[-1]["request_id"] == old_id
+              and got["done"] == [a] and got["stopped_reason"] == "drain", "재승인도 이전 open 키 사용·진행 중 잡 등록 후 중지")
+        # 결과 수신 도중 ★ 가 풀리거나 다른 창이 기록을 고친다.
+        def pick(value):
+            st.update_manifest(root, lambda doc: next(row for row in doc["candidates"] if row["key"] == c).update(picked=value))
+        wire.on_poll = lambda: pick(False)
+        got = await execute(root, plan(root, [c]))
+        pick(True)
+        check(got["failed"] == [{"key": c, "error": post.CHANGED}] and record(root, c) is None
+              and plan(root, [c])[0]["items"][0]["state"] == "reuse", "★ 해제 경합 결과는 원장에 보존")
+        wire.on_poll = lambda: edit(root, a, "off")
+        got = await execute(root, plan(root, [a], opts={"mask_blur": 3}))
+        check(got["failed"] == [{"key": a, "error": post.CHANGED}] and not record(root, a)["on"], "at 경합에서 새 머리 보존")
+        # 이력 상한 경계와 비율 경고는 등록까지 확인한다.
+        def full_history(doc):
+            head = doc["cand_post"][a]
+            head["hist"] = [dict((k, v) for k, v in head.items() if k != "hist") for _ in range(st.RECORD_HIST_KEEP)]
+        st.update_manifest(root, full_history)
+        wire.output = picture((80, 64), (1, 2, 3))
+        got = await execute(root, plan(root, [a], opts={"mask_offset": -1}))
+        wire.output = None
+        check(not record(root, a)["on"] and len(record(root, a)["hist"]) == st.RECORD_HIST_KEEP
+              and {"key": a, "text": post.RATIO} in got["warnings"], "비율 불일치 꺼짐·20판 상한")
+
+    def plan_hash(mixed, index):
+        item = mixed[0]["items"][index]
+        return post.runner.pending_hash(["backend:forge", f"p:{item['post_key']}:a{item['attempt']}"])
+
+    def checks():
+        for data in (b"not an image", picture((4097, 3), (1, 2, 3))):
+            expect_raises(lambda: post._check_result(data, "upscale", [32, 32]), "읽을 수 없거나 상한 초과",
+                          exc=post.runner.CallError)
+        small = picture((5, 5), (1, 2, 3))
+        check(post.SMALL in post._check_result(small, "upscale", [5, 5])[2], "커지지 않은 업스케일 경고")
+        with patch.object(post, "MEDIA_LIMIT", len(small) - 1):
+            expect_raises(lambda: post._check_result(small, "upscale", [5, 5]), "바이트 상한", exc=post.runner.CallError)
+        for fmt in ("PNG", "JPEG", "WEBP", "BMP"):
+            raw = picture((8, 8), (3, 6, 9), fmt)
+            data = base64.b64decode(post._data_url(raw).split(",")[1])
+            check(data.startswith(b"\x89PNG") if fmt == "BMP" else data == raw, f"{fmt} 입력 인코딩")
+
+    async def suite():
+        checks()
+        await ledger_cases()
+        await failure_cases()
+        await queued_cases()
+        await interrupted_cases()
+        await result_cases()
+        await route_cases()
+
+    # HTTP 서버나 외부 API 소켓 없이 실제 라우터·작업 스레드를 거친다.
+    async def route_cases():
+        root, m, keys = project("routes")
+        a, b, c = (keys[k] for k in ("a1", "a2", "c"))
+        root_id = st.root_key(root)
+        root_query = {"root": root_id}
+        secret_free = []
+        async def call(app, name, data, status=200, who=scope):
+            case = fixture[name]
+            path = case["path"]
+            if case["method"] == "GET":
+                path += "?" + urllib.parse.urlencode(data)
+            req = make_mocked_request(case["method"], path, app=app, headers={"Content-Type": "application/json"})
+            req.read = AsyncMock(return_value=json.dumps(data).encode())
+            token = bd.set_scope(who)
+            try:
+                route = await app.router.resolve(req)
+                res = await route.handler(req)
+                check(res.status == status, f"후보정 {name} 상태 {res.status}/{status}")
+                if res.content_type.startswith("image/"):
+                    return res
+                secret_free.append(res.text)
+                return json.loads(res.text)
+            finally:
+                bd.reset_scope(token)
+
+        async def flags(flag, configured, mock):
+            with patch.dict(os.environ, {"BMK_DP_MOCK_API": "1" if mock else ""}):
+                app = srv.make_app(srv.ServerConfig(str(out / "server"), public_origin="https://studio.example",
+                                                    forge=config if configured else None, postprocess=flag), forge_transport=wire.send)
+                app.freeze()
+                try:
+                    caps = json.loads((await bd.env_handler(make_mocked_request("GET", bd.API + "/env", app=app))).text)["caps"]
+                    paths = {(route.method, route.resource.canonical) for route in app.router.routes()}
+                    enabled = flag and configured and not mock
+                    check(caps["v2_postprocess"] == enabled
+                          and all(((v["method"], v["path"]) in paths) == enabled for v in fixture.values()),
+                          f"후보정 기능 플래그와 다섯 라우트 {flag}/{configured}/{mock}")
+                    if enabled:
+                        await requests(app)
+                finally:
+                    await app.cleanup()
+
+        async def requests(app):
+            accounts, queue = app[srv._FORGE_KEY], app[srv._RUNNER_KEY]
+            args = dict(root_query, tool="upscale", keys=a)
+            body = dict(args, keys=[a])
+            access = AsyncMock()
+            with patch.object(accounts, "context", return_value=ctx), patch.object(accounts, "ensure_access", access), \
+                    patch.object(post, "_catalog", return_value=catalog):
+                view = await call(app, "view", root_query)
+                ref = fixture["view"]["response"]
+                check(view.keys() == ref.keys() and view["tools"] == ref["tools"] and view["limits"] == ref["limits"]
+                      and {row["key"] for row in view["cands"]} == {a, b, c}
+                      and view["cands"][0]["placed"] == [32, 32] and view["cands"][0]["density"] == 2,
+                      "조회 정본·★만·배치 밀도")
+                def placement(view):
+                    row = next(row for row in view["cands"] if row["key"] == b)
+                    return row["placed"], row["density"]
+                stack = dict(st.mask_stack_defaults(), off=["transform"], at=V2C_AT, hist=[])
+                st.update_manifest(root, lambda doc: doc.setdefault("mask_stack", {}).update({b: stack}))
+                check(placement(view) == ([22, 14], 1.09) and placement(await call(app, "view", root_query)) == ([20, 16], 1.2),
+                      "변형 층 on·off에 따른 실제 배치와 밀도")
+                preview = await call(app, "plan", args)
+                ex = fixture["plan"]["response"]
+                check(preview.keys() == ex.keys() and preview["items"][0].keys() == ex["items"][0].keys()
+                      and preview["model"] == ex["model"] and preview["counts"] == ex["counts"], "계획 정본")
+                for bad in (dict(expect=preview["expect"]), dict(expect="old", approve=preview["hash"]),
+                            dict(expect=preview["expect"], approve="wrong")):
+                    before = list(wire.calls)
+                    rejected = await call(app, "run", dict(body, **bad), 409)
+                    check(rejected["reason"] == "stale" and rejected["plan"] == preview, "승인·표지 불일치와 현재 계획")
+                    check(wire.calls == before, "409 승인 불일치 뒤 Forge 요청 0")
+                paid = dict(body, expect=preview["expect"], approve=preview["hash"])
+                for reason, code, reply in (("unauthorized", 401, "forge_auth"), ("forbidden", 403, "no_access"),
+                                            ("unreachable", 503, "forge_unreachable")):
+                    access.side_effect = forge.ForgeError(reason)
+                    before = list(wire.calls)
+                    check((await call(app, "run", paid, code))["reason"] == reply, "제출 전 Forge 접근 확인")
+                    check(wire.calls == before, f"{code} 접근 실패 뒤 Forge 요청 0")
+                access.side_effect = None
+                for name, data, status in (
+                        ("plan", dict(args, keys=keys["d"]), 409), ("plan", dict(args, keys="unknown"), 404),
+                        ("plan", dict(args, keys=",".join(["x"] * 9)), 400), ("plan", dict(args, blur=1), 400),
+                        ("plan", dict(args, extra=1), 400), ("run", dict(paid, scale=True), 400),
+                        ("run", dict(body, tool="bg_removal", opts={"bad": 1}), 400),
+                        ("set", dict(root_query, op="off", seen="", key=keys["d"]), 409)):
+                    err = await call(app, name, data, status)
+                    check("error" in err and (status != 409 or err.get("reason") == "not_picked"), "비정상 대상·인자")
+                    if "," in str(data.get("keys")):
+                        check(err.get("reason") == "too_many", "8장 상한")
+                await call(app, "view", root_query, 404, _fj_scope(out / "foreign"))
+                await call(app, "view", root_query, 401, None)
+                with patch.object(post, "_catalog", return_value=None):
+                    check((await call(app, "plan", args))["counts"]["blocked"] == 1, "읽지 못한 모델 목록")
+                with patch.object(post, "_catalog", return_value={}):
+                    check((await call(app, "plan", args))["counts"]["blocked"] == 1, "목록에 없는 모델")
+                # 한 계정에서 첫 작업이 대기·실행 중인 동안 둘째 작업을 받지 않는다.
+                active, release = threading.Event(), threading.Event()
+                def hold():
+                    active.set()
+                    release.wait(10)
+                wire.on_poll = hold
+                submitted = await call(app, "run", paid)
+                pid = submitted["prompt_id"]
+                try:
+                    check(submitted.keys() == fixture["run"]["response"].keys() and submitted["summary"] == preview["counts"]
+                          and await asyncio.to_thread(active.wait, 5), "큐 실행과 응답 정본")
+                    running = (await call(app, "view", root_query))["running"]
+                    check(running == {"prompt_id": pid, "tool": "upscale", "done": 0, "total": 1}, "실행 진행 표시")
+                    # 다른 후보의 계획은 첫 제출의 원장 상태가 바뀌어도 유효하다.
+                    other = dict(args, keys=b, tool="bg_removal")
+                    other_plan = await call(app, "plan", other)
+                    busy = await call(app, "run", dict(other, keys=[b], expect=other_plan["expect"], approve=other_plan["hash"]), 409)
+                    check(busy["reason"] == "busy", "계정당 후보정 하나")
+                finally:
+                    release.set()
+                end = time.monotonic() + 8
+                while not queue.history(scope, root, pid) and time.monotonic() < end:
+                    await asyncio.sleep(0.01)
+                history = queue.history(scope, root, pid)[pid]["outputs"]["dp_post"]
+                check(history == {"done": [a], "failed": [], "warnings": [], "stopped_reason": None,
+                                  "reused": [], "recovered": []}, "작업 기록 공개 칸")
+                secret_free.append(json.dumps(history))
+                head = (await call(app, "view", root_query))["cands"][0]["post"]
+                check(head.keys() == ref["cands"][0]["post"].keys(), "공개 파생본 정본")
+                query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(head["url"]).query))
+                image = await call(app, "img", query)
+                check(image.content_type == fixture["img"]["response"]["content_type"] and image.body == wire.results[
+                      "job_" + wire.submits[-1]["request_id"]], "그림 실제 MIME·받은 바이트 그대로")
+                changed = await call(app, "set", dict(root_query, key=a, seen=head["at"], op="off"))
+                check(changed.keys() == fixture["set"]["response"].keys() and not changed["post"]["on"], "set 응답 정본")
+                check((await call(app, "img", query, 409))["reason"] == "stale"
+                      and (await call(app, "set", dict(root_query, key=a, seen=head["at"], op="on"), 409))["reason"] == "changed",
+                      "오래된 img 서명과 seen")
+                free = await call(app, "plan", args)
+                wire.calls.clear()
+                access.reset_mock()
+                pid = (await call(app, "run", dict(body, expect=free["expect"])))["prompt_id"]
+                end = time.monotonic() + 8
+                while not queue.history(scope, root, pid) and time.monotonic() < end:
+                    await asyncio.sleep(0.01)
+                check(queue.history(scope, root, pid)[pid]["outputs"]["dp_post"]["reused"] == [a]
+                      and wire.calls == [] and not access.called, "무료 실행 승인·접근 호출 0회")
+                # 한 장이 막혀도 나머지 승인 목록만 제출한다.
+                mixed = plan(root, [a, b], "upscale")
+                check(mixed[0]["counts"]["blocked"] == 1 and "배경" in mixed[0]["items"][1]["why"], "알파 업스케일 차단")
+                count = len(wire.submits)
+                check((await execute(root, mixed))["done"] == [a] and len(wire.submits) == count + 1, "막힌 그림을 건너뜀")
+                cand = m["candidates"][2]
+                path = Path(root) / cand["file"]
+                path.write_bytes(picture((1200, 4), (4, 5, 6)))
+                check("4096" in plan(root, [c], "upscale", scale=4)[0]["items"][0]["why"], "4배 변 상한")
+                path.write_bytes(picture((2050, 4), (4, 5, 6)))
+                check("충분히" in plan(root, [c], "upscale")[0]["items"][0]["why"], "2배도 불가")
+                path.write_bytes(picture((2, 4096), (1, 2, 3)))
+                check(plan(root, [c])[0]["counts"]["new"] == 1, "4096 배경 제거 허용")
+                path.write_bytes(picture((2, 4097), (1, 2, 3)))
+                why = "그림의 변이 4096 을 넘어 후보정 결과를 붙일 수 없습니다"
+                large = plan(root, [c])
+                example = fixture["plan"]["blocked_examples"]["bg_removal_input_size"]
+                check({k: large[0]["items"][0][k] for k in ("state", "why")} == example and example["why"] == why
+                      and large[0]["counts"]["blocked"] == 1
+                      and large[0]["hash"] == "", "4097 배경 제거 계획 차단")
+                shown = await call(app, "view", root_query)
+                check(next(row for row in shown["cands"] if row["key"] == c)["can"]["bg_removal"] == {"ok": False, "why": why},
+                      "4097 배경 제거 조회 차단")
+                before = list(wire.submits)
+                await execute(root, large)
+                check(wire.submits == before, "4097 배경 제거 제출 0")
+                path.unlink()
+                check("파일" in plan(root, [c])[0]["items"][0]["why"], "없는 입력 건너뜀")
+
+        await flags(False, True, False)
+        await flags(True, False, False)
+        await flags(True, True, True)
+        await flags(True, True, False)
+        check(all(v not in "".join(secret_free) + log.getvalue() for v in marks), "응답·로그에 비공개 값 없음")
+        for path in Path(scope["input"]).rglob("post/*/*"):
+            check(all(v.encode() not in path.read_bytes() for v in marks), "후보정 원장·그림에 비공개 값 없음")
+
+    logging.getLogger().addHandler(handler)
+    try:
+        with patch.object(fb, "POLL_FAST", 0.001), patch.object(fb, "SUBMIT_RETRY_DELAY", 0.001):
+            asyncio.run(suite())
+    finally:
+        logging.getLogger().removeHandler(handler)
 
 
 # (갈래 P ↑ · 갈래 A ↓)
