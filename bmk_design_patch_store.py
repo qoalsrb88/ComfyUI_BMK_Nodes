@@ -1437,21 +1437,43 @@ def _picked_live(m: dict, keys=None):
             yield c
 
 
+# 마스크 편집 기록의 형식 — 마스크 모듈 check_record 와 같은 판정(store 는 그 모듈을 import 하지 않아 복사 — ux_v2c_core_unit 이 둘을 대조)
+_EDIT_FILE_RE = re.compile(r"masks/[A-Za-z0-9_\-]{1,64}\.png")
+_EDIT_AT_RE = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d")
+_EDIT_VERSION_KEYS = frozenset({"file", "rect", "base", "at", "ops"})
+
+
+def _edit_version_ok(v, keys) -> bool:
+    if not isinstance(v, dict) or set(v) != keys:
+        return False
+    rect, base, ops = v["rect"], v["base"], v["ops"]
+    if not isinstance(v["file"], str) or not _EDIT_FILE_RE.fullmatch(v["file"]):
+        return False
+    if not (isinstance(rect, list) and len(rect) == 4 and all(_plain_int(x, 0, 1 << 62) for x in rect)):
+        return False
+    x0, y0, x1, y1 = rect
+    if x1 <= x0 or y1 <= y0 or (x1 - x0) * (y1 - y0) > 4096 * 4096:
+        return False
+    if not isinstance(base, dict) or set(base) != {"src", "file", "ph", "ms"}:
+        return False
+    if not isinstance(base["src"], str) or base["src"] not in ("auto", "hand", "none") \
+            or not isinstance(base["ms"], str) or base["ms"] not in ("auto", "hand", "hand_else_auto"):
+        return False
+    if (base["src"] == "none") != (base["file"] is None) or not isinstance(base["file"], (str, type(None))) \
+            or not isinstance(base["ph"], (str, type(None))):
+        return False
+    if not isinstance(ops, str) or len(ops) > 200 or re.search(r"[\x00-\x1f\x7f]", ops):
+        return False
+    return isinstance(v["at"], str) and _EDIT_AT_RE.fullmatch(v["at"]) is not None
+
+
 def _mask_edit_valid(m: dict, key: str) -> bool:
-    """그 후보에 합성이 읽는 꼴의 마스크 편집 기록이 있는가(마스크 모듈의 check_record — 형식이 깨진 기록은 합성도 기준 마스크로 간다)."""
+    """그 후보에 합성이 읽는 꼴의 마스크 편집 기록이 있는가 — 형식이 깨진 기록은 합성도 기준 마스크로 간다(붓 끔이 가릴 것이 없다)."""
     edits = m.get("mask_edits")
     rec = edits.get(key) if isinstance(edits, dict) else None
-    if not isinstance(rec, dict):
+    if not isinstance(rec, dict) or not isinstance(rec.get("hist"), list) or len(rec["hist"]) > RECORD_HIST_KEEP:
         return False
-    try:
-        from . import bmk_design_patch_mask as dmask  # 마스크 모듈이 store 를 import 한다 — 여기서는 부를 때만
-    except ImportError:
-        import bmk_design_patch_mask as dmask
-    try:
-        dmask.check_record(rec)
-    except (ValueError, TypeError, KeyError):
-        return False
-    return True
+    return _edit_version_ok(rec, _EDIT_VERSION_KEYS | {"hist"}) and all(_edit_version_ok(h, _EDIT_VERSION_KEYS) for h in rec["hist"])
 
 
 def mask_stack_applied(m: dict, key: str) -> dict | None:

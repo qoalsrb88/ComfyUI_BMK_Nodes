@@ -64396,6 +64396,34 @@ def ux_v2c_core_unit():
     for broken_edit in ({}, {"file": "masks/x.png"}, dict(edit_rec, extra=1), dict(edit_rec, rect=[0, 0, 8]), "x"):
         check(st.picked_stacks(dict(m, mask_edits={keys[0]: broken_edit})) == {keys[1]: {"off": ["transform"], "opacity": 50}},
               f"V2CC4 깨진 마스크 편집 기록의 brush 끔은 효과 없음(합성도 기준 마스크) {broken_edit!r:.30}")
+    # store 의 마스크 편집 형식 판정 = 마스크 모듈 check_record(복사한 규칙 — 어긋나면 서명과 합성이 갈린다)
+    dmask_mod = importlib.import_module("bmk_design_patch_mask")
+    old_version = {k: v for k, v in edit_rec.items() if k != "hist"}
+    hand_base = {"src": "hand", "file": "masks/h.png", "ph": "abc", "ms": "hand"}
+    battery = [edit_rec, dict(edit_rec, hist=[old_version]), dict(edit_rec, base=hand_base), dict(edit_rec, ops=""),
+               dict(edit_rec, rect=[0, 0, 4096, 4096]), dict(edit_rec, hist=[old_version] * 20),
+               {}, dict(edit_rec, extra=1), {k: v for k, v in edit_rec.items() if k != "ops"}, dict(edit_rec, file="masks/../x.png"),
+               dict(edit_rec, file="x.png"), dict(edit_rec, file=3), dict(edit_rec, rect=[0, 0, 8]), dict(edit_rec, rect=[0, 0, 8, True]),
+               dict(edit_rec, rect=[-1, 0, 8, 8]), dict(edit_rec, rect=[0, 0, 0, 8]), dict(edit_rec, rect=[0, 0, 4097, 4096]),
+               dict(edit_rec, rect=[0.0, 0, 8, 8]), dict(edit_rec, rect="0,0,8,8"), dict(edit_rec, base=None),
+               dict(edit_rec, base=dict(hand_base, src="none")), dict(edit_rec, base=dict(hand_base, file=None)),
+               dict(edit_rec, base=dict(hand_base, ms="edit")), dict(edit_rec, base=dict(hand_base, ph=3)),
+               dict(edit_rec, base=dict(hand_base, src=["hand"])), dict(edit_rec, base=dict(hand_base, extra=1)),
+               dict(edit_rec, ops="x" * 201), dict(edit_rec, ops="a\nb"), dict(edit_rec, ops=None), dict(edit_rec, at="2026-11-20"),
+               dict(edit_rec, at="2026-11-20 10:00:00.5"), dict(edit_rec, at=None), dict(edit_rec, hist=None),
+               dict(edit_rec, hist=[old_version] * 21), dict(edit_rec, hist=[dict(old_version, hist=[])]),
+               dict(edit_rec, hist=[dict(old_version, rect=[0, 0, 0, 0])]), dict(edit_rec, hist=["x"])]
+
+    def dmask_ok(rec):
+        try:
+            dmask_mod.check_record(rec)
+            return True
+        except (ValueError, TypeError, KeyError):
+            return False
+
+    verdicts = [(st._mask_edit_valid({"mask_edits": {K: rec}}, K), dmask_ok(rec)) for rec in battery]
+    check(all(a == b for a, b in verdicts) and [a for a, _ in verdicts[:6]] == [True] * 6 and not any(a for a, _ in verdicts[6:]),
+          f"V2CC4 store 의 마스크 편집 형식 판정 = 마스크 모듈 check_record({sum(a == b for a, b in verdicts)}/{len(battery)})")
     flipped = dict(m, cand_adjust={keys[5]: dict(xf, flip_v=True)})
     check(st.picked_stacks(flipped).get(keys[5]) == {"off": ["transform"]}, "V2CC4 뒤집기만 있어도 transform 끔은 효과")
 
