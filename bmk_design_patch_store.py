@@ -111,11 +111,13 @@ import logging
 import math
 import os
 import re
+import stat
 import struct
 import threading
 import time
 import unicodedata
 import uuid
+from datetime import datetime
 from fractions import Fraction
 from typing import Any, Callable, Iterable
 
@@ -2743,3 +2745,80 @@ def update_crop_gen(root: str, mutate: Callable[[dict], Any], *, expect_rev: int
 
 class CropGenConflict(ValueError):
     """update_crop_gen: expect_rev 가 지금 rev 와 다르다(다른 창이 먼저 씀)."""
+
+
+PROJECT_META_NAME = "project_meta.json"
+PROJECT_META_SCHEMA = "bmk.design_patch.project_meta/1"
+_PROJECT_META_ERROR = "프로젝트 설정 파일(project_meta.json)을 읽지 못했습니다 — 관리자에게 알려 주세요"
+_PROJECT_TITLE_ERROR = "표시 이름에는 문자·숫자·한글·_ - . 공백만 쓸 수 있습니다(64자까지 · '..' 와 끝의 '.' 는 쓸 수 없습니다)"
+
+
+class ProjectMetaConflict(ValueError):
+    """다른 요청이 먼저 프로젝트 설정을 바꿨다."""
+
+
+def check_project_title(value) -> str | None:
+    if not isinstance(value, str) or any(unicodedata.category(ch) == "Cc" for ch in value):
+        raise ValueError(_PROJECT_TITLE_ERROR)
+    try:
+        return check_export_subfolder(unicodedata.normalize("NFC", value.strip())) or None
+    except ValueError:
+        raise ValueError(_PROJECT_TITLE_ERROR) from None
+
+
+def _default_project_meta() -> dict:
+    return {"schema": PROJECT_META_SCHEMA, "rev": 0, "title": None, "archived": None}
+
+
+def _check_project_meta(doc) -> dict:
+    if (not isinstance(doc, dict) or doc.keys() != {"schema", "rev", "title", "archived"}
+            or doc["schema"] != PROJECT_META_SCHEMA or type(doc["rev"]) is not int or doc["rev"] < 0):
+        raise ValueError(_PROJECT_META_ERROR)
+    if doc["title"] is not None and check_project_title(doc["title"]) != doc["title"]:
+        raise ValueError(_PROJECT_META_ERROR)
+    archived = doc["archived"]
+    if archived is not None:
+        if (not isinstance(archived, dict) or archived.keys() != {"at"} or not isinstance(archived["at"], str)
+                or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}", archived["at"])):
+            raise ValueError(_PROJECT_META_ERROR)
+        datetime.strptime(archived["at"], "%Y-%m-%d %H:%M:%S")
+    return doc
+
+
+def load_project_meta(root: str) -> dict:
+    path = os.path.join(root, PROJECT_META_NAME)
+    with manifest_lock(root):
+        try:
+            info = os.lstat(path)
+            if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise ValueError(_PROJECT_META_ERROR)
+            with open(path, encoding="utf-8-sig") as f:
+                return _check_project_meta(json.load(f))
+        except FileNotFoundError:
+            return _default_project_meta()
+        except (OSError, ValueError, RecursionError):
+            raise ValueError(_PROJECT_META_ERROR) from None
+
+
+def read_project_meta(root: str) -> tuple[dict, bool]:
+    try:
+        return load_project_meta(root), False
+    except (ValueError, OSError):
+        return _default_project_meta(), True
+
+
+def update_project_meta(root: str, mutate: Callable[[dict], None], *, expect_rev: int) -> tuple[dict, bool]:
+    with manifest_lock(root):
+        doc = load_project_meta(root)
+        if type(expect_rev) is not int or doc["rev"] != expect_rev:
+            raise ProjectMetaConflict("다른 창에서 먼저 바뀌었습니다 — 지금 값으로 다시 표시합니다")
+        updated = dict(doc, archived=dict(doc["archived"]) if doc["archived"] is not None else None)
+        mutate(updated)
+        _check_project_meta(updated)
+        if updated["rev"] != expect_rev:
+            raise ValueError(_PROJECT_META_ERROR)
+        if updated == doc:
+            return doc, False
+        updated["rev"] += 1
+        write_json_atomic(os.path.join(root, PROJECT_META_NAME), updated)
+        return updated, True

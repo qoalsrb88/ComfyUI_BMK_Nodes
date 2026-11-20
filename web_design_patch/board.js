@@ -1065,8 +1065,8 @@
 
   function renderHeader() {
     if (!S) return;
-    document.title = `${S.project} · 디자인 패치 스튜디오`;
-    $("proj").textContent = `${S.project} · 크롭 ${S.crops.length} · 타깃 ${S.counts.targets} · 후보 ${S.counts.candidates} · pick ${S.counts.picks}`;
+    document.title = `${S.title || S.project} · 디자인 패치 스튜디오`;
+    $("proj").textContent = `${S.title || S.project} · 크롭 ${S.crops.length} · 타깃 ${S.counts.targets} · 후보 ${S.counts.candidates} · pick ${S.counts.picks}`;
     const b = $("badges");
     b.replaceChildren();
     if (!S.canvas) {
@@ -2014,25 +2014,27 @@
     }
     newButton.addEventListener("click", () => { if (!opening) newProjectForm(formHost, null, setCreating); });
 
+    const projectTitle = (r) => r.title || r.name;
     function draw() {
       grid.replaceChildren();
       const query = search.value.trim().toLocaleLowerCase();
-      const shown = rows.filter((r) => r.name.toLocaleLowerCase().includes(query));
+      const shown = rows.filter((r) => projectTitle(r).toLocaleLowerCase().includes(query));
       status.textContent = shown.length ? `${shown.length}개 프로젝트` : query ? "검색 결과가 없습니다." : "아직 프로젝트가 없습니다. 새 프로젝트에서 원화를 불러오세요.";
       status.classList.toggle("dp-empty", !shown.length);
       for (const r of shown) {
+        const name = projectTitle(r);
         const card = el("article", `projects-card${r.openable ? "" : " projects-unavailable"}`);
         const picture = el("div", "projects-picture", r.before_import ? "가져오기 전" : "미리보기 없음");
         if (r.thumb_url) {
           const img = el("img", "projects-thumb");
-          img.alt = `${r.name} 미리보기`;
+          img.alt = `${name} 미리보기`;
           img.loading = "lazy";
           img.onerror = () => picture.replaceChildren(el("span", "projects-note", "미리보기 없음"));
           picture.replaceChildren(img); // lazy 이미지는 DOM 에 붙어 있어야 로딩을 시작한다.
           img.src = apiUrl(r.thumb_url);
         }
         if (r.openable) card.append(picture);
-        card.append(el("h2", "projects-name", r.name));
+        card.append(el("h2", "projects-name", name));
         if (can("path_input") && r.outside_input) card.append(el("span", "projects-chip", "input 밖"));
         if (!r.openable) {
           card.append(el("p", "projects-note", r.error));
@@ -2056,13 +2058,13 @@
           const open = el("button", "projects-open", "열기");
           open.type = "button";
           open.disabled = opening;
-          open.setAttribute("aria-label", `${r.name} 프로젝트 열기`);
+          open.setAttribute("aria-label", `${name} 프로젝트 열기`);
           open.addEventListener("click", async () => {
             if (opening) return;
             opening = true;
             reload.disabled = true;
             draw();
-            status.textContent = `${r.name} 여는 중…`;
+            status.textContent = `${name} 여는 중…`;
             try {
               const response = await fetch(apiUrl("projects/open"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: r.id }) });
               const result = await readJson(response);

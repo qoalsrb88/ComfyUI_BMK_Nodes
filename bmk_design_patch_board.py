@@ -399,10 +399,11 @@ LOCAL_CAPS = {"jobs": False, "export_download": False, "sam3": True, "local_qwen
               "path_input": True, "ps_mask": True, "agent_approve": True, "ui_default": "v1"}
 # UX v2 기능 플래그(V2-A D490). 로컬판은 모두 false — 서버 모드의 GET /env 가 열린 것만 true 로 바꾼다.
 V2_CAPS = ("ui_v2", "v2_spec_edit", "v2_forge_prompt", "v2_auto_prepare", "v2_crop_model", "v2_postprocess", "v2_psd_reimport",
-           "v2_mask_stack")
+           "v2_mask_stack", "v2_project_home")
 LOCAL_CAPS.update({name: False for name in V2_CAPS})
 MASK_STACK_ENABLED = web.AppKey("bmk_dp_mask_stack", bool)
 DEFAULT_UI = web.AppKey("bmk_dp_default_ui", str)
+PROJECT_HOME_ENABLED = web.AppKey("bmk_dp_project_home", bool)
 _SCOPE: contextvars.ContextVar = contextvars.ContextVar("bmk_dp_scope", default=None)
 _ENV_PROVIDER: list = []           # set_env_provider — 서버 모드의 GET /env 본문을 만드는 함수(request → dict)
 _SCOPE_ROOTS: dict = {}            # 정규화한 계정 프로젝트 폴더 → (mtime_ns, {key: root}), 최근 256개
@@ -2979,6 +2980,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
              "pipeline_rev": pl.pipeline_rev(root), "plan_v": None, "pref_v": store.board_pref_v(root),
              "export_state": export_state, "export_last": {k: ex.get(k) for k in ("rev", "time")} if ex is not None else None}
     if server_mode():
+        flags["title"] = _project_state_title(root)
         try:
             flags["crop_gen_rev"] = store.load_crop_gen(root)["rev"]
         except (ValueError, OSError):
@@ -7661,6 +7663,10 @@ def _project_adoption(root: str) -> dict:
 
 
 def _project_new_begin(data: dict, upload: bool) -> dict:
+    return _project_new_begin_for_home(data, upload, False)
+
+
+def _project_new_begin_for_home(data: dict, upload: bool, project_home: bool) -> dict:
     base_dir = project_input()
     if server_mode() and not upload and ("path" in data or "adopt" in data):
         raise _Reject(400, "서버 모드에서는 그림 파일을 올려 주세요")
@@ -7692,6 +7698,9 @@ def _project_new_begin(data: dict, upload: bool) -> dict:
         source = os.path.join(root, filename)
     else:
         if os.path.lexists(root):
+            if (project_home and in_scope(root) and os.path.isfile(os.path.join(root, store.MANIFEST_NAME))
+                    and store.read_project_meta(root)[0]["archived"] is not None):
+                raise _Reject(409, "보관함에 같은 이름의 프로젝트가 있습니다 — 다른 이름을 쓰거나 보관함에서 되돌리세요", reason="archived_name")
             raise _Reject(409, "같은 이름의 프로젝트가 있습니다 — 폴더 목록을 확인하세요")
         if upload:
             source, filename = None, check_upload_name(data.get("filename"))
@@ -7877,7 +7886,7 @@ async def _project_new_request(request):
         upload = is_octet_stream(request)
         data = dict(request.query) if upload else await _body(request)
         # begin 은 작은 메타데이터 작업뿐. 상태를 받은 뒤부터 취소 시 정리할 수 있다.
-        state = _project_new_begin(data, upload)
+        state = _project_new_begin_for_home(data, upload, _project_home_enabled(request))
         part = None
         if not state["adopt"]:
             part = await recv_upload(request, state["tmp"]) if upload else await _project_new_thread(copy_in, state["source"], state["tmp"])
@@ -7968,37 +7977,85 @@ def _project_summary(root: str) -> dict:
     return dict(row)
 
 
-def _projects_list() -> dict:
-    out = []
-    for r in _project_roots():
-        # 표시 이름은 경로가 들어갈 수 있는 manifest.project 대신 실제 폴더 이름.
-        row = {"id": r["key"], "name": os.path.basename(r["root"]), "outside_input": r["outside_input"], "adoptable": False, "files": []}
+def _project_home_enabled(request) -> bool:
+    return server_mode() and getattr(request, "app", {}).get(PROJECT_HOME_ENABLED, False)
+
+
+@functools.lru_cache(maxsize=512)
+def _cached_project_title(root: str, mtime_ns: int, size: int) -> str | None:
+    return store.read_project_meta(root)[0]["title"]
+
+
+def _project_state_title(root: str) -> str | None:
+    try:
+        stat = os.stat(os.path.join(root, store.PROJECT_META_NAME), follow_symlinks=False)
+    except OSError:
+        return None
+    return _cached_project_title(root, stat.st_mtime_ns, stat.st_size)
+
+
+def _project_records():
+    for record in _project_roots():
+        if not server_mode() or (in_scope(record["root"]) and not _is_link(record["root"])):
+            yield record
+
+
+def _project_row(r: dict, project_home: bool) -> dict:
+    root = r["root"]
+    row = {"id": r["key"], "name": os.path.basename(root), "outside_input": r["outside_input"], "adoptable": False, "files": []}
+    try:
+        store._check_project_name(row["name"])
+        row.update(_project_summary(root))
+        row["thumb_url"] = None if row["before_import"] else "projects/thumb?" + urlencode({"key": r["key"]})
+    except FileNotFoundError:
         try:
-            store._check_project_name(row["name"])
-            row.update(_project_summary(r["root"]))
-            row["thumb_url"] = None if row["before_import"] else "projects/thumb?" + urlencode({"key": r["key"]})
-        except FileNotFoundError:
-            try:
-                info = _project_adoption(r["root"])
-                row.update(info if not r["outside_input"] else {"adoptable": False, "files": []})
-                row.update(openable=False, error="열 수 없음 — Studio [새 프로젝트] 또는 [이 폴더로 시작]을 이용하세요" if info["adoptable"]
-                           else "열 수 없음 — 옛 프로젝트 기록이 남아 있습니다(매니페스트 없음)")
-            except OSError:
-                logger.exception("%s 프로젝트 폴더 목록 읽기 실패: %s", _TAG, r["root"])
-                row.update(openable=False, error="열 수 없음 — 프로젝트 폴더의 읽기 권한을 확인하세요")
-        except Exception:
-            row.update(openable=False, error="열 수 없음 — 프로젝트 파일 형식과 읽기 권한을 확인하세요")
-        out.append(row)
+            info = _project_adoption(root)
+            row.update(info if not r["outside_input"] else {"adoptable": False, "files": []})
+            row.update(openable=False, error="열 수 없음 — Studio [새 프로젝트] 또는 [이 폴더로 시작]을 이용하세요" if info["adoptable"]
+                       else "열 수 없음 — 옛 프로젝트 기록이 남아 있습니다(매니페스트 없음)")
+        except OSError:
+            logger.exception("%s 프로젝트 폴더 목록 읽기 실패: %s", _TAG, root)
+            row.update(openable=False, error="열 수 없음 — 프로젝트 폴더의 읽기 권한을 확인하세요")
+    except Exception:
+        row.update(openable=False, error="열 수 없음 — 프로젝트 파일 형식과 읽기 권한을 확인하세요")
+    if server_mode():
+        meta, broken = store.read_project_meta(root)
+        row["title"] = meta["title"]
+        if project_home:
+            row["meta_rev"] = meta["rev"]
+            if broken:
+                row["meta_error"] = True
+            if meta["archived"] is not None:
+                row["archived_at"] = meta["archived"]["at"]
+    return row
+
+
+def _project_listing(project_home: bool, archived: bool) -> dict:
+    out = []
+    archived_count = 0
+    for r in _project_records():
+        row = _project_row(r, project_home)
+        is_archived = "archived_at" in row
+        archived_count += is_archived
+        if not project_home or archived == is_archived:
+            out.append(row)
     out.sort(key=lambda r: (r.get("modified") or "", r["name"], r["id"]), reverse=True)
-    return {"projects": out}
+    return {"projects": out, **({"archived_count": archived_count} if project_home else {})}
+
+
+def _projects_list() -> dict:
+    return _project_listing(False, False)
+
+
+_PROJECT_NOT_FOUND = "목록에서 프로젝트를 찾을 수 없습니다 — 목록을 새로고침하세요"
 
 
 def _project_find(key) -> dict:
     if not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{12}", key):
         raise _Reject(400, "프로젝트 키 형식이 잘못되었습니다")
-    row = next((r for r in _project_roots() if r["key"] == key), None)
+    row = next((r for r in _project_records() if r["key"] == key), None)
     if row is None or not os.path.isfile(os.path.join(row["root"], store.MANIFEST_NAME)):
-        raise _Reject(404, "목록에서 프로젝트를 찾을 수 없습니다 — 목록을 새로고침하세요")
+        raise _Reject(404, _PROJECT_NOT_FOUND)
     return row
 
 
@@ -8009,8 +8066,14 @@ def _ensure_pref(key: str, root: str) -> None:
 
 
 def _project_open(key) -> dict:
+    return _project_open_for_home(key, False)
+
+
+def _project_open_for_home(key, project_home: bool) -> dict:
     r = _project_find(key)
     if server_mode():
+        if project_home and store.read_project_meta(r["root"])[0]["archived"] is not None:
+            raise _Reject(409, "보관된 프로젝트입니다 — 먼저 되돌려 주세요", reason="archived")
         _ensure_pref(key, r["root"])
         return {"ok": True, "key": key}
     _project_summary(r["root"])
@@ -8062,13 +8125,15 @@ async def _project_call(fn, *args):
 
 @_guard
 async def projects_handler(request: web.Request) -> web.StreamResponse:
+    if _project_home_enabled(request):
+        return _json(await _project_call(_project_listing, True, request.query.get("archived") == "1"))
     return _json(await _project_call(_projects_list))
 
 
 @_guard
 async def projects_open_handler(request: web.Request) -> web.StreamResponse:
     data = await _body(request)
-    return _json(await _project_call(_project_open, data.get("key")))
+    return _json(await _project_call(_project_open_for_home, data.get("key"), _project_home_enabled(request)))
 
 
 @_guard
