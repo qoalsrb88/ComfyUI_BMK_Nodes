@@ -1864,6 +1864,8 @@ def export_state_sig(m: dict) -> str:
         payload["z_order"] = manual
     if adjustments := picked_adjustments(m):
         payload["cand_adjust"] = adjustments
+    if stacks := picked_stacks(m):
+        payload["mask_stack"] = stacks
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 

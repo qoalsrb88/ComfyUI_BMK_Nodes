@@ -905,7 +905,13 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
         entry = entries.get(c["key"])
         mask, msrc = _final_mask(root, c, entry, crop, mask_source)
         base_mask, base_msrc, mask_edit = mask, msrc, None
-        rec = dmask.edit_record(m, c["key"]) if c.get("picked") else None
+        key = c["key"]
+        fx = store.mask_stack_applied(m, key) if c.get("picked") else None
+        if c.get("picked") and fx is None and isinstance(m.get("mask_stack"), dict) and key in m["mask_stack"]:
+            if store.mask_stack_record(m, key) is None:
+                warns.append(f"{key} ({crop['name']}): 마스크 필터 기록을 읽지 못함 → 필터 없이")
+        off = fx.get("off", []) if fx else []
+        rec = dmask.edit_record(m, key) if c.get("picked") and "brush" not in off else None
         if rec is not None:
             em, why = dmask.edit_mask(root, rec)
             if em is None:
@@ -925,12 +931,15 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
         base_quad = quad
         bb = dpsd.quad_bbox(base_quad)
         adjust = store.cand_adjust_effect(store.cand_adjust(m, c["key"])) if c.get("picked") else None
-        if adjust:
+        if "transform" in off:
+            adjust = {k: adjust[k] for k in ("blur", "invert")} if adjust["blur"] or adjust["invert"] else None
+        elif adjust:
             quad = an.xform_quad(base_quad, **{k: adjust[k] for k in ("dx", "dy", "rot", "sx", "sy") if k in adjust})
+        filter_mask = fx is not None and ("edge" in fx or "opacity" in fx)
+        rect = dmask.edit_rect(dpsd.quad_bbox(quad), m["canvas"]) if mask_edit is not None or filter_mask else None
         mask_merged = False
         if mask_edit is not None:
-            now = dmask.edit_rect(dpsd.quad_bbox(quad), m["canvas"])
-            merged = dmask.expand_edit_mask(mask, base_mask, now)
+            merged = dmask.expand_edit_mask(mask, base_mask, rect)
             mask_merged, mask = merged is not mask, merged
             if entry is not None and dmask.base_fp(c, entry, mask_source)["ph"] != rec["base"]["ph"]:
                 warns.append(f"{c['key']} ({crop['name']}): 마스크 편집 기준 바뀜(분석 항목) → 편집 그대로 씀"
@@ -946,6 +955,13 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
                 "z": (0, int(z)) if z is not None else (1, order_idx[c["key"]])}
         if mask_merged:
             item["mask_merged"] = True
+        if fx:
+            item["mask_fx"] = fx
+            if off:
+                item["stack_off"] = off
+            if filter_mask and rect is not None:
+                item["mask"] = dmask.apply_stack(mask, rect, fx)
+                item["mask_stacked"] = True
         if adjust:
             item["adjust"] = adjust
         g = groups.setdefault((c["crop_id"], c["tid"]), {"slices": [], "alts": []})
@@ -2403,6 +2419,8 @@ def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | N
         payload["z_order"] = manual
     if adjustments := store.picked_adjustments(m):
         payload["cand_adjust"] = adjustments
+    if stacks := store.picked_stacks(m):
+        payload["mask_stack"] = stacks
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
@@ -2616,8 +2634,12 @@ class BMKDesignPatchExportPSD:
                             [mk["left"], mk["top"], mk["left"] + mk["arr"].shape[1], mk["top"] + mk["arr"].shape[0]]})
             if it["mask_edit"]:
                 written[-1]["mask_edit"] = it["mask_edit"]
-                if it.get("mask_merged"):
-                    written[-1]["mask_file"] = store.save_png_ca(root, "derived", mk["arr"], prefix="edit_fill_")
+            if it.get("mask_fx"):
+                written[-1]["mask_fx"] = it["mask_fx"]
+            if it.get("mask_stacked"):
+                written[-1]["mask_file"] = store.save_png_ca(root, "derived", mk["arr"], prefix="stack_")
+            elif it.get("mask_merged"):
+                written[-1]["mask_file"] = store.save_png_ca(root, "derived", mk["arr"], prefix="edit_fill_")
             if it.get("adjust"):
                 written[-1]["adjust"] = dict(it["adjust"])
             pbar.update(1)
