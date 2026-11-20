@@ -40203,7 +40203,8 @@ def mask_unit():
 
     def k2():
         section("S4-K2 병합: mask_edits 키 단위 3-way — 노드 커밋 ∥ 보드 save·pick·reject(스레드 4 × 25)")
-        check(store._MERGE_KEYED_DICTS == ("picks", "rejects", "rerolls", "approvals", "mask_edits", "z_order", "cand_adjust"), "store 병합 키 단위 dict 에 mask_edits·z_order·cand_adjust")
+        check(store._MERGE_KEYED_DICTS == ("picks", "rejects", "rerolls", "approvals", "mask_edits", "z_order", "cand_adjust", "mask_stack", "cand_post"),
+              "store 병합 키 단위 dict 에 mask_edits·z_order·cand_adjust·mask_stack·cand_post")
         keys = [f"r_{i:012d}_0_0" for i in range(4)]
         root = project("k2", keys)
 
@@ -64008,6 +64009,1304 @@ def ux_v2b_dev_unit():
               "V2BD6 서로 다른 모델의 429·503 누적 뒤 남은 작업 제출 0건")
 
 
+# ══════════════════════════════════════════════════════════════════════
+# UX v2 Phase V2-C 2차(후보정 브릿지) — 갈래마다 자기 묶음 안만 채운다(서로의 묶음·1차 묶음을 고치지 않는다)
+# ══════════════════════════════════════════════════════════════════════
+def ux_v2c_post_pixels_unit():
+    """UX v2-C 갈래 S2(명세 D576–D578·D585) — 합성·Export 가 읽는 효과 그림(파생본)·세 서명의 cand_post 행·사이드카·레이어 이름. 갈래 S2 가 채운다."""
+    section("UX v2-C — 후보정 파생본의 합성·Export (ux_v2c_post_pixels_unit)")
+
+
+# (갈래 S2 ↑ · 갈래 P ↓)
+
+
+def ux_v2c_post_unit():
+    """UX v2-C 갈래 P(명세 D583·D584·D588–D606 · §3.3–§3.5) — 후보정 키·원장·계획·실행·결과 검사·라우트·기능 플래그. 갈래 P 가 채운다."""
+    section("UX v2-C — 후보정 호출·원장·라우트 (ux_v2c_post_unit)")
+
+
+# (갈래 P ↑ · 갈래 A ↓)
+
+
+def ux_v2c_submit_unit():
+    """UX v2-C 갈래 A(명세 D593·D594·D621 · §3.7) — 공용 모듈의 후보정 제출·승인 상자의 글·v1 의 읽기 표시. 갈래 A 가 채운다."""
+    section("UX v2-C — 후보정 승인(공용 모듈) (ux_v2c_submit_unit)")
+
+
+# (갈래 A ↑ · 갈래 D ↓)
+
+
+def ux_v2c_dev_unit():
+    """UX v2-C 갈래 D(명세 D625) — 가짜 Forge 의 업스케일·배경 제거 흉내. 갈래 D 가 채운다."""
+    section("UX v2-C — 가짜 Forge 의 후보정 흉내 (ux_v2c_dev_unit)")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# UX v2 Phase V2-C (STUDIO_UX_V2C_SPEC — 마스크 필터 스택 · 후보정 파생본 · --only 이름 = 묶음)
+# ══════════════════════════════════════════════════════════════════════
+# 불변 기준(D586 ①): 구현 전 판 1efbf8b 에서 아래 합성 프로젝트(_v2c_project — ★ 셋·마스크 편집·후보 보정(블러·뒤집기·변형·색반전)·
+# 수동 z 순서·톤·정합·숨김 대안·탈락)를 Compose·Export 한 결과의 다이제스트. mask_stack·cand_post 가 없거나 효과 없는 기록만 있는
+# 프로젝트는 이 값이 그대로여야 한다 — 이 표는 고치지 않는다(값이 달라졌다면 기존 프로젝트의 합성·Export 가 바뀐 것이다).
+# 「글」 = 서명·해시·구조(라이브러리 판과 무관), 「픽셀」 = 합성·PSD 픽셀(PIL·OpenCV 판에 따라 달라질 수 있어 V2C_ENV_CANARY 가
+# 같을 때만 대조한다 — 다르면 SKIP 하고, 네 경우가 서로 같은지는 그대로 본다).
+V2C_PINNED_TEXT = {
+    "composite_sig": "72cf0290bd0b1127",
+    "state_sig": "a745fdd5a90d7053",
+    "order": "ed59ea3eb5aae83867fa0a43d2aa494f5be7c96fb9ed48ebe5c7e43d868fad6b",
+    "export_hash": "f18dbb87d470262a",
+    "export_state_sig": "a745fdd5a90d7053",
+    "sidecar": "ddab5f14e864457fb0f19ae3b4a2adc2dffb768c2621ee0aee3250f81f1f8a87",
+    "psd_structure": "70368b14344ebcfc7841bac9802cda1a0994d414b94458a08b9d3aef2c2f13e2",
+    "composite_sig_after": "dcbc4c6748025437",
+    "export_counts": "29f39c4cf924658f1e4e22494022cdedbabb50c62d74d00e169b31c4df5b9efd",
+}
+V2C_PINNED_PIXEL = {
+    "board": "254ff4e8baceac251ba7b649aea54f1270d3461a0744055c5f70081c11ee0bd6",
+    "compose": "254ff4e8baceac251ba7b649aea54f1270d3461a0744055c5f70081c11ee0bd6",
+    "union": "5d90bbea9b441a6f3832741a5a898733b3aea2172088fee97a5d68b729984901",
+    "psd_pixels": "74749112a117ab3f9771ef87585b18a5b1e79ec469cde89275d178166f4657c2",
+    "psd_merged": "254ff4e8baceac251ba7b649aea54f1270d3461a0744055c5f70081c11ee0bd6",
+    "psd_mask": "aa5f0117125a65370bcacd85d4b9f3342af8d33f2867345950e0e98ede451079",
+}
+V2C_ENV_CANARY = "d2d8c9067aa5f900"
+V2C_KEYS = {"a1": "h_00000000c0a1", "a2": "h_00000000c0a2", "c": "h_00000000c0c0", "d": "h_00000000c0d0", "e": "h_00000000c0e0"}
+V2C_AT = "2026-11-20 10:00:00"
+
+
+def _v2c_sha(data) -> str:
+    if not isinstance(data, (bytes, bytearray)):
+        data = json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _v2c_pat(h, w, ch, a, b, k):
+    """정수 식만 쓰는 무늬(uint8) — 라이브러리 판과 무관하게 같은 픽셀."""
+    yy, xx = np.mgrid[0:h, 0:w]
+    planes = [((xx * (a + i) + yy * (b + 2 * i) + k * (i + 1) + (xx * yy) // (3 + i)) % 256) for i in range(ch)]
+    return (planes[0] if ch == 1 else np.stack(planes, axis=-1)).astype(np.uint8)
+
+
+def _v2c_env_canary() -> str:
+    """합성이 쓰는 라이브러리 기본 연산의 지문 — 픽셀 다이제스트를 대조해도 되는 환경인지."""
+    import cv2
+    rgba = _v2c_pat(40, 48, 4, 3, 5, 7)
+    f32 = rgba[..., :3].astype(np.float32)
+    mat = np.float64([[0.98, 0.17, 1.25], [-0.17, 0.98, -0.75]])
+    buf = io.BytesIO()
+    Image.fromarray(rgba).save(buf, "PNG")
+    parts = [np.asarray(Image.fromarray(rgba).resize((31, 27), Image.LANCZOS)),
+             np.asarray(Image.fromarray(rgba[..., :3]).resize((97, 61), Image.LANCZOS)),
+             cv2.resize(f32, (77, 53), interpolation=cv2.INTER_LINEAR), cv2.resize(f32, (12, 10), interpolation=cv2.INTER_AREA),
+             cv2.warpAffine(f32, mat, (48, 40), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT),
+             cv2.warpAffine(f32, mat, (48, 40), flags=cv2.INTER_CUBIC), cv2.GaussianBlur(f32, (0, 0), 1.7, sigmaY=2.3),
+             np.asarray(Image.open(io.BytesIO(buf.getvalue())))]
+    return _v2c_sha(b"".join(np.ascontiguousarray(p).tobytes() for p in parts))[:16]
+
+
+def _v2c_project(dp, out, name):
+    """합성 프로젝트(캔버스 96x80 · 크롭 둘). 분석 항목은 손으로 만든다(진짜 _params_hash·산출 파일 — _ensure_analysis 가 캐시 적중).
+      a1 = 크롭 1 ★: 2배 RGB · 정합(이동 1.25, −0.75)·톤 보정장·자동 마스크 · 마스크 편집
+      a2 = 크롭 1 ★(둘째 슬라이스): 부분 패치 RGBA · 손 마스크 · 후보 보정(블러·뒤집기·이동·회전·배율) · 분석 건너뜀
+      c  = 크롭 2 ★: 1배 RGBA(부분 투명) · 자동 마스크 · 후보 보정(색반전만)
+      d  = 크롭 2 숨김 대안: 2배 RGB · 톤 보정장 · 자동 마스크      e = 크롭 2 탈락
+    수동 z 순서: 크롭 순서와 크롭 1 의 슬라이스 순서. 반환 (root, m, keys)."""
+    st, mk, an = dp.store, dp.dmask, dp.an
+    K = V2C_KEYS
+    base = _v2c_pat(80, 96, 3, 3, 5, 11)
+    _h, root = _fx_project(dp, out, name, [("001_alpha", [8, 8, 40, 40]), ("002_beta", [48, 16, 88, 56])], base)
+    m = st.load_manifest(root)
+    c1, c2 = m["crops"]
+    rq = lambda r: [float(v) for v in (r[0], r[1], r[2], r[1], r[2], r[3], r[0], r[3])]
+
+    def cand(key, crop, pix, quad, picked, **kw):
+        return {"key": key, "crop_id": crop["id"], "tid": "A", "picked": picked, "origin": "psd_harvest",
+                "file": st.save_png_ca(root, "candidates", pix), "src_size": [pix.shape[1], pix.shape[0]], "quad": quad, **kw}
+
+    alpha2 = _v2c_pat(20, 24, 1, 9, 4, 3)
+    alpha2[4:16, 4:20] = 255
+    pix_a2 = np.dstack([_v2c_pat(20, 24, 3, 11, 2, 9), alpha2])
+    alpha_c = np.full((40, 40), 255, np.uint8)
+    alpha_c[:, :6] = (np.arange(6, dtype=np.uint8) * 40)[None, :]
+    alpha_c[30:, 30:] = 96
+    pix_c = np.dstack([_v2c_pat(40, 40, 3, 2, 13, 4), alpha_c])
+    hand = _v2c_pat(20, 24, 1, 6, 9, 1)
+    q_a2 = [14., 18., 34., 18., 34., 34., 14., 34.]
+    cands = {
+        "a1": cand(K["a1"], c1, _v2c_pat(64, 64, 3, 5, 3, 2), rq(c1["rect"]), True, z=3),
+        "a2": cand(K["a2"], c1, pix_a2, q_a2, True, z=1,
+                   hand_mask={"file": st.save_png_ca(root, "masks", hand), "rect": [12, 16, 36, 36], "bg": 0}),
+        "c": cand(K["c"], c2, pix_c, rq(c2["rect"]), True),
+        "d": cand(K["d"], c2, _v2c_pat(80, 80, 3, 4, 7, 6), rq(c2["rect"]), False),
+        "e": cand(K["e"], c2, _v2c_pat(40, 40, 3, 8, 1, 5), rq(c2["rect"]), False),
+    }
+    m["candidates"] = list(cands.values())
+    m["picks"] = {f"{c1['id']}/A": [K["a1"], K["a2"]], f"{c2['id']}/A": [K["c"]]}
+    m["rejects"] = {K["e"]: True}
+
+    def entry(name, crop, *, shift=None, tone=False, am_seed=1):
+        c = cands[name]
+        frame = dp._gen_frame(root, m, crop, c)
+        ph = dp._params_hash(c, frame, dp._ANALYZE_DEFAULTS)
+        x0, y0, x1, y1 = crop["rect"]
+        w, h = x1 - x0, y1 - y0
+        pre = dp._derived_prefix(c["key"], ph)
+        matrix = [[1.0, 0.0, shift[0] if shift else 0.0], [0.0, 1.0, shift[1] if shift else 0.0]]
+        tone_rec = {"mode": "field", "delta": None}
+        if tone:
+            yy, xx = np.mgrid[0:8, 0:8]
+            small = np.stack([(xx - 3.5) * 1.5, (yy - 3.5) * -1.25, (xx + yy - 7) * 0.75], axis=-1).astype(np.float16)
+            buf = io.BytesIO()
+            np.save(buf, np.ascontiguousarray(small), allow_pickle=False)
+            tone_rec.update(delta=st.save_bytes_ca(root, "derived", buf.getvalue(), "npy", prefix=pre + "tone_"), size=[w, h], stats={})
+        am = _v2c_pat(h, w, 1, 2, 3, am_seed)
+        am[h // 4:h - h // 4, w // 4:w - w // 4] = 255
+        return {ph: {"params_hash": ph, "params": dict(dp._ANALYZE_DEFAULTS), "crop_id": crop["id"], "tid": "A", "rect": list(crop["rect"]),
+                     "reg": {"matrix": matrix, "applied": bool(shift), "kind": "affine" if shift else "identity",
+                             "dx": matrix[0][2], "dy": matrix[1][2], "sx": 1.0, "sy": 1.0, "rot_deg": 0.0, "shear": 0.0,
+                             "med_before": 2.0, "med_after": 1.0, "improve": 0.5, "disp": 1.25 if shift else 0.0, "masked": False},
+                     "quad_reg": an.quad_from_matrix(matrix, crop["rect"]), "tone": tone_rec,
+                     "automask": st.save_png_ca(root, "derived", am, prefix=pre + "am_"), "components": [],
+                     "mask_area": round(float(am.sum()) / 255.0, 1),
+                     "gates": {"fails": [], "outside_mad": 1.0, "outside_frac_gt24": 0.0}, "thumb": None}}
+
+    m["analysis"] = {K["a1"]: entry("a1", c1, shift=(1.25, -0.75), tone=True, am_seed=1),
+                     K["c"]: entry("c", c2, am_seed=2), K["d"]: entry("d", c2, tone=True, am_seed=3)}
+    e_a1 = next(iter(m["analysis"][K["a1"]].values()))
+    win = mk.edit_rect(dp.dpsd.quad_bbox(e_a1["quad_reg"]), m["canvas"])
+    painted = _v2c_pat(win[3] - win[1], win[2] - win[0], 1, 7, 2, 8)
+    m["mask_edits"] = {K["a1"]: {"file": st.save_png_ca(root, "masks", painted, prefix=K["a1"][:10] + "_e_"), "rect": win,
+                                 "base": mk.base_fp(cands["a1"], e_a1, "hand_else_auto"), "ops": "v2c 기준", "at": V2C_AT, "hist": []}}
+    xf = dict(st.CAND_XFORM_DEFAULTS, base_quad=None)
+    m["cand_adjust"] = {
+        K["a2"]: dict(xf, blur=1.5, invert=False, dx=2.0, dy=-1.0, rot=10.0, sx=1.1, sy=0.9, flip_h=True, base_quad=q_a2, at=V2C_AT, hist=[]),
+        K["c"]: dict(xf, blur=0.0, invert=True, at=V2C_AT, hist=[])}
+    m["z_order"] = {"crops": [c2["id"], c1["id"]], f"s:{c1['id']}/A": [K["a2"], K["a1"]]}
+    st.save_manifest(root, m)
+    st.register_root(root)
+    return root, st.load_manifest(root), K
+
+
+def _v2c_psd_rows(path):
+    """Export PSD 를 다시 읽어 (구조 행, 픽셀 행) — 구조 = 이름·종류·보임·자리·마스크 자리·SO 변형 상자, 픽셀 = 마스크·SO 바이트·레이어 픽셀."""
+    doc = PSDImage.open(path)
+    text, pixel = [], []
+    for layer in doc.descendants():
+        row = [layer.kind, layer.name, bool(layer.visible), list(layer.bbox), int(layer.opacity), str(layer.blend_mode)]
+        px = [layer.name]
+        mask = layer.mask
+        if mask is not None:
+            row.append(["mask", list(mask.bbox), int(mask.background_color)])
+            pil = mask.topil()
+            px.append(None if pil is None else _v2c_sha(np.asarray(pil).tobytes()))
+        if layer.kind == "smartobject":
+            so = layer.smart_object
+            row.append(["so", [round(float(v), 4) for v in so.transform_box], so.filetype, so.filename])
+            px.append(_v2c_sha(bytes(so.data)))
+        if layer.kind in ("pixel", "smartobject"):
+            pil = layer.topil()
+            px.append(None if pil is None else _v2c_sha(np.asarray(pil).tobytes()))
+        text.append(row)
+        pixel.append(px)
+    return text, pixel, np.asarray(doc.topil())
+
+
+def _v2c_digests(dp, out, name, mutate=None, after=None):
+    """합성 프로젝트를 만들고(mutate(m, K) 로 매니페스트를 고친 뒤 · after(root, K) 로 라우트 함수를 부른 뒤) Compose·Export 한
+    다이제스트 → (글, 픽셀, 부가)."""
+    from unittest.mock import patch
+    st, bd = dp.store, dp.board
+    root, m, K = _v2c_project(dp, out, name)
+    if mutate is not None:
+        mutate(m, K)
+        st.save_manifest(root, m)
+        m = st.load_manifest(root)
+    if after is not None:
+        after(root, K)
+        m = st.load_manifest(root)
+    text, pixel = {}, {}
+    text["composite_sig"] = bd._composite_sig(root, m, None)
+    text["state_sig"] = st.export_state_sig(m)
+    plan = bd._star_plan(root, m, None)[0]
+    text["order"] = _v2c_sha([[p["crop"]["id"], t["tid"], it["cand"]["key"]] for p, t, it in dp._slices_in_order(plan)])
+    pixel["board"] = _v2c_sha(np.ascontiguousarray(bd._compose_full(root, m, None)[0]).tobytes())
+    hashes = lambda mm: {k: sorted(v) for k, v in mm["analysis"].items() if k != K["a2"]}  # a2 = 부분 패치(건너뜀 항목이 처음 생긴다)
+    analysis_before = hashes(m)
+    # 노드 모듈이 쥔 folder_paths 는 그 모듈을 처음 import 한 묶음에 따라 진짜일 수도 서버 모드 대역일 수도 있다(--only 조합) — 그 객체를 고친다
+    old_board_output = bd._OUTPUT_DIR[:]
+    try:
+        bd.set_output_dir(str(out / "output"))
+        with patch.object(dp.folder_paths, "get_output_directory", return_value=str(out / "output")), \
+                patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}):
+            handle, image, union, report = dp.BMKDesignPatchCompose().run(dp._handle(root, m), "hand_else_auto", True, True, "auto_small_on_top")
+            pixel["compose"] = _v2c_sha(np.rint(image[0].cpu().numpy() * 255.0).astype(np.uint8).tobytes())
+            pixel["union"] = _v2c_sha(np.rint(union.cpu().numpy() * 255.0).astype(np.uint8).tobytes())
+            result = dp.BMKDesignPatchExportPSD().run(handle, "pin", "smart_object", "hidden_all", "toned", "hand_else_auto", True, True)
+    finally:
+        bd._OUTPUT_DIR[:] = old_board_output
+    path = Path(result["result"][0])
+    m2 = st.load_manifest(root)
+    rec = m2["exports"][-1]
+    snap = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+    rows_text, rows_pixel, merged = _v2c_psd_rows(path)
+    text.update(export_hash=rec["hash"], export_state_sig=rec.get("state_sig"), sidecar=_v2c_sha(snap["export_layers"]),
+                psd_structure=_v2c_sha(rows_text), composite_sig_after=bd._composite_sig(root, m2, None),
+                export_counts=_v2c_sha([rec["layers"], rec["mask_groups"], rec["mask_edits"], rec["smart_objects"]]))
+    pixel.update(psd_pixels=_v2c_sha(rows_pixel), psd_merged=_v2c_sha(np.ascontiguousarray(merged).tobytes()),
+                 psd_mask=_v2c_sha(np.asarray(Image.open(rec["mask"])).tobytes()))  # PSD 파일 바이트는 실행마다 다르다(문서 id)
+    extra = {"problems": rec["problems"], "analysis_same": hashes(m2) == analysis_before, "report": report,
+             "root": root, "psd": str(path), "layers": [r["name"] for r in snap["export_layers"]]}
+    return text, pixel, extra
+
+
+def _v2c_noop_cases():
+    """D586 ① 의 네 경우 — (이름, mutate). 기록의 꼴은 명세 §3.1·§3.2."""
+    stack = lambda **kw: {"off": [], "edge": {"feather": 0.0, "fade": {"top": 0, "bottom": 0, "left": 0, "right": 0}}, "opacity": 100,
+                          "at": V2C_AT, "hist": []} | kw
+    post = lambda **kw: {"on": True, "file": "post/0123456789abcdef01234567/out.png", "size": [128, 128], "tool": "upscale",
+                         "model": "pid_upscale", "opts": {"scale": 2}, "input": {"file": "candidates/x.png", "sha": "0" * 64},
+                         "call": "0123456789abcdef01234567", "at": V2C_AT, "hist": []} | kw
+    loud = {"feather": 6.0, "fade": {"top": 4, "bottom": 8, "left": 0, "right": 12}}
+
+    def empty(m, K):
+        m["mask_stack"], m["cand_post"] = {}, {}
+
+    def not_picked(m, K):  # ★ 가 아닌 후보(숨김 대안·탈락)에만 기록 — 효과가 있는 값이어도 쓰이지 않는다
+        m["mask_stack"] = {K["d"]: stack(edge=loud, opacity=40, off=["brush"]), K["e"]: stack(opacity=10)}
+        m["cand_post"] = {K["d"]: post(), K["e"]: post()}
+
+    def defaults(m, K):  # 기본값 기록(이력·표지만 있는 것) · 꺼 둔 파생본
+        m["mask_stack"] = {K["a1"]: stack(), K["a2"]: stack(hist=[{k: v for k, v in stack(opacity=30).items() if k != "hist"}]), K["c"]: stack()}
+        m["cand_post"] = {K["a1"]: post(on=False), K["c"]: post(on=False, tool="bg_removal", model="RMBG-2.0", opts={"mask_offset": 0, "mask_blur": 0})}
+
+    def switched_off(m, K):  # 값은 있으나 그 층을 꺼 둠 · 끌 것이 없는 층을 끔(편집 없는 ★ 의 brush · 변형 없는 ★ 의 transform)
+        m["mask_stack"] = {K["a1"]: stack(edge=loud, opacity=40, off=["edge", "opacity"]),
+                           K["a2"]: stack(edge=loud, off=["brush", "edge"]), K["c"]: stack(opacity=55, off=["brush", "opacity", "transform"])}
+        m["cand_post"] = {K["a2"]: post(on=False)}
+
+    return [("none", None), ("empty", empty), ("not_picked", not_picked), ("defaults", defaults), ("switched_off", switched_off)]
+
+
+def ux_v2c_invariant_unit():
+    """UX v2-C 불변(명세 D586 ①) — 감독관이 구현 전에 쓴 시험이다(갈래 S·S2 의 완료 조건 · 갈래는 이 묶음을 고치지 않는다).
+    mask_stack·cand_post 가 없음 / 빈 dict / ★ 아닌 후보에만 / 효과 없는 기록 — 다섯 경우의 ★ 합성 픽셀·합성 서명·Export 해시·점검 서명·
+    Export PSD(구조·픽셀)·사이드카가 1efbf8b 와 같다. --quick 포함(작은 합성 프로젝트)."""
+    section("UX v2-C — 기존 프로젝트의 합성·Export 불변 (ux_v2c_invariant_unit)")
+    from tempfile import mkdtemp
+
+    dp = _dp_package()
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="ux_v2c_inv_", dir=OUT_ROOT.resolve()))
+    canary = _v2c_env_canary()
+    pixels_ok = canary == V2C_ENV_CANARY
+    if not pixels_ok:
+        skip(f"V2CI 픽셀 다이제스트 대조 생략 — 라이브러리 지문 {canary} ≠ 기준 {V2C_ENV_CANARY}(PIL·OpenCV 판이 다름). 경우끼리의 일치는 그대로 봄")
+    first = None
+    for name, mutate in _v2c_noop_cases():
+        text, pixel, extra = _v2c_digests(dp, out, "inv-" + name, mutate)
+        if os.environ.get("DP_V2C_PRINT"):
+            print("V2C_PIN", name, json.dumps({"text": text, "pixel": pixel, "canary": canary}, ensure_ascii=False))
+        check(extra["problems"] == 0, f"V2CI1 Export 검사 문제 0 ({name})")
+        check(extra["analysis_same"], f"V2CI1 Compose·Export 가 분석을 다시 돌리지 않음 ({name})")
+        for k, v in text.items():
+            check(v == V2C_PINNED_TEXT.get(k), f"V2CI2 1efbf8b 와 같음 — {k} ({name})")
+        for k, v in pixel.items():
+            if pixels_ok:
+                check(v == V2C_PINNED_PIXEL.get(k), f"V2CI3 1efbf8b 와 같음 — 픽셀 {k} ({name})")
+        if first is None:
+            first = (text, pixel)
+            check(len(extra["layers"]) == 4 and sum(n.endswith(" · 보정") for n in extra["layers"]) == 2
+                  and "toned" in extra["report"], "V2CI0 기준 프로젝트 = 레이어 넷(★ 셋 + 숨김 대안)·보정 이름 둘·톤 적용")
+        else:
+            check(text == first[0] and pixel == first[1], f"V2CI4 효과 없는 기록은 기록 없음과 모든 다이제스트가 같음 ({name})")
+
+
+def ux_v2c_core_unit():
+    """UX v2-C 공용 자리(명세 §3.1·§3.2 · D575·D577·D578·D608·D610·D615·D616) — 두 기록의 읽기·검사·효과 값·해시 행 재료. --quick 포함."""
+    section("UX v2-C — 공용 자리 (ux_v2c_core_unit)")
+    from tempfile import mkdtemp
+
+    st = store
+    K = "r_000000000001_0_0"
+    stack = lambda **kw: {"off": [], "edge": {"feather": 0.0, "fade": {"top": 0, "bottom": 0, "left": 0, "right": 0}}, "opacity": 100,
+                          "at": V2C_AT, "hist": []} | kw
+    edge = lambda feather=0.0, **fade: {"feather": feather, "fade": {"top": 0, "bottom": 0, "left": 0, "right": 0} | fade}
+    read = lambda rec: st.mask_stack_record({"mask_stack": {K: rec}}, K)
+
+    # ── mask_stack: 값 검사·정규화
+    check(st.mask_stack_defaults() == {k: v for k, v in stack().items() if k not in ("at", "hist")}, "V2CC1 스택 기본값")
+    v = st.mask_stack_values(["transform", "brush"], edge(6.26, bottom=48), 40)
+    check(v == {"off": ["brush", "transform"], "edge": edge(6.3, bottom=48), "opacity": 40}, "V2CC1 off 정렬·페더 소수 1자리")
+    bad_values = [(["mask"], edge(), 100), (["brush", "brush"], edge(), 100), ("brush", edge(), 100), ([1], edge(), 100),
+                  ([], {"feather": 0}, 100), ([], edge() | {"x": 1}, 100), ([], edge(-0.1), 100), ([], edge(32.1), 100),
+                  ([], edge(True), 100), ([], edge("3"), 100), ([], edge(float("nan")), 100), ([], edge(top=257), 100),
+                  ([], edge(top=-1), 100), ([], edge(top=1.5), 100), ([], edge(top=True), 100),
+                  ([], {"feather": 0, "fade": {"top": 0, "bottom": 0, "left": 0}}, 100),
+                  ([], {"feather": 0, "fade": {"top": 0, "bottom": 0, "left": 0, "right": 0, "in": 0}}, 100),
+                  ([], edge(), 101), ([], edge(), -1), ([], edge(), 50.0), ([], edge(), True), ([], edge(), "100")]
+    rejected = 0
+    for args in bad_values:
+        try:
+            st.mask_stack_values(*args)
+        except ValueError:
+            rejected += 1
+    check(rejected == len(bad_values), f"V2CC1 범위 밖·bool·문자열·모르는 칸 거절 {rejected}/{len(bad_values)}")
+
+    # ── mask_stack: 기록 읽기(키 집합이 정확해야 한다 · 이력 20 · 원본 불변)
+    old = {k: v for k, v in stack(opacity=30, at="2026-11-20 09:00:00.123456789").items() if k != "hist"}
+    rec = stack(off=["transform", "brush"], edge=edge(6, bottom=48), hist=[old])
+    snapshot = copy.deepcopy(rec)
+    got = read(rec)
+    check(got == stack(off=["brush", "transform"], edge=edge(6.0, bottom=48), hist=[old]) and rec == snapshot, "V2CC2 기록 정규화·원본 불변")
+    broken = [dict(rec, extra=1), {k: v for k, v in rec.items() if k != "opacity"}, dict(rec, at="어제"), dict(rec, at=None),
+              dict(rec, hist=[old] * 21), dict(rec, hist=[dict(old, hist=[])]), dict(rec, hist="x"), dict(rec, off=["mask"]),
+              dict(rec, opacity=101), dict(rec, edge=edge(40)), dict(rec, hist=[dict(old, opacity=True)]), "x", None, []]
+    check(all(read(b) is None for b in broken), "V2CC2 깨진 기록(모르는 키·빠진 키·시각·이력·범위)은 없음으로 읽음")
+    check(st.mask_stack_record({"mask_stack": []}, K) is None and st.mask_stack_record({}, K) is None, "V2CC2 mask_stack 이 dict 가 아니면 없음")
+
+    # ── mask_stack: 효과 값(꺼진 층 반영 · 영향 없는 칸 제외)
+    eff = lambda **kw: st.mask_stack_effect(read(stack(**kw)))
+    check(eff() is None and st.mask_stack_effect(None) is None, "V2CC3 기본값·없음 = 효과 없음")
+    check(eff(off=["edge", "opacity"], edge=edge(6, top=8), opacity=40) is None, "V2CC3 값이 있어도 그 층을 끄면 효과 없음")
+    check(eff(edge=edge(6)) == {"edge": edge(6.0)} and eff(edge=edge(left=12)) == {"edge": edge(0.0, left=12)}, "V2CC3 페더·페이드 하나만 있어도 edge")
+    check(eff(opacity=0) == {"opacity": 0} and eff(opacity=99) == {"opacity": 99}, "V2CC3 불투명도 0 도 효과")
+    check(eff(off=["brush", "edge", "opacity", "transform"], edge=edge(3), opacity=1) == {"off": ["brush", "transform"]},
+          "V2CC3 off 에는 brush·transform 만 남음")
+    full = eff(off=["transform"], edge=edge(6, bottom=48), opacity=70)
+    check(full == {"off": ["transform"], "edge": edge(6.0, bottom=48), "opacity": 70} and list(full) == ["off", "edge", "opacity"], "V2CC3 효과 값의 꼴·칸 순서")
+
+    # ── 해시 행: ★ 만 · 「가릴 것이 없는 끔」 제외
+    xf = dict(st.CAND_XFORM_DEFAULTS, base_quad=None, blur=0.0, invert=False, at=V2C_AT, hist=[])
+    crop = {"id": "001_a", "name": "001_a", "rect": [0, 0, 8, 8], "targets": [{"tid": "A"}]}
+    cand = lambda key, picked=True, tid="A": {"key": key, "crop_id": "001_a", "tid": tid, "picked": picked, "file": f"cands/{key}.png", "src_size": [8, 8]}
+    keys = ["r_%012d_0_0" % i for i in range(6)]
+    edit_rec = {"file": "masks/r_00000000_e_0123456789ab.png", "rect": [0, 0, 8, 8], "ops": "붓", "at": V2C_AT, "hist": [],
+                "base": {"src": "none", "file": None, "ph": None, "ms": "hand_else_auto"}}
+    m = {"crops": [crop], "candidates": [cand(keys[0]), cand(keys[1]), cand(keys[2], picked=False), cand(keys[3]), cand(keys[4], tid="Z"), cand(keys[5])],
+         "picks": {}, "rejects": {keys[3]: True},
+         "mask_edits": {keys[0]: edit_rec}, "cand_adjust": {keys[1]: dict(xf, dx=4.0), keys[5]: dict(xf, blur=2.0)},
+         "mask_stack": {keys[0]: stack(off=["brush", "transform"]), keys[1]: stack(off=["brush", "transform"], opacity=50),
+                        keys[2]: stack(opacity=10), keys[3]: stack(opacity=10), keys[4]: stack(opacity=10),
+                        keys[5]: stack(off=["transform"])}}
+    check(st.picked_stacks(m) == {keys[0]: {"off": ["brush"]}, keys[1]: {"off": ["transform"], "opacity": 50}},
+          "V2CC4 mask_stack 행 = ★ 만 · brush 끔은 편집이 있을 때 · transform 끔은 변형이 있을 때(블러뿐이면 아님) · 대안·탈락·없는 타깃 제외")
+    check(st.mask_stack_applied(m, keys[5]) is None and st.mask_stack_applied(m, keys[2]) == {"opacity": 10}, "V2CC4 applied 는 ★ 여부를 보지 않음")
+    check(st.picked_stacks(m, keys={keys[2]}) == {keys[2]: {"opacity": 10}}, "V2CC4 가상 ★ 집합(keys)")
+    check(st.picked_stacks({}) == {} and st.picked_stacks(dict(m, mask_stack={})) == {} and st.picked_stacks(dict(m, mask_stack=[])) == {},
+          "V2CC4 기록이 없거나 비었으면 빈 dict")
+    for broken_edit in ({}, {"file": "masks/x.png"}, dict(edit_rec, extra=1), dict(edit_rec, rect=[0, 0, 8]), "x"):
+        check(st.picked_stacks(dict(m, mask_edits={keys[0]: broken_edit})) == {keys[1]: {"off": ["transform"], "opacity": 50}},
+              f"V2CC4 깨진 마스크 편집 기록의 brush 끔은 효과 없음(합성도 기준 마스크) {broken_edit!r:.30}")
+    # store 의 마스크 편집 형식 판정 = 마스크 모듈 check_record(복사한 규칙 — 어긋나면 서명과 합성이 갈린다)
+    dmask_mod = importlib.import_module("bmk_design_patch_mask")
+    old_version = {k: v for k, v in edit_rec.items() if k != "hist"}
+    hand_base = {"src": "hand", "file": "masks/h.png", "ph": "abc", "ms": "hand"}
+    battery = [edit_rec, dict(edit_rec, hist=[old_version]), dict(edit_rec, base=hand_base), dict(edit_rec, ops=""),
+               dict(edit_rec, rect=[0, 0, 4096, 4096]), dict(edit_rec, hist=[old_version] * 20),
+               {}, dict(edit_rec, extra=1), {k: v for k, v in edit_rec.items() if k != "ops"}, dict(edit_rec, file="masks/../x.png"),
+               dict(edit_rec, file="x.png"), dict(edit_rec, file=3), dict(edit_rec, rect=[0, 0, 8]), dict(edit_rec, rect=[0, 0, 8, True]),
+               dict(edit_rec, rect=[-1, 0, 8, 8]), dict(edit_rec, rect=[0, 0, 0, 8]), dict(edit_rec, rect=[0, 0, 4097, 4096]),
+               dict(edit_rec, rect=[0.0, 0, 8, 8]), dict(edit_rec, rect="0,0,8,8"), dict(edit_rec, base=None),
+               dict(edit_rec, base=dict(hand_base, src="none")), dict(edit_rec, base=dict(hand_base, file=None)),
+               dict(edit_rec, base=dict(hand_base, ms="edit")), dict(edit_rec, base=dict(hand_base, ph=3)),
+               dict(edit_rec, base=dict(hand_base, src=["hand"])), dict(edit_rec, base=dict(hand_base, extra=1)),
+               dict(edit_rec, ops="x" * 201), dict(edit_rec, ops="a\nb"), dict(edit_rec, ops=None), dict(edit_rec, at="2026-11-20"),
+               dict(edit_rec, at="2026-11-20 10:00:00.5"), dict(edit_rec, at=None), dict(edit_rec, hist=None),
+               dict(edit_rec, hist=[old_version] * 21), dict(edit_rec, hist=[dict(old_version, hist=[])]),
+               dict(edit_rec, hist=[dict(old_version, rect=[0, 0, 0, 0])]), dict(edit_rec, hist=["x"])]
+
+    def dmask_ok(rec):
+        try:
+            dmask_mod.check_record(rec)
+            return True
+        except (ValueError, TypeError, KeyError):
+            return False
+
+    verdicts = [(st._mask_edit_valid({"mask_edits": {K: rec}}, K), dmask_ok(rec)) for rec in battery]
+    check(all(a == b for a, b in verdicts) and [a for a, _ in verdicts[:6]] == [True] * 6 and not any(a for a, _ in verdicts[6:]),
+          f"V2CC4 store 의 마스크 편집 형식 판정 = 마스크 모듈 check_record({sum(a == b for a, b in verdicts)}/{len(battery)})")
+    flipped = dict(m, cand_adjust={keys[5]: dict(xf, flip_v=True)})
+    check(st.picked_stacks(flipped).get(keys[5]) == {"off": ["transform"]}, "V2CC4 뒤집기만 있어도 transform 끔은 효과")
+
+    # ── cand_post: 기록 읽기
+    post = lambda **kw: {"on": True, "file": "post/0123456789abcdef01234567/out.png", "size": [2048, 1536], "tool": "upscale",
+                         "model": "pid_upscale", "opts": {"scale": 2}, "input": {"file": "cands/abc/r0_0.png", "sha": "a" * 64},
+                         "call": "0123456789abcdef01234567", "at": V2C_AT, "hist": []} | kw
+    pread = lambda rec: st.cand_post_record({"cand_post": {K: rec}}, K)
+    prev = {k: v for k, v in post(tool="bg_removal", model="RMBG-2.0", opts={"mask_offset": -2, "mask_blur": 0},
+                                  file="post/aaaaaaaaaaaaaaaaaaaaaaaa/out.webp", call="a" * 24).items() if k != "hist"}
+    rec = post(hist=[prev])
+    snapshot = copy.deepcopy(rec)
+    check(pread(rec) == rec and rec == snapshot and pread(rec) is not rec, "V2CC5 파생본 기록 읽기(이력 포함)·사본")
+    pbad = [dict(rec, extra=1), {k: v for k, v in rec.items() if k != "call"}, dict(rec, on=1), dict(rec, file="post/x/out.png"),
+            dict(rec, file="post/0123456789abcdef01234567/out.gif"), dict(rec, file="../post/0123456789abcdef01234567/out.png"),
+            dict(rec, call="b" * 24), dict(rec, size=[0, 8]), dict(rec, size=[4097, 8]), dict(rec, size=[8]), dict(rec, size=[8.0, 8]),
+            dict(rec, size=[True, 8]), dict(rec, tool="segments"), dict(rec, model=""), dict(rec, model="x" * 65), dict(rec, model=3),
+            dict(rec, opts=[]), dict(rec, opts={"a": None}), dict(rec, opts={"a": [1]}), dict(rec, opts={"a": float("inf")}),
+            dict(rec, opts={str(i): i for i in range(9)}), dict(rec, input={"file": "a.png"}), dict(rec, input={"file": "../a.png", "sha": "a" * 64}),
+            dict(rec, input={"file": "C:\\a.png", "sha": "a" * 64}), dict(rec, input={"file": "/a.png", "sha": "a" * 64}),
+            dict(rec, input={"file": "C:/images/a.png", "sha": "a" * 64}),
+            dict(rec, input={"file": "a.png", "sha": "A" * 64}), dict(rec, at="2026"), dict(rec, hist=[prev] * 21),
+            dict(rec, hist=[dict(prev, hist=[])]), dict(rec, hist=[dict(prev, on="yes")]), dict(rec, hist=None), "x", None]
+    check(all(pread(b) is None for b in pbad), "V2CC5 깨진 파생본 기록은 없음으로 읽음")
+    check(st.cand_post_effect(pread(rec)) == {"file": rec["file"], "size": [2048, 1536], "tool": "upscale", "model": "pid_upscale"}
+          and st.cand_post_effect(pread(post(on=False))) is None and st.cand_post_effect(None) is None, "V2CC5 효과 값 = 켜진 것만")
+    check(st.post_label(pread(rec)) == "업스케일 · PiD 1.5 업스케일 ×2" and st.post_label(prev) == "배경 제거 · RMBG 2.0"
+          and st.post_label(pread(post(model="new_model", opts={}))) == "업스케일 · new_model", "V2CC5 표시 글(도구 · 모델 이름 · 배율)")
+
+    # ── cand_effective: ★ · 유효 · 켜짐 · (root 를 주면) 파일 있음일 때만 파생본
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    root = mkdtemp(prefix="ux_v2c_core_", dir=OUT_ROOT.resolve())
+    c0, c2 = m["candidates"][0], m["candidates"][2]
+    mp = dict(m, cand_post={keys[0]: post(), keys[2]: post(), keys[1]: post(on=False)})
+    orig = {"file": c0["file"], "size": [8, 8], "post": None}
+    check(st.cand_effective(m, c0) == orig and st.cand_effective(mp, c2) == {"file": c2["file"], "size": [8, 8], "post": None},
+          "V2CC6 기록 없음·★ 아님 = 원본")
+    got = st.cand_effective(mp, c0)
+    check(got == {"file": rec["file"], "size": [2048, 1536], "post": st.cand_post_effect(pread(post()))}, "V2CC6 ★ 의 켜진 파생본")
+    check(st.cand_effective(mp, m["candidates"][1])["post"] is None, "V2CC6 꺼 둔 파생본 = 원본")
+    check(st.cand_effective(dict(mp, cand_post={keys[0]: dict(post(), extra=1)}), c0) == orig, "V2CC6 깨진 기록 = 원본")
+    check(st.cand_effective(mp, c0, root) == dict(orig, lost=rec["file"]), "V2CC6 파일이 없으면 원본 + lost")
+    Path(root, "post", "0123456789abcdef01234567").mkdir(parents=True)
+    Path(root, rec["file"]).write_bytes(b"x")
+    check(st.cand_effective(mp, c0, root) == got and c0 == cand(keys[0]), "V2CC6 파일이 있으면 파생본 · 후보 줄은 그대로")
+    outside = Path(mkdtemp(prefix="ux_v2c_outside_", dir=OUT_ROOT.resolve()))
+    (outside / "out.png").write_bytes(b"x")
+    linked = post(file="post/" + "b" * 24 + "/out.png", call="b" * 24)
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(outside), str(Path(root, "post", "b" * 24)))
+    except (ImportError, AttributeError, OSError):
+        note("V2CC6 정션을 만들 수 없는 환경 — 프로젝트 밖을 가리키는 링크 확인은 건너뜀")
+    else:
+        check(os.path.isfile(Path(root, linked["file"]))
+              and st.cand_effective(dict(mp, cand_post={keys[0]: linked}), c0, root) == dict(orig, lost=linked["file"]),
+              "V2CC6 post/ 아래 폴더가 프로젝트 밖을 가리키는 링크면 파생본으로 쓰지 않음")
+        os.rmdir(Path(root, "post", "b" * 24))  # 정션만 끊는다(대상 폴더는 그대로)
+    check(st.picked_posts(mp) == {keys[0]: rec["file"]} and st.picked_posts(m) == {} and st.picked_posts(dict(m, cand_post={})) == {}
+          and st.picked_posts(mp, keys={keys[2]}) == {keys[2]: rec["file"]}, "V2CC7 cand_post 행 = ★ 의 켜진 파생본 file")
+
+    # ── 3-way 병합: 두 창이 서로 다른 후보의 기록을 바꿔도 둘 다 남는다 · 다른 키를 고치는 쓰기에도 두 기록이 남는다(D617)
+    base = st.new_manifest("v2c")
+    base["mask_stack"], base["cand_post"] = {keys[0]: stack()}, {keys[0]: post()}
+    ours = copy.deepcopy(base)
+    ours["mask_stack"][keys[1]] = stack(opacity=40)
+    ours["cand_post"][keys[0]] = post(on=False)
+    theirs = copy.deepcopy(base)
+    theirs["mask_stack"][keys[2]] = stack(opacity=60)
+    theirs["cand_post"][keys[1]] = post()
+    merged, conflicts = st.merge_manifest(base, ours, theirs)
+    check(not conflicts and set(merged["mask_stack"]) == set(keys[:3]) and merged["cand_post"][keys[0]]["on"] is False
+          and keys[1] in merged["cand_post"], "V2CC8 mask_stack·cand_post 는 후보 key 단위로 병합")
+    theirs2 = copy.deepcopy(base)
+    theirs2["mask_stack"][keys[0]] = stack(opacity=10)
+    ours2 = copy.deepcopy(base)
+    ours2["mask_stack"][keys[0]] = stack(opacity=20)
+    merged, conflicts = st.merge_manifest(base, ours2, theirs2)
+    check(conflicts == [f"mask_stack/{keys[0]}"] and merged["mask_stack"][keys[0]]["opacity"] == 20, "V2CC8 같은 후보를 다르게 바꾸면 충돌(ours)")
+    proj = st.project_root(root, "keep")
+    os.makedirs(proj)
+    st.save_manifest(proj, dict(st.new_manifest("keep"), mask_stack={keys[0]: stack(opacity=5)}, cand_post={keys[0]: post()}))
+    st.update_manifest(proj, lambda mm: mm["picks"].update({"001_a/A": [keys[0]]}))
+    kept = st.load_manifest(proj)
+    check(kept["mask_stack"][keys[0]]["opacity"] == 5 and kept["cand_post"][keys[0]]["on"] is True and kept["rev"] == 2,
+          "V2CC8 다른 키를 고치는 쓰기에도 두 기록이 남음")
+
+
+def ux_v2c_stack_unit():
+    """UX v2-C 갈래 S — 경계 계산, 합성·편집의 층별 동작, 서명과 PSD 왕복."""
+    section("UX v2-C — 마스크 필터 스택 합성 (ux_v2c_stack_unit)")
+    from tempfile import mkdtemp
+    from unittest.mock import patch
+
+    dp = _dp_package()
+    st, dm, bd = dp.store, dp.dmask, dp.board
+
+    def stack(**fields):
+        return dict(st.mask_stack_defaults(), at=V2C_AT, hist=[]) | fields
+
+    def edge(sigma, **widths):
+        return {"feather": sigma, "fade": dict.fromkeys(st.MASK_STACK_SIDES, 0) | widths}
+
+    def quant(values):
+        return np.vectorize(_mk_quant, otypes=[np.uint8])(values)
+
+    table = json.loads(_MASK_RULES.read_text(encoding="utf-8"))
+    for h, w in ((3, 5), (1, 1)):
+        arr = _v2c_pat(h, w, 1, 38, 23, 79)
+        got = dm.apply_stack(dict(arr=arr, left=0, top=0, bg=0), [0, 0, w, h], {"edge": edge(8)})
+        check(np.array_equal(got["arr"], quant(_mk_feather(arr / 255.0, 8))), f"V2CS B2 가장자리 복제 σ=8, {w}×{h}")
+    for row in table["feather"]:
+        arr = quant(row["in"])
+        mask = {"arr": arr, "left": 3, "top": 2, "bg": 0}
+        rect = [3, 2, 3 + arr.shape[1], 2 + arr.shape[0]]
+        got = dm.apply_stack(mask, rect, {"edge": edge(row["sigma"])})
+        check(np.array_equal(got["arr"], quant(row["out"])), f"V2CS 공용 페더 표 σ={row['sigma']}")
+
+    rect = [10, 20, 21, 27]
+    yy, xx = np.mgrid[20:27, 10:21]
+    mask = {"arr": _v2c_pat(6, 8, 1, 7, 3, 8), "left": 8, "top": 23, "bg": 173}
+    expected = np.full((7, 11), 173, np.float64)
+    expected[3:, :6] = mask["arr"][:4, 2:]
+    expected /= 255
+    border = edge(1.3, top=1, bottom=128, left=256, right=2)
+    for side, width in (("top", 1), ("bottom", 3), ("left", 5), ("right", 2)):
+        expected *= _mk_fade(side, rect, width, xx, yy)
+    expected = _mk_feather(expected, border["feather"])
+    got = dm.apply_stack(mask, rect, {"edge": border, "opacity": 63})
+    check(got["arr"].dtype == np.uint8 and [got["left"], got["top"], got["bg"]] == [10, 20, 0]
+          and np.array_equal(got["arr"], quant(expected * .63)), "V2CS 창 자르기·배경 → 네 변 페이드(절반·폭 1) → 페더 → 불투명도")
+    for opacity in (0, 50, 100):
+        got = dm.apply_stack(None, [7, 8, 8, 9], {"edge": edge(0, top=1, left=20), "opacity": opacity})
+        check(got["arr"].tolist() == [[_mk_quant(opacity / 100)]], f"V2CS 마스크 없음·1px 창·불투명도 {opacity}")
+    ramp = np.arange(256, dtype=np.uint8)[None, :]
+    got = dm.apply_stack(dict(arr=ramp, left=0, top=0, bg=0), [0, 0, 256, 1], {"opacity": 50})
+    check(np.array_equal(got["arr"], (ramp.astype(int) + 1) // 2), "V2CS 반 정수는 올림")
+
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="ux_v2c_stack_", dir=OUT_ROOT.resolve()))
+    root, m, keys = _v2c_project(dp, out, "stack")
+    a, b, c = (keys[k] for k in ("a1", "a2", "c"))
+    # 기록 창보다 넓은 패치. 변형을 끈 상태에서도 창 밖을 기준으로 채워야 한다.
+    rec = m["mask_edits"][a]
+    painted = _v2c_pat(9, 12, 1, 7, 13, 11)
+    rec.update(rect=[16, 19, 28, 28], file=st.save_png_ca(root, "masks", painted, prefix="brush_"))
+    m["cand_adjust"][a] = dict(m["cand_adjust"][b], invert=True, flip_v=True, dx=4, dy=-3)
+    dp._ensure_analysis(root, m, [cand for cand in m["candidates"] if cand["picked"]])
+    analysis = copy.deepcopy(m["analysis"])
+
+    def items(mm):
+        plan = bd._star_plan(root, mm, None)[0]
+        return {it["cand"]["key"]: it for _, _, it in dp._slices_in_order(plan)}
+
+    def pixels(mm):
+        return bd._compose_full(root, mm, None)[0]
+
+    def window(it):
+        return dm.edit_rect(dp.dpsd.quad_bbox(it["quad"]), m["canvas"])
+
+    def same_mask(lhs, rhs):
+        return ([lhs["left"], lhs["top"], lhs["bg"]] == [rhs["left"], rhs["top"], rhs["bg"]]
+                and np.array_equal(lhs["arr"], rhs["arr"]))
+
+    def sigs(mm):
+        return bd._composite_sig(root, mm, None), dp._export_hash(mm, {}, {}, {}), st.export_state_sig(mm)
+
+    original, original_pixels = sigs(m), pixels(m)
+    initial = items(m)
+    brush_off = dict(m, mask_stack={a: stack(off=["brush"])})
+    without_edit = dict(m, mask_edits={})
+    it = items(brush_off)[a]
+    check(it["mask"] is it["base_mask"] and it["msrc"] == it["base_msrc"] and it["mask_edit"] is None
+          and same_mask(it["mask"], items(without_edit)[a]["mask"]) and np.array_equal(pixels(brush_off), pixels(without_edit))
+          and not np.array_equal(original_pixels, pixels(brush_off)), "V2CS 붓 끔 = 기준 마스크·편집 없는 합성")
+    stale = dict(brush_off, mask_edits={a: dict(rec, base=dict(rec["base"], ph="old"))})
+    check(not any("마스크 편집 기준 바뀜" in w for w in bd._star_plan(root, stale, None)[-1]), "V2CS 붓을 끄면 기준 변경 경고 없음")
+    transform_off = dict(m, mask_stack={a: stack(off=["transform"])})
+    color_only = {"blur": 1.5, "invert": True}
+    reference = dict(m, cand_adjust=m["cand_adjust"] | {a: dict(color_only, at=V2C_AT, hist=[])})
+    it = items(transform_off)[a]
+    check(it["quad"] == it["base_quad"] and it["adjust"] == color_only and it.get("mask_merged")
+          and window(it) != window(initial[a]) and window(it) != rec["rect"]
+          and same_mask(it["mask"], items(reference)[a]["mask"]) and np.array_equal(pixels(transform_off), pixels(reference))
+          and not np.array_equal(original_pixels, pixels(transform_off)), "V2CS 변형·뒤집기 끔 = 기준 quad·창 채움·블러와 색반전만 적용")
+    geom_only = dict(transform_off, cand_adjust=m["cand_adjust"] | {a: dict(m["cand_adjust"][a], blur=0, invert=False)})
+    check("adjust" not in items(geom_only)[a], "V2CS 변형을 끄고 픽셀 보정이 없으면 adjust 없음")
+    for mm in (m, transform_off):
+        it = items(mm)[a]
+        check(bd._edit_window(mm, it["cand"], it["entry"], True) == window(it), "V2CS 보드 편집 창 = 계획의 편집 창")
+    for layer, live in (("edge", {"opacity": 60}), ("opacity", {"edge": border})):
+        off = dict(m, mask_stack={a: stack(edge=border, opacity=60, off=[layer])})
+        expected = dict(m, mask_stack={a: stack(**live)})
+        check(same_mask(items(off)[a]["mask"], items(expected)[a]["mask"]) and np.array_equal(pixels(off), pixels(expected)),
+              f"V2CS {layer} 끔 = 그 값이 없는 마스크·합성")
+
+    effect = stack(off=["transform"], edge=border, opacity=63)
+    active = dict(m, mask_stack={a: effect})
+    active_sigs = sigs(active)
+    check(all(x != y for x, y in zip(active_sigs, original)) and not np.array_equal(pixels(active), original_pixels),
+          "V2CS 효과가 있으면 세 서명과 합성 픽셀 변경")
+    old = {k: v for k, v in stack(opacity=15).items() if k != "hist"}
+    history = dict(active, mask_stack={a: dict(effect, at=V2C_AT + ".000000001", hist=[old])})
+    check(sigs(history) == active_sigs, "V2CS 시각·이력만 바꾸면 세 서명 동일")
+    for manual in (m["z_order"], {}):
+        before, after = (items(dict(mm, z_order=manual)) for mm in (m, active))
+        check([(k, it["area"]) for k, it in before.items()] == [(k, it["area"]) for k, it in after.items()],
+              "V2CS 자동·수동 순서와 기준 넓이 보존")
+    cleared = dict(active, mask_stack={})
+    check(sigs(cleared) == original and np.array_equal(pixels(cleared), original_pixels), "V2CS 기록 삭제로 세 서명·픽셀 복원")
+    for alt in (keys["d"], keys["e"]):
+        swapped = dict(m, mask_stack={alt: stack(opacity=0)})
+        swap = (m["crops"][1]["id"], "A", alt)
+        check(sigs(swapped) == original and bd._composite_sig(root, m, None, swap) != bd._composite_sig(root, swapped, None, swap)
+              and not np.array_equal(bd._compose_full(root, m, None, swap)[0], bd._compose_full(root, swapped, None, swap)[0]),
+              "V2CS 숨김·탈락 후보의 스택은 교체 가정에서만 반영")
+
+    def layers(records):
+        return bd._layers_sig(root, dict(m, mask_stack=records), None, a, [0, 0, *m["canvas"]])
+
+    layer_sig = layers({})
+    check(all(layers({a: rec}) == layer_sig for rec in (stack(edge=border), stack(opacity=25), stack(off=["brush"])))
+          and layers({a: effect}) != layer_sig
+          and layers({a: effect}) == layers({a: stack(off=["transform"])}) and layers({c: stack(opacity=20)}) != layers({}),
+          "V2CS 3층은 자기 변형 끔과 다른 ★의 스택만 반영")
+    broken = dict(m, mask_stack={a: dict(effect, off="broken")})
+    warnings = bd._star_plan(root, broken, None)[-1]
+    check(warnings.count(f"{a} ({m['crops'][0]['name']}): 마스크 필터 기록을 읽지 못함 → 필터 없이") == 1
+          and "mask_fx" not in items(broken)[a] and np.array_equal(pixels(broken), original_pixels), "V2CS 깨진 기록 경고·합성 계속")
+    outside = dict(active, mask_stack={a: stack(opacity=0)},
+                   cand_adjust=m["cand_adjust"] | {a: dict(m["cand_adjust"][a], dx=200)})
+    outside_it = items(outside)[a]
+    check(window(outside_it) is None and outside_it["mask_fx"] == {"opacity": 0}
+          and same_mask(outside_it["mask"], items(dict(outside, mask_stack={}))[a]["mask"]), "V2CS 창이 캔버스 밖이면 마스크 계산 생략")
+
+    for record in (effect, dict(effect, off=["brush", "transform"])):
+        st.save_manifest(root, dict(m, mask_stack={a: record}))
+        view = bd.mask_view(root, a)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(view["edit"]["url"]).query)
+        data, _sig = bd.mask_image(root, a, query["kind"][0], query["v"][0])
+        rect = view["rect"]
+        expected = bd._window_l(initial[a]["base_mask"], rect)
+        x, y = rec["rect"][0] - rect[0], rec["rect"][1] - rect[1]
+        expected[y:y + painted.shape[0], x:x + painted.shape[1]] = painted
+        check(query["kind"] == ["edit"] and np.array_equal(dm.validate_png(data, rect), expected),
+              "V2CS 붓 켬·끔 모두 edit.url은 필터 전 획과 창 밖 기준을 반환")
+
+    # a는 창을 채운 붓, b는 붓을 끈 손 마스크, c는 자동(또는 마스크 없음)에서 시작한다.
+    active = dict(active, mask_edits=m["mask_edits"] | {b: rec},
+                  mask_stack={a: effect, b: stack(off=["brush", "transform"], opacity=40), c: stack(edge=border)})
+    st.save_manifest(root, active)
+    for source in ("hand_else_auto", "hand"):
+        comp = dict(dp._COMPOSE_DEFAULTS, mask_source=source)
+        handle = dict(dp._handle(root, st.load_manifest(root)), compose=comp)
+        with (patch.object(dp.folder_paths, "get_output_directory", return_value=str(out)),
+              patch.object(dp, "_export_hash", wraps=dp._export_hash) as hashed,
+              patch.object(dp, "_analyze_one", side_effect=AssertionError("스택 변경 뒤 재분석"))):
+            handle, image, _, _ = dp.BMKDesignPatchCompose().run(handle, source, comp["use_registration"], comp["use_tone"], comp["zorder"])
+            result = dp.BMKDesignPatchExportPSD().run(handle, "stack", "smart_object", "none", "toned", source, True, False)
+        path = Path(result["result"][0])
+        snapshot = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        exported = st.load_manifest(root)
+        doc = PSDImage.open(path)
+        composed = np.rint(image[0].cpu().numpy() * 255).astype(np.uint8)
+        check(exported["analysis"] == analysis and exported["exports"][-1]["problems"] == 0
+              and np.array_equal(composed, pixels(exported)) and np.array_equal(np.asarray(doc.topil()), composed),
+              "V2CS 재분석 없음·PSD 검사 문제 0·Compose, 보드, PSD 병합 픽셀 일치")
+        check(set(hashed.call_args.args[4]) == {a} and b in exported["mask_edits"], "V2CS Export 해시에는 실제 적용한 붓만 포함")
+        # 경계·불투명도 이전의 계획 마스크를 가져와 PSD와 독립적으로 비교한다.
+        pre = items(dict(exported, mask_stack={k: dict(v, edge=edge(0), opacity=100) for k, v in active["mask_stack"].items()}))
+        for row in snapshot["export_layers"]:
+            key = row["key"]
+            fx = st.mask_stack_applied(exported, key)
+            want = dm.apply_stack(pre[key]["mask"], window(pre[key]), fx)
+            group = next(layer for layer in doc.descendants() if layer.name == row["name"]).parent
+            check(row["mask_fx"] == fx and row["mask_file"].startswith("derived/stack_") and row.get("adjust") == pre[key].get("adjust")
+                  and row["mask_rect"] == list(group.mask.bbox) == window(pre[key]) and group.mask.background_color == 0
+                  and np.array_equal(np.asarray(group.mask.topil()), want["arr"])
+                  and same_mask(dm.export_mask(root, snapshot, row, source), want), f"V2CS PSD·사이드카·래스터 복원 {source}/{key}")
+        with patch.object(bd, "output_dir", return_value=str(out)):
+            dry = bd.mask_ps_import(root, {"psd": str(path), "dry_run": True})
+        reason = "새 화면의 마스크 필터가 적용된 Export 입니다 — 필터를 지운 뒤 다시 Export 하세요"
+        check(not dry["changed"] and {r["key"]: r["reason"] for r in dry["skipped"]} == dict.fromkeys((a, b, c), reason),
+              "V2CS PS 가져오기는 경계 또는 불투명도를 구운 행을 건너뜀")
+    check(not list(Path(root, "derived").glob("edit_fill_*")), "V2CS 창 채움과 스택이 겹쳐도 최종 래스터만 저장")
+
+    def export(mm, prefix, compose, source, alternates="none"):
+        handle = dp._handle(root, mm, compose=compose)
+        with patch.object(dp.folder_paths, "get_output_directory", return_value=str(out)):
+            result = dp.BMKDesignPatchExportPSD().run(handle, prefix, "smart_object", alternates, "raw", source, True, False)
+        path = Path(result["result"][0])
+        snap = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        return path, {row["key"]: row for row in snap["export_layers"]}
+
+    root, m, _ = _v2c_project(dp, out, "ps-off")
+    old = m["mask_edits"][a]
+    old_arr = dp._load_l(root, old["file"])
+    m["cand_adjust"][a] = dict(st.CAND_XFORM_DEFAULTS, base_quad=None, blur=0., invert=False, at=V2C_AT, hist=[]) | {"sx": .5, "sy": .5}
+    m["mask_stack"] = {a: stack(off=["brush"])}
+    st.save_manifest(root, m)
+    path, rows = export(m, "off", dp._COMPOSE_DEFAULTS, "hand_else_auto")
+    doc = PSDImage.open(path)
+    group = next(layer.parent for layer in doc.descendants() if layer.name == rows[a]["name"])
+    view = bd.mask_view(root, a)
+    win = view["rect"]
+    imported_arr = np.full((win[3] - win[1], win[2] - win[0]), 41, np.uint8)
+    group.remove_mask()
+    group.create_mask(Image.fromarray(imported_arr), left=win[0], top=win[1])
+    with patch.object(bd, "output_dir", return_value=str(out)), patch.object(bd.dpsd, "open_psd", return_value=doc):
+        dry = bd.mask_ps_import(root, {"psd": str(path), "dry_run": True})
+        result = bd.mask_ps_import(root, {"psd": str(path), "dry_run": False, "seen": dry["seen"]})
+    saved = st.load_manifest(root)["mask_edits"][a]
+    want = old_arr.copy()
+    x, y = win[0] - old["rect"][0], win[1] - old["rect"][1]
+    want[y:y + imported_arr.shape[0], x:x + imported_arr.shape[1]] = imported_arr
+    check(rows[a]["mask_fx"] == {"off": ["brush"]} and [r["key"] for r in dry["changed"]] == [a]
+          and [r["key"] for r in result["imported"]] == [a] and not result["failed"] and win != saved["rect"] == old["rect"]
+          and np.array_equal(dp._load_l(root, saved["file"]), want), "V2CS B1 off만 있는 줄 PS 가져오기·작아진 창 밖의 옛 획 보존")
+
+    edit_url = bd.mask_view(root, a)["edit"]["url"]
+    version = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(edit_url).query))["v"]
+    real_open = Image.open
+    def locked(path, *args, **kwargs):
+        if isinstance(path, (str, Path)) and Path(path) == Path(root, saved["file"]):
+            raise PermissionError(13, "편집 파일 잠김")
+        return real_open(path, *args, **kwargs)
+
+    with patch.object(Image, "open", side_effect=locked):
+        for label, read in (("GET /mask", lambda: bd.mask_view(root, a)), ("edit PNG", lambda: bd.mask_image(root, a, "edit", version))):
+            try:
+                read()
+            except bd._Reject as ex:
+                check(ex.status == 422, f"V2CS B5 붓 끔·잠긴 편집 파일 {label} 422")
+            else:
+                check(False, f"V2CS B5 잠긴 편집 파일을 읽음 {label}")
+
+    root, m, _ = _v2c_project(dp, out, "alternates")
+    alt = keys["d"]
+    m["mask_stack"] = {a: stack(opacity=48), c: stack(edge=border)}
+    m.update(mask_edits={}, cand_adjust={}, z_order={})
+    cand = bd._cand(m, a)
+    r = m["crops"][0]["rect"]
+    hand = np.full((r[3] - r[1], r[2] - r[0]), 5, np.uint8)
+    cand["hand_mask"] = dict(file=st.save_png_ca(root, "masks", hand), rect=r, bg=0)
+    # 손 마스크와 구별되는 기존 합성 시험용 자동 마스크를 지금 분석 입력에 연결한다.
+    auto_entry = next(iter(m["analysis"][a].values()))
+    ph = dp._params_hash(cand, dp._gen_frame(root, m, m["crops"][0], cand), dp._ANALYZE_DEFAULTS)
+    m["analysis"][a] = {ph: dict(auto_entry, params_hash=ph)}
+    st.save_manifest(root, m)
+    comp = dict(dp._COMPOSE_DEFAULTS, mask_source="hand_else_auto", use_registration=False, use_tone=False)
+    path, rows = export(m, "hidden", comp, "hand_else_auto", "hidden_all")
+    doc = PSDImage.open(path)
+    parents = {k: next(layer.parent for layer in doc.descendants() if layer.name == row["name"]) for k, row in rows.items()}
+    for k in (a, c):
+        mk = items(st.load_manifest(root))[k]["mask"]
+        check(np.array_equal(np.asarray(parents[k].mask.topil()), mk["arr"]) and same_mask(dm.export_mask(root, m, rows[k], "hand_else_auto"), mk)
+              and rows[k]["mask_fx"] == st.mask_stack_applied(m, k), f"V2CS B3 visible 그룹 마스크와 사이드카 {k}")
+    check(parents[c] is parents[alt] and rows[c]["visible"] and not rows[alt]["visible"] and "mask_fx" not in rows[alt]
+          and parents[a] is not parents[b] and parents[a].parent is parents[b].parent and "mask_fx" not in rows[b]
+          and np.array_equal(np.asarray(parents[b].mask.topil()), dp._load_l(root, bd._cand(m, b)["hand_mask"]["file"]))
+          and np.array_equal(np.asarray(doc.topil()), pixels(st.load_manifest(root))),
+          "V2CS B3 숨김 대안과 같은 그룹·별 두 개 중 한 슬라이스에만 스택·PSD 병합 픽셀")
+    path, auto_rows = export(m, "mixed", comp, "auto", "hidden_all")
+    auto_doc = PSDImage.open(path)
+    auto_group = next(layer.parent for layer in auto_doc.descendants() if layer.name == auto_rows[a]["name"])
+    auto = dp._load_l(root, auto_entry["automask"])
+    want = dm.apply_stack(dict(arr=auto, left=r[0], top=r[1], bg=0), r, {"opacity": 48})
+    # 자동 마스크 넓이로 정렬하면 a가 b보다 아래다. Compose의 작은 손 마스크 기준으로는 b가 먼저다.
+    area_b = items(st.load_manifest(root))[b]["area"]
+    check(hand.sum() / 255 < area_b < auto.sum() / 255 and list(rows) == list(auto_rows) and list(rows).index(b) < list(rows).index(a)
+          and rows[a]["mask_src"] == "hand" and auto_rows[a]["mask_src"] == "auto"
+          and not np.array_equal(np.asarray(parents[a].mask.topil()), want["arr"])
+          and np.array_equal(np.asarray(auto_group.mask.topil()), want["arr"]) and same_mask(dm.export_mask(root, m, auto_rows[a], "auto"), want),
+          "V2CS B4 Export의 auto에 스택 적용·쌓는 순서는 Compose 손 마스크 기준")
+
+    def alt_sig():
+        with patch.object(bd, "_composite", wraps=bd._composite) as compose:
+            result = bd.mask_alts(root, c)
+        check(result is not None and [row["key"] for row in result["rows"]] == [alt], "V2CS B6 대안 이음매 계산")
+        return result["sig"], next(call.args[3] for call in compose.call_args_list if call.args[4] == (m["crops"][1]["id"], "A", alt))
+
+    before = alt_sig()
+    st.update_manifest(root, lambda mm: mm["mask_stack"].update({alt: stack(opacity=15)}))
+    after = alt_sig()
+    check(before[0] == after[0] and before[1] != after[1], "V2CS B6 대안의 스택 변경은 해당 교체 서명에만 반영")
+
+    # 같은 SO 바이트의 raw 왕복. 최초 PSD의 손 마스크는 SO 소유이고 Export에서는 그룹 소유가 된다.
+    rect = [8, 8, 24, 24]
+    quad = [8., 8., 24., 8., 24., 24., 8., 24.]
+    handle, root = _fx_project(dp, out, "reharvest", [("001_수확", rect)], _v2c_pat(32, 32, 3, 1, 2, 3))
+    raw = dict(arr=_v2c_pat(16, 16, 1, 9, 7, 21), left=8, top=8, bg=0)
+    seed = out / "seed.psd"
+    _fx_harvest_psd(seed, (32, 32), [("001_수확", "원본", _v2c_pat(16, 16, 3, 3, 7, 1), quad, True, raw)])
+    cin = dp.BMKDesignPatchCandidateIn()
+    cin.run(handle, "psd_harvest", str(seed), "", "", True, True)
+    seed_manifest = st.load_manifest(root)
+    key = seed_manifest["candidates"][0]["key"]
+    history = [{k: v for k, v in stack(opacity=i).items() if k != "hist"} for i in range(st.RECORD_HIST_KEEP)]
+    original = stack(off=["transform"], edge=edge(2, left=4), opacity=50, hist=history)
+    seed_manifest["mask_stack"] = {key: original}
+    st.save_manifest(root, seed_manifest)
+    comp = dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False, use_tone=False)
+    path, rows = export(seed_manifest, "roundtrip", comp, "hand")
+    row = rows[key]
+    exported = st.load_manifest(root)
+    baked = dm.apply_stack(raw, rect, {"edge": original["edge"], "opacity": 50})
+    check(same_mask(dm.export_mask(root, exported, row, "hand"), baked), "V2CS A raw Export가 손 마스크에 필터를 한 번 구움")
+
+    def harvest(psd, records, keep=True):
+        mm = dict(exported, mask_stack=records)
+        st.save_manifest(root, mm)
+        _, report = cin.run(dp._handle(root, mm), "psd_harvest", str(psd), "", "", True, keep)
+        return st.load_manifest(root), report
+
+    cleared_msg = "다시 가져온 그룹 마스크에 새 화면의 경계·불투명도가 이미 들어 있어 그 필터 값을 지움 — 눈 끄기는 유지"
+    unsure_msg = "새 화면의 경계·불투명도 필터가 다시 가져온 그룹 마스크 위에 걸립니다 — 두 번 부드러워 보이면 새 화면에서 필터를 지우세요"
+    now, report = harvest(path, {key: original})
+    saved = st.mask_stack_record(now, key)
+    check(saved["edge"] == edge(0) and saved["opacity"] == 100 and saved["off"] == original["off"] and saved["at"] > original["at"]
+          and saved["hist"] == [{k: v for k, v in original.items() if k != "hist"}, *history[:-1]]
+          and f"{row['name']}: {cleared_msg}" in report and same_mask(items(now)[key]["mask"], baked),
+          "V2CS A 같은 key 재수확은 구운 마스크 그대로·off 보존·이전 판을 이력 앞에 보존")
+    copied = out / "no-sidecar.psd"
+    shutil.copyfile(path, copied)
+    for side in (None, {"export_layers": [{"key": key}]}, {"export_layers": [dict(row, mask_fx={"off": ["brush"]})]},
+                 {"export_layers": [{"key": "다른후보", "mask_fx": row["mask_fx"]}]}):
+        if side is not None:
+            copied.with_suffix(".json").write_text(json.dumps(side), encoding="utf-8")
+        now, report = harvest(copied, {key: original})
+        check(st.mask_stack_record(now, key) == original and f"{row['name']}: {unsure_msg}" in report and cleared_msg not in report,
+              "V2CS A 사이드카나 해당 key의 구운 효과가 없으면 기록 보존·경고")
+    for psd, records, keep in ((path, {}, True), (path, {key: stack(off=["brush"])}, True),
+                               (path, {key: original}, False), (seed, {key: original}, True)):
+        now, report = harvest(psd, records, keep)
+        cand = bd._cand(now, key)
+        check(now.get("mask_stack") == records and unsure_msg not in report and cleared_msg not in report
+              and bool(cand["hand_mask"]) == keep and (records or same_mask(items(now)[key]["mask"], baked)),
+              "V2CS A 스택 없음·off만·손 마스크 가져오기 끔·그룹 소유 아님은 기존 수확 유지")
+    last = dict(original, at="9999-12-31 23:59:59.999999999")
+    now, _ = harvest(path, {key: last})
+    saved = st.mask_stack_record(now, key)
+    check(saved["at"] != last["at"] and saved["hist"][0]["at"] == last["at"] and same_mask(items(now)[key]["mask"], baked),
+          "V2CS A 옛 시각이 상한이어도 재수확은 현재 시각으로 구운 필터를 정리")
+
+
+# (갈래 S 의 시험은 위 묶음 안에 · 갈래 M 의 시험은 아래 묶음 안에 — 서로의 묶음을 고치지 않는다)
+
+
+def ux_v2c_route_unit():
+    """서버 라우트 표·실제 처리기·합성 계획·v1 후보 줄을 소켓 없이 확인한다."""
+    section("UX v2-C — 마스크 필터 스택 라우트 (ux_v2c_route_unit)")
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, Mock, patch
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+
+    dp = _dp_package()
+    bd, st = dp.board, dp.store
+    srv = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_server")
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="v2_mask_stack_", dir=OUT_ROOT.resolve()))
+    scope, other = _fj_scope(out / "home"), dict(_fj_scope(out / "other"), account="b")
+    root, _, keys = _v2c_project(dp, scope["input"], "stack")
+    rk, key = st.root_key(root), keys["a1"]
+    path = f"/mask?root={rk}&key={key}"
+    doc = json.loads(_MASK_API.read_text(encoding="utf-8"))
+    local_contract = doc["routes"]["GET /mask"]
+    contracts = doc["_doc"]["server_routes"]
+    post_contract = contracts["POST /mask/stack"]
+
+    async def call(app, method, path, data=None, *, status=200, account=scope, content_type="application/json"):
+        request = make_mocked_request(method, bd.API + path, headers={"Content-Type": content_type}, app=app)
+        request.read = AsyncMock(return_value=data if isinstance(data, bytes) else json.dumps(data).encode())
+        route = await app.router.resolve(request)
+        scope_token = bd.set_scope(account)
+        try:
+            if route.http_exception is not None:
+                check(route.http_exception.status == status, f"V2CM {method} {path} 라우트 표 {status}")
+                return None
+            response = await route.handler(request)
+        finally:
+            bd.reset_scope(scope_token)
+        body = response.body if response.content_type == "image/png" else json.loads(response.body)
+        check(response.status == status, f"V2CM {method} {path.split('?')[0]} → {status} (실제 {response.status})")
+        return body
+
+    @contextlib.asynccontextmanager
+    async def server(**options):
+        jobs = types.SimpleNamespace(JobRunner=Mock, routes=lambda runner: ())
+        cfg = srv.ServerConfig(str(out / "data"), dev_handoff=True, **options)
+        with patch.object(srv, "_server_secret", return_value=bytes(32)):
+            app = srv.make_app(cfg, jobs_module=jobs)
+        app.freeze()
+        try:
+            yield app
+        finally:
+            await app.cleanup()
+
+    async def write_cases(app):
+        async def post(op="set", seen="", status=200, **fields):
+            data = {"root": rk, "key": key, "op": op, "seen": seen, **fields}
+            return await call(app, "POST", "/mask/stack", data, status=status)
+
+        initial = await call(app, "GET", path)
+        get_contract = contracts["GET /mask"]
+        extras = {k: initial[k] for k in ("stack", "stack_fx", "final")}
+        check(not _pl_shape(get_contract["ok"], extras, get_contract) and initial["stack"] is initial["stack_fx"] is None,
+              "V2CM 새 서버 마스크 정본·기록 없음")
+        first = await post(edge={"feather": 6})
+        rec = first["stack"]
+        defaults = st.mask_stack_defaults()
+        check(rec == {**defaults, "edge": dict(defaults["edge"], feather=6.), "at": rec["at"], "hist": []}
+              and not _pl_shape(post_contract["ok"], first, post_contract), "V2CM 첫 기록은 기본값에 준 칸만 변경·POST 정본")
+        changed = await post(seen=rec["at"], edge={"fade": {"bottom": 48}})
+        second = changed["stack"]
+        check(second["edge"]["feather"] == 6 and second["edge"]["fade"] == dict(defaults["edge"]["fade"], bottom=48)
+              and second["hist"] == [{k: v for k, v in rec.items() if k != "hist"}], "V2CM fade 아래 한 변만 변경·이력 사본")
+        check(await post(seen=second["at"], edge={"fade": {"bottom": 48}}) == changed, "V2CM 같은 set은 rev·at·이력 그대로")
+        check((await post(seen=rec["at"], status=409)) == {"reason": "changed", "stack": second,
+              "error": post_contract["errors"]["409"][1]["error"]}, "V2CM 낡은 seen은 현재 기록과 changed")
+        current = await call(app, "GET", path)
+        check(current["final"] == changed["final"] and current["final"]["sig"] != initial["final"]["sig"]
+              and current["stack_fx"] == {"edge": second["edge"]} and current["composite_sig"] == changed["composite_sig"],
+              "V2CM GET·쓰기 응답의 현재 서명·스택 효과")
+        old_img = "/" + initial["final"]["url"]
+        with patch.object(bd, "_mask_target", side_effect=AssertionError("낡은 PNG의 합성 계획")):
+            check((await call(app, "GET", old_img, status=409))["reason"] == "stale", "V2CM 낡은 최종 그림은 계획 전에 거절")
+        img_path = "/" + current["final"]["url"]
+        png = await call(app, "GET", img_path)
+        manifest = st.load_manifest(root)
+        brush, _why = dp.dmask.edit_mask(root, manifest["mask_edits"][key])
+        expected = dp.dmask.apply_stack(brush, current["rect"], {"edge": second["edge"]})
+        with Image.open(io.BytesIO(png)) as im:
+            check(im.format == "PNG" and im.mode == contracts["GET /mask/stack/img"]["ok"]["mode"]
+                  and np.array_equal(np.asarray(im), expected["arr"]), "V2CM 최종 그림의 L 픽셀·크기 = 저장한 붓에 스택을 적용한 값")
+        other_mask = await call(app, "GET", path, status=404, account=other)
+        check(other_mask == await call(app, "GET", img_path, status=404, account=other)
+              == await call(app, "POST", "/mask/stack", {"root": rk, "key": key, "op": "reset", "seen": second["at"]},
+                            status=404, account=other), "V2CM 다른 계정의 프로젝트는 기존 마스크와 같은 404")
+        prev = (await post("undo", second["at"]))["stack"]
+        check(prev == dict(rec, at=prev["at"]) and prev["at"] > second["at"] > rec["at"], "V2CM undo는 앞 판 값·새 시각")
+        await post("undo", prev["at"], status=400)
+        neutral = (await post(seen=prev["at"], edge={"feather": 0}))["stack"]
+        check(neutral["hist"] and neutral["at"] > prev["at"] and (await call(app, "GET", path))["stack_fx"] is None,
+              "V2CM 기본값 복귀 뒤에도 표지·이력 보존")
+        cleared = await post("reset", neutral["at"])
+        check(cleared["stack"] is None and key not in st.load_manifest(root)["mask_stack"] and await post("reset") == cleared,
+              "V2CM reset 삭제·빈 reset은 같은 rev")
+
+        for bad, name in (({"extra": 1}, "extra"), ({"edge": {"alien": 0}}, "alien"),
+                          ({"edge": {"fade": {"north": 0}}}, "north")):
+            check(name in (await post(status=400, **bad))["error"], f"V2CM 모르는 칸 이름 {name}")
+        for op in ("undo", "reset"):
+            for field in ("off", "edge", "opacity"):
+                check(field in (await post(op, status=400, **{field: None}))["error"], f"V2CM {op}에서 {field} 거절")
+        for field, value, message in (
+            ("off", "brush", "off 는"), ("off", ["brush", "brush"], "off 는"), ("off", ["extra"], "off 는"),
+            ("edge", None, "edge 는"), ("edge", {"fade": []}, "페이드는"), ("edge", {"fade": {"left": 257}}, "페이드는"),
+            ("edge", {"fade": {"right": 0.5}}, "페이드는"), ("edge", {"feather": True}, "페더는"),
+            ("edge", {"feather": 33}, "페더는"), ("opacity", False, "불투명도는"), ("opacity", -1, "불투명도는")):
+            check((await post(status=400, **{field: value}))["error"].startswith(message), f"V2CM {field} 범위·타입 검사 {value!r}")
+        await post(seen="bad", status=400)
+        await post(key="?", status=400)
+        await post(key="r_000000000000_0_0", status=404)
+        check((await post(key=keys["d"], status=409))["reason"] == "not_picked", "V2CM ★ 아닌 후보 거절")
+        for raw, mime, code in ((b"?", "application/json", 400), (b"[]", "application/json", 400), (b"{}", "text/plain", 415)):
+            await call(app, "POST", "/mask/stack", raw, content_type=mime, status=code)
+
+        st.update_manifest(root, lambda m: m["mask_stack"].update({key: {"bad": True}}))
+        saved = (await post(off=["brush", "transform"]))["stack"]
+        check(saved["hist"] == [] and saved["off"] == ["brush", "transform"], "V2CM 깨진 기록 위에 처음 쓰기")
+        saved = (await post(seen=saved["at"], off=["brush"]))["stack"]
+        check(saved["off"] == ["brush"], "V2CM off는 준 목록으로 교체")
+        # 나노초 끝에서 시계가 뒤로 간 경우·같은 시각 연속 저장을 함께 확인한다.
+        fixed = dict(saved, at="2090-01-31 23:59:59.999999999", hist=[])
+        st.update_manifest(root, lambda m: m["mask_stack"].update({key: fixed}))
+        seen = fixed["at"]
+        for opacity in range(21):
+            saved = (await post(seen=seen, opacity=opacity))["stack"]
+            check(saved["at"] > seen and (opacity > 0 or saved["at"] == "2090-02-01 00:00:00.000000000"),
+                  f"V2CM 연속 쓰기 시각 증가 {opacity}")
+            seen = saved["at"]
+        check(len(saved["hist"]) == st.RECORD_HIST_KEEP and [v["opacity"] for v in saved["hist"]] == list(reversed(range(20)))
+              and all("hist" not in v for v in saved["hist"]), "V2CM 최신 이전 판 20개만 보존")
+        update = st.update_manifest
+        for old_at, next_at in (("2090-11-20 12:00:00.5", "2090-11-20 12:00:00.500000001"),
+                                ("2090-11-20 12:00:00", "2090-11-20 12:00:00.000000001"),
+                                ("2090-12-31 23:59:59.999999999", "2091-01-01 00:00:00.000000000")):
+            with patch.object(bd.time, "time_ns", return_value=0):
+                check(bd._stack_at(old_at) == next_at, f"V2CM B8 옛 시각·연말 다음 나노초 {old_at}")
+        last_at = "9999-12-31 23:59:59.999999999"
+        last = dict(saved, at=last_at)
+        update(root, lambda m: m["mask_stack"].update({key: last}))
+        error = await post(seen=last_at, opacity=57, status=400)
+        check("시각" in error["error"] and st.load_manifest(root)["mask_stack"][key] == last
+              and (await post("reset", last_at))["stack"] is None, "V2CM B8 마지막 시각 set은 400·이후 reset 가능")
+
+        def restore(m):
+            m["mask_stack"][key] = copy.deepcopy(saved)
+            bd._cand(m, key)["picked"] = True
+
+        for conflict in ("changed", "not_picked"):
+            def intervene(m):
+                if conflict == "changed":
+                    m["mask_stack"][key] = dict(saved, at="2091-01-01 00:00:00.000000001")
+                else:
+                    bd._cand(m, key)["picked"] = False
+            def race(folder, fn):
+                update(folder, intervene)
+                return update(folder, fn)
+            for op in ("reset", "set", "undo"):
+                update(root, restore)
+                with patch.object(st, "update_manifest", side_effect=race):
+                    error = await post(op, seen, status=409, **({"opacity": 90} if op == "set" else {}))
+                winner = dict(saved, at="2091-01-01 00:00:00.000000001") if conflict == "changed" else saved
+                check(error["reason"] == conflict and st.load_manifest(root)["mask_stack"][key] == winner
+                      and (conflict != "changed" or error["stack"] == winner), f"V2CM B9 {op} 잠금 안에서 {conflict}·앞선 쓰기 보존")
+        update(root, restore)
+
+    async def final_cases(app):
+        final_root, manifest, _ = _v2c_project(dp, scope["input"], "final-sig")
+        project_id = st.root_key(final_root)
+        crop = manifest["crops"][0]["rect"]
+        rect = list(crop)
+        auto_entry = next(iter(manifest["analysis"][key].values()))
+        auto = dict(arr=dp._load_l(final_root, auto_entry["automask"]), left=crop[0], top=crop[1], bg=0)
+        hand = dict(arr=_v2c_pat(11, 12, 1, 3, 7, 1), left=14, top=19, bg=12)
+        hand_rec = dict(file=st.save_png_ca(final_root, "masks", hand["arr"]), rect=[14, 19, 26, 30], bg=12)
+        bd._cand(manifest, key)["hand_mask"] = hand_rec
+        manifest["mask_edits"] = {}
+        manifest["exports"] = [{"compose": dict(dp._COMPOSE_DEFAULTS, mask_source="hand_else_auto", use_registration=False)}]
+        st.save_manifest(final_root, manifest)
+        previous = None
+        fx = {}
+
+        async def picture(label, raw, *, same=False):
+            nonlocal previous
+            view = await call(app, "GET", f"/mask?root={project_id}&key={key}")
+            data = await call(app, "GET", "/" + view["final"]["url"])
+            arr = dp.dmask.validate_png(data, rect)
+            sig = view["final"]["sig"]
+            check(view["rect"] == rect and np.array_equal(arr, dp.dmask.apply_stack(raw, rect, fx)["arr"]),
+                  f"V2CM B7 {label} 독립 래스터와 일치")
+            if previous is not None:
+                check((previous[0] == sig) == same and (np.array_equal(previous[1], arr) == same), f"V2CM B7 {label} 서명·픽셀")
+            previous = (sig, arr)
+            return sig
+
+        await picture("손 마스크", hand)
+        def move(m):
+            bd._cand(m, key)["hand_mask"]["rect"] = [15, 19, 27, 30]
+        st.update_manifest(final_root, move)
+        hand["left"] += 1
+        await picture("손 마스크 위치", hand)
+        st.update_manifest(final_root, lambda m: bd._cand(m, key)["hand_mask"].update(bg=73))
+        hand["bg"] = 73
+        await picture("손 마스크 배경", hand)
+        st.update_manifest(final_root, lambda m: m["exports"][-1]["compose"].update(mask_source="auto"))
+        await picture("Compose 마스크 소스", auto)
+        adjust = dict(st.CAND_XFORM_DEFAULTS, base_quad=None, blur=0., invert=False, at=V2C_AT, hist=[]) | {"dx": 3}
+        st.update_manifest(final_root, lambda m: m["cand_adjust"].update({key: adjust}))
+        rect = [crop[0] + 3, crop[1], crop[2] + 3, crop[3]]
+        await picture("후보 변형", auto)
+
+        seen = ""
+        async def set_stack(**fields):
+            nonlocal seen
+            reply = await call(app, "POST", "/mask/stack", dict(root=project_id, key=key, op="set", seen=seen, **fields))
+            seen = reply["stack"]["at"]
+
+        fx["edge"] = {"feather": 1.4, "fade": dict.fromkeys(st.MASK_STACK_SIDES, 0)}
+        await set_stack(edge=fx["edge"])
+        await picture("경계", auto)
+        fx["opacity"] = 58
+        await set_stack(opacity=58)
+        base_sig = await picture("불투명도", auto)
+        brush = dict(arr=_v2c_pat(32, 32, 1, 19, 2, 37), left=rect[0], top=rect[1], bg=0)
+        def save(raw, seen_file):
+            return bd.mask_save(final_root, key, png_bytes(raw["arr"]), seen_file, "시험", ",".join(map(str, rect)))["edit"]["file"]
+        first_file = save(brush, "")
+        await picture("붓 저장", brush)
+        bd.mask_edit(final_root, dict(key=key, seen=first_file, op="undo"))
+        check(await picture("붓 되돌리기", auto) == base_sig, "V2CM B7 붓 되돌리기로 앞 서명 복원")
+        save(brush, "")
+        await picture("붓 다시 저장", brush)
+        await set_stack(off=["brush"])
+        await picture("붓 층 끔", auto)
+        new_brush = dict(brush, arr=255 - brush["arr"])
+        save(new_brush, first_file)
+        await picture("꺼 둔 붓의 획 교체", auto, same=True)
+        await set_stack(off=[])
+        await picture("붓 층 다시 켬", new_brush)
+
+    async def run():
+        local = web.Application()
+        table = web.RouteTableDef()
+        bd.register_routes(table)
+        local.add_routes(table)
+        local.freeze()
+        check(await call(local, "GET", "/env") == _server_api()["env_local"]["response"], "V2CM 로컬 env 정본")
+        local_view = await call(local, "GET", path)
+        check(not _pl_shape(local_contract["ok"], local_view, local_contract)
+              and local_view == bd.mask_view(root, key) and "stack_fx" not in local_view, "V2CM 로컬 GET /mask 정본·내용 보존")
+        for method, p in (("POST", "/mask/stack"), ("GET", "/mask/stack/img")):
+            await call(local, method, p, status=404)
+        async with server(mask_stack=True) as app:
+            check((await call(app, "GET", "/env"))["caps"]["v2_mask_stack"] is True, "V2CM 서버 플래그 켬")
+            await write_cases(app)
+            await final_cases(app)
+        async with server() as app:
+            check(await call(app, "GET", "/env") == _env_ui_v2(_server_api()["env_server_no_session"]["response"], bd),
+                  "V2CM 기본 서버 env 정본")
+            for method, p in (("POST", "/mask/stack"), ("GET", "/mask/stack/img")):
+                await call(app, method, p, status=404)
+            d = await call(app, "GET", path)
+            check(d["stack_fx"] == {"off": ["brush"], "opacity": 20} and set(d) == set(local_view) | {"stack_fx"},
+                  "V2CM 꺼진 서버는 저장된 효과만 제공")
+
+    asyncio.run(run())
+
+    node = shutil.which("node")
+    if not node:
+        skip("V2CM node 없음 — v1 후보 칩 DOM 검사 생략")
+        return
+    source = (PKG / "web_design_patch/mask_edit.js").read_text(encoding="utf-8")
+    funcs = "\n".join(_layout_js_fn(source, name, indent="    ") + "\n}" for name in ("el", "chip", "cur", "stackChips", "renderList"))
+    dom = _PL_JS_HARNESS.split("class El {", 1)[1].split("async function mouse(", 1)[0]
+    harness = "class El {" + dom + funcs + r"""
+const document = new Doc(), window = {}, list = document.createElement("ul");
+const M = {key: "a", pending: () => false}, S = {crops:[{id:"c"}], targets:[]};
+const held = false, fadeStroke = () => false, opts = {seams: () => null}, expanded = new Set();
+const detailRows = () => {}, candOf = () => null, pad = String;
+const results = [];
+for (const keys of [["a"], ["a", "b"]]) {
+  S.targets = [{crop_id:"c", tid:"A", pick_keys:keys, candidates:keys.map(key => ({key}))}];
+  for (const [key, fx] of [["a", undefined], ["a", null], ["a", {opacity:0}], ["a", {edge:{}}], ["a", {off:["brush"]}],
+      ["a", {off:["transform"]}], ["a", {edge:{},off:["brush","transform"]}], ["a", {off:["brush","transform"]}],
+      ["b", {edge:{},off:["brush","transform"]}]]) {
+    M.info = {key, crop_id:"c", stack_fx:fx};
+    renderList();
+    const chips = list.all().filter(e => e.classList.contains("chip"));
+    results.push(chips.map(e => [e.textContent, e.title, e.tagName, keys.length === 1 || e.parent.classList.contains("sel")]));
+  }
+}
+console.log(JSON.stringify(results));
+"""
+    proc = subprocess.run([node, "-"], input=harness, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    filter_chip = ["새 화면 필터 적용 중", "새 화면에서 저장한 경계 부드럽게·불투명도가 ★ 합성과 Export 에 적용됩니다. 이 화면의 미리 보기에는 보이지 않습니다 — 결과는 ★ 합성에서 확인하세요. 여기서 페이드·페더를 더하면 두 번 부드러워집니다.", "SPAN", True]
+    def hidden(names):
+        return ["새 화면에서 끔: " + names, "새 화면에서 이 층을 꺼 두었습니다. 여기서 저장한 값은 남지만 ★ 합성에는 보이지 않습니다 — 새 화면에서 다시 켭니다.", "SPAN", True]
+    expected = [[], [], [filter_chip], [filter_chip], [hidden("브러시")], [hidden("변형")],
+                [filter_chip, hidden("브러시·변형")], [hidden("브러시·변형")], []]
+    check(proc.returncode == 0 and json.loads(proc.stdout) == expected * 2, "V2CM v1 후보 줄·복수 ★ 줄 읽기 전용 칩·설명 " + proc.stderr[-350:])
+
+
+def ux_v2c_flow_unit():
+    """UX v2-C 1차 통합(감독관 — 명세 D586 ②·D609–D616) — 라우트로 저장한 스택이 합성·최종 마스크 그림·서명에 닿는다 · 라우트로 켰다가 지우면
+    기준 다이제스트로 돌아온다 · 붓 저장이 스택과 섞이지 않는다(창 밖 획 보존). --quick 포함."""
+    section("UX v2-C — 마스크 필터 스택 통합 (ux_v2c_flow_unit)")
+    from tempfile import mkdtemp
+
+    dp = _dp_package()
+    st, bd, mk = dp.store, dp.board, dp.dmask
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="ux_v2c_flow_", dir=OUT_ROOT.resolve()))
+    pixels_ok = _v2c_env_canary() == V2C_ENV_CANARY
+    loud = {"feather": 3, "fade": {"bottom": 6, "left": 2}}
+
+    def post(root, key, seen, **body):
+        return bd.mask_stack(root, {"root": "-", "key": key, "seen": seen, **body})
+
+    # ── D586 ②: 라우트로 세 ★ 에 스택을 켰다가(붓 끔·변형 끔·경계·불투명도) reset 하면 모든 다이제스트가 1efbf8b 값
+    seen_on = {}
+
+    def toggle(root, K):
+        before = bd._composite_sig(root, st.load_manifest(root), None)
+        ats = {}
+        for name, body in (("a1", {"off": ["brush"], "edge": loud, "opacity": 70}), ("a2", {"off": ["transform"], "opacity": 55}),
+                           ("c", {"edge": {"feather": 1.5}})):
+            ats[name] = post(root, K[name], "", op="set", **body)["stack"]["at"]
+        seen_on["changed"] = bd._composite_sig(root, st.load_manifest(root), None) != before
+        seen_on["rows"] = st.picked_stacks(st.load_manifest(root))
+        for name, at in ats.items():
+            post(root, K[name], at, op="reset")
+
+    base_text, base_pixel, _extra = _v2c_digests(dp, out, "flow-base")  # 같은 환경의 스택 없는 기준(라이브러리 지문과 무관하게 대조)
+    text, pixel, extra = _v2c_digests(dp, out, "flow-toggle", after=toggle)
+    check(seen_on["changed"] and set(seen_on["rows"]) == set(V2C_KEYS[n] for n in ("a1", "a2", "c"))
+          and seen_on["rows"][V2C_KEYS["a2"]] == {"off": ["transform"], "opacity": 55}, "V2CF1 라우트로 켠 스택이 서명 행에 실림")
+    check(text == V2C_PINNED_TEXT and extra["problems"] == 0, "V2CF1 켰다가 지우면 서명·해시·PSD 구조·사이드카가 기준 값")
+    check(text == base_text and pixel == base_pixel, "V2CF1 켰다가 지우면 스택 없는 프로젝트와 모든 다이제스트(픽셀 포함)가 같음")
+    if pixels_ok:
+        check(pixel == V2C_PINNED_PIXEL, "V2CF1 켰다가 지우면 ★ 합성·PSD 픽셀이 기준 값")
+    check(st.load_manifest(extra["root"]).get("mask_stack") == {}, "V2CF1 지운 뒤 기록은 빈 dict")
+
+    # ── 라우트 → 합성: 저장한 값이 계획의 마스크·최종 마스크 그림·★ 합성에 닿는다
+    root, m, K = _v2c_project(dp, out, "flow")
+    key = K["a1"]
+    items = lambda: {it["cand"]["key"]: it for _p, _t, it in dp._slices_in_order(bd._star_plan(root, st.load_manifest(root), None)[0])}
+    plain = items()[key]
+    base_pixels = bd._compose_full(root, st.load_manifest(root), None)[0]
+    res = post(root, key, "", op="set", edge=loud, opacity=70)
+    now = st.load_manifest(root)
+    it = items()[key]
+    rect = mk.edit_rect(dp.dpsd.quad_bbox(it["quad"]), now["canvas"])
+    want_mask = mk.apply_stack(plain["mask"], rect, st.mask_stack_applied(now, key))
+    check(it.get("mask_stacked") and np.array_equal(it["mask"]["arr"], want_mask["arr"]) and it["mask_fx"] == st.mask_stack_applied(now, key),
+          "V2CF2 계획의 마스크 = 붓 래스터에 경계·불투명도를 건 것")
+    check(res["composite_sig"] == bd._composite_sig(root, now, None) and res["rev"] == now["rev"], "V2CF2 응답의 합성 서명·판 = 지금 값")
+    view = bd._server_mask_view(root, key, True)
+    png, _sig = bd.mask_stack_image(root, key, view["final"]["sig"])
+    check(view["stack_fx"] == it["mask_fx"] and view["stack"]["at"] == res["stack"]["at"] and view["final"] == res["final"]
+          and np.array_equal(np.asarray(Image.open(io.BytesIO(png))), want_mask["arr"]), "V2CF2 최종 마스크 그림 = 합성이 쓰는 마스크")
+    stacked_pixels = bd._compose_full(root, now, None)[0]
+    _handle, image, _union, _report = dp.BMKDesignPatchCompose().run(dp._handle(root, now), "hand_else_auto", True, True, "auto_small_on_top")
+    check(not np.array_equal(stacked_pixels, base_pixels)
+          and np.array_equal(np.rint(image[0].cpu().numpy() * 255.0).astype(np.uint8), stacked_pixels), "V2CF2 ★ 합성이 바뀌고 보드 합성 = Compose 노드")
+    res2 = post(root, key, res["stack"]["at"], op="set", opacity=40)
+    try:
+        bd.mask_stack_image(root, key, view["final"]["sig"])
+        check(False, "V2CF2 낡은 최종 마스크 주소 거절")
+    except bd._Reject as e:
+        check(e.status == 409 and res2["final"]["sig"] != view["final"]["sig"], "V2CF2 값이 바뀌면 최종 마스크 서명이 바뀌고 낡은 주소는 409")
+    off_view = bd._server_mask_view(root, key, False)
+    check("stack" not in off_view and "final" not in off_view and off_view["stack_fx"] == st.mask_stack_applied(st.load_manifest(root), key),
+          "V2CF2 플래그가 꺼져도 stack_fx 는 싣고 stack·final 은 싣지 않음")
+
+    # ── 붓 층을 꺼 둔 ★ 의 편집 파일이 사라지면: 편집 주소 = 기준 주소(편집 창이 기준으로 열린다 — 읽지 못한 편집과 같은 처리)
+    root, m, K = _v2c_project(dp, out, "flow-lost")
+    key = K["a1"]
+    post(root, key, "", op="set", off=["brush"])
+    kept = bd.mask_view(root, key)
+    lost_file = Path(st.resolve_path(root, m["mask_edits"][key]["file"]))
+    lost_bytes = lost_file.read_bytes()
+    lost_file.unlink()
+    bd._EDIT_OK.clear()
+    gone_view = bd.mask_view(root, key)
+    check(kept["edit"]["url"] != kept["base"]["url"] and gone_view["edit"]["url"] == gone_view["base"]["url"],
+          "V2CF3 붓을 끈 ★ 의 편집 파일이 없으면 편집 주소 = 기준 주소")
+    lost_file.write_bytes(lost_bytes)
+    bd._EDIT_OK.clear()
+
+    # ── 다시 수확: 사라진 후보의 기록 넷을 지운다 — 수확이 도는 동안 보드가 새로 쓴 기록도(병합이 보존하므로 저장 직전에 한 번 더)
+    root, m, K = _v2c_project(dp, out, "flow-harvest")
+    gone, kept_key = K["a2"], K["c"]
+    before = dp._snapshot(m)
+    ours = st.load_manifest(root)
+    ours["candidates"] = [c for c in ours["candidates"] if c["key"] != gone]
+    dp._drop_vanished(ours, [gone])
+    post(root, gone, "", op="set", opacity=0)        # 수확이 도는 동안 보드가 사라질 후보에 스택을 씀
+    post(root, kept_key, "", op="set", opacity=30)    # 남는 후보의 쓰기는 보존돼야 한다
+    merged, _rev, _conflicts = st.commit_merge(root, before, ours, finalize=lambda mm: dp._drop_vanished(mm, [gone]))
+    check(gone not in merged.get("mask_stack", {}) and gone not in merged["cand_adjust"]
+          and merged["mask_stack"][kept_key]["opacity"] == 30 and kept_key in merged["cand_adjust"] and K["a1"] in merged["mask_edits"],
+          "V2CF4 사라진 후보의 기록은 수확 중에 쓰인 것도 지우고, 남는 후보의 기록은 둠")
+    plain_merge, _rev, _conflicts = st.commit_merge(root, before, ours)
+    check(dp._drop_vanished.__doc__ and gone not in plain_merge.get("mask_stack", {}), "V2CF4 지운 뒤의 병합은 그 기록을 되살리지 않음")
+
+    # ── 붓 저장과 스택: 창이 줄어든 뒤의 저장이 기록 창 밖의 획을 그대로 둔다(경계·불투명도가 걸렸을 때 · 붓 층을 껐을 때)
+    for case, body in (("edge", {"edge": loud, "opacity": 70}), ("brush_off", {"off": ["brush"]})):
+        root, m, K = _v2c_project(dp, out, "flow-save-" + case)
+        key = K["a1"]
+        old = m["mask_edits"][key]
+        old_arr = np.asarray(Image.open(st.resolve_path(root, old["file"])))
+        m["cand_adjust"][key] = dict(st.CAND_XFORM_DEFAULTS, base_quad=None, blur=0.0, invert=False, at=V2C_AT, hist=[]) | {"sx": 0.5, "sy": 0.5}
+        st.save_manifest(root, m)
+        post(root, key, "", op="set", **body)
+        win = bd.mask_view(root, key)["rect"]
+        ox0, oy0, ox1, oy1 = old["rect"]
+        inside = win[0] >= ox0 and win[1] >= oy0 and win[2] <= ox1 and win[3] <= oy1 and win != old["rect"]
+        new_arr = _v2c_pat(win[3] - win[1], win[2] - win[0], 1, 3, 9, 5)
+        saved = bd.mask_save(root, key, png_bytes(new_arr), old["file"], "v2c 통합", ",".join(str(v) for v in win))
+        rec = mk.edit_record(st.load_manifest(root), key)
+        got = np.asarray(Image.open(st.resolve_path(root, rec["file"])))
+        expect = old_arr.copy()
+        expect[win[1] - oy0:win[3] - oy0, win[0] - ox0:win[2] - ox0] = new_arr
+        check(inside and saved["ok"] and rec["rect"] == old["rect"] and np.array_equal(got, expect),
+              f"V2CF3 줄어든 창의 붓 저장이 창 밖 획을 그대로 둠 ({case})")
+        query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(bd.mask_view(root, key)["edit"]["url"]).query))
+        edit_png, _sig = bd.mask_image(root, key, "edit", query["v"])
+        check(np.array_equal(np.asarray(Image.open(io.BytesIO(edit_png))), new_arr), f"V2CF3 편집 창에는 저장한 붓 래스터 그대로 ({case})")
+
+
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -76230,6 +77529,24 @@ if __name__ == "__main__":
         ux_v2b_plan_unit()
     if want("ux_v2b_dev_unit"):
         ux_v2b_dev_unit()
+    if want("ux_v2c_invariant_unit"):
+        ux_v2c_invariant_unit()
+    if want("ux_v2c_core_unit"):
+        ux_v2c_core_unit()
+    if want("ux_v2c_stack_unit"):
+        ux_v2c_stack_unit()
+    if want("ux_v2c_route_unit"):
+        ux_v2c_route_unit()
+    if want("ux_v2c_flow_unit"):
+        ux_v2c_flow_unit()
+    if want("ux_v2c_post_pixels_unit"):
+        ux_v2c_post_pixels_unit()
+    if want("ux_v2c_post_unit"):
+        ux_v2c_post_unit()
+    if want("ux_v2c_submit_unit"):
+        ux_v2c_submit_unit()
+    if want("ux_v2c_dev_unit"):
+        ux_v2c_dev_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")

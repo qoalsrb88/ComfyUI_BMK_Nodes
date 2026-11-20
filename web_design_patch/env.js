@@ -9,7 +9,7 @@ window.DPEnv = (() => {
     path_input: true, ps_mask: true, agent_approve: true,
     // UX v2 기능 플래그(로컬판은 모두 false — 서버 모드의 GET ../env 가 열린 것만 true 로 준다)
     ui_v2: false, v2_spec_edit: false, v2_forge_prompt: false, v2_auto_prepare: false, v2_crop_model: false, v2_postprocess: false,
-    v2_psd_reimport: false };
+    v2_psd_reimport: false, v2_mask_stack: false };
   // 서버 응답에 꼭 있어야 하는 키 = v2 플래그를 뺀 나머지. 화면 파일만 새 판이고 서버(파이썬)가 재시작 전의 옛 판이면 응답에 v2 키가 없다 —
   // 그때 화면 전체를 막지 않고 없는 v2 키를 false 로 본다.
   const REQUIRED_CAPS = Object.keys(LOCAL_CAPS).filter((key) => key !== "ui_v2" && !key.startsWith("v2_"));

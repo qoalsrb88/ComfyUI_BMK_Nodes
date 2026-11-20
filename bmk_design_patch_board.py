@@ -251,6 +251,7 @@ import sys
 import threading
 import time
 import unicodedata
+from datetime import datetime, timedelta
 from typing import Callable
 from urllib.parse import urlencode
 
@@ -397,8 +398,10 @@ SERVER_ENV = "BMK_DP_SERVER_MODE"  # D339 — 프로세스 플래그는 이 환�
 LOCAL_CAPS = {"jobs": False, "export_download": False, "sam3": True, "local_qwen": True, "external": True, "open_folder": True,
               "path_input": True, "ps_mask": True, "agent_approve": True}
 # UX v2 기능 플래그(V2-A D490). 로컬판은 모두 false — 서버 모드의 GET /env 가 열린 것만 true 로 바꾼다.
-V2_CAPS = ("ui_v2", "v2_spec_edit", "v2_forge_prompt", "v2_auto_prepare", "v2_crop_model", "v2_postprocess", "v2_psd_reimport")
+V2_CAPS = ("ui_v2", "v2_spec_edit", "v2_forge_prompt", "v2_auto_prepare", "v2_crop_model", "v2_postprocess", "v2_psd_reimport",
+           "v2_mask_stack")
 LOCAL_CAPS.update({name: False for name in V2_CAPS})
+MASK_STACK_ENABLED = web.AppKey("bmk_dp_mask_stack", bool)
 _SCOPE: contextvars.ContextVar = contextvars.ContextVar("bmk_dp_scope", default=None)
 _ENV_PROVIDER: list = []           # set_env_provider — 서버 모드의 GET /env 본문을 만드는 함수(request → dict)
 _SCOPE_ROOTS: dict = {}            # 정규화한 계정 프로젝트 폴더 → (mtime_ns, {key: root}), 최근 256개
@@ -1592,7 +1595,8 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
     parts = []
     adjustments = {}
     first = {}
-    for c in _composite_picks(m, swap):
+    picks = _composite_picks(m, swap)
+    for c in picks:
         tids = first.setdefault(c["crop_id"], [])
         if c["tid"] not in tids:
             tids.append(c["tid"])
@@ -1610,6 +1614,12 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
     extra = [{"z_order": manual}] if manual else []
     if adjustments:
         extra.append({"cand_adjust": adjustments})
+    # 교체 가정에서는 그 후보의 탈락도 풀린다(_star_plan 과 같은 집합).
+    stack_manifest = m
+    if swap and swap[2] in (m.get("rejects") or {}):
+        stack_manifest = dict(m, rejects={k: v for k, v in m["rejects"].items() if k != swap[2]})
+    if stacks := store.picked_stacks(stack_manifest, {c["key"] for c in picks}):
+        extra.append({"mask_stack": stacks})
     tie_order = [[cid, [t["tid"] for t in crop["targets"] if t["tid"] in first[cid]]]
                  for cid, crop in crops.items() if cid in first]
     if tie_order != [[cid, tids] for cid, tids in first.items()]:
@@ -1968,7 +1978,7 @@ def _edit_window(m: dict, cand: dict, entry: dict | None, use_registration: bool
     quad = _adjust_base_quad(cand, entry, use_registration)
     on = dmask.star_cand(m, cand["key"]) if picked is None else picked
     adj = store.cand_adjust_effect(store.cand_adjust(m, cand["key"])) if on else None
-    if adj:
+    if adj and "transform" not in (store.mask_stack_applied(m, cand["key"]) or {}).get("off", []):
         quad = an.xform_quad(quad, **{k: adj[k] for k in ("dx", "dy", "rot", "sx", "sy") if k in adj})
     return dmask.edit_rect(dpsd.quad_bbox(quad), [int(v) for v in m["canvas"]])
 
@@ -2003,7 +2013,13 @@ def _layers_sig(root: str, m: dict, pref: dict | None, key: str, box: list[int],
             near.add(c["crop_id"])
     mv = dict(m, candidates=[c for c in m["candidates"] if c.get("crop_id") in near],
               mask_edits={k: v for k, v in (m.get("mask_edits") or {}).items() if k != key})
-    order_args = []
+    extra = []
+    stacks = m.get("mask_stack")
+    if isinstance(stacks, dict) and key in stacks:
+        mv["mask_stack"] = {k: v for k, v in stacks.items() if k != key}
+        # 자기 패치에는 마스크를 씌우지 않지만 위치와 뒤집기는 3층 픽셀에 반영된다.
+        if "transform" in (store.mask_stack_applied(m, key) or {}).get("off", []):
+            extra.append({"off": ["transform"]})
     if store.z_order(m):
         def effective_order():
             items = order if order is not None else _node()._slices_in_order(_star_plan(root, m, pref)[0])
@@ -2023,8 +2039,8 @@ def _layers_sig(root: str, m: dict, pref: dict | None, key: str, box: list[int],
                     effective = cached[1]
         else:
             effective = effective_order()
-        order_args.append(effective)
-    return _sig("masklayers", _composite_sig(root, mv, pref), box, key, *order_args)
+        extra.append(effective)
+    return _sig("masklayers", _composite_sig(root, mv, pref), box, key, *extra)
 
 
 def _murl(rk: str, key: str, kind: str, v: str) -> str:
@@ -2104,11 +2120,11 @@ def _edit_view(rk: str, key: str, rec: dict | None, fp: dict, rect: list[int] | 
             "stale": _edit_stale(rec, fp, rect), "url": _murl(rk, key, "edit", _edit_sig(rec, rect, fp, placement))}
 
 
-def mask_view(root: str, key) -> dict:
+def mask_view(root: str, key, m: dict | None = None) -> dict:
     """GET /mask — 편집 대상·기준·편집·3층 URL·이 크롭 이음매(지금 ★ 합성 캐시가 있을 때만, 없으면 null)·z(layers.box 와 겹치는 다른 ★,
     합성 순서 아래 → 위)·경고(이 후보의 _plan 경고 + 분석 없음). 파일을 쓰지 않는다. 편집 파일을 읽지 못하면(_plan 이 경고하고 기준을 씀)
     edit.url = 기준 url — Studio 가 _plan 이 쓰는 마스크로 열고 [적용]·[편집 지우기]로 나갈 수 있게. 형식이 깨진 기록은 edit null(_edit_rec)."""
-    m = store.load_manifest(root)
+    m = store.load_manifest(root) if m is None else m
     rk = store.root_key(root)
     pref = _PREF.get(rk)
     cand = _mask_cand(m, key)
@@ -2134,8 +2150,8 @@ def mask_view(root: str, key) -> dict:
         warns.insert(0, "분석 없음 — 반영(Analyze) 뒤 편집 권장")
     base = {"src": t["it"]["base_msrc"], "sig": t["base_sig"], "url": _murl(rk, key, "base", t["base_sig"])}
     edit = _edit_view(rk, key, _edit_rec(m, key), t["fp"], t["rect"], _edit_placement(m, cand, t["it"]["entry"], t["fp"]))
-    if edit is not None and t["it"]["mask_edit"] is None:
-        edit["url"] = base["url"]
+    if edit is not None and t["it"]["mask_edit"] is None and _brush_mask(root, _edit_rec(m, key), t["it"], t["rect"]) is None:
+        edit["url"] = base["url"]  # 편집을 읽지 못함 — 붓 층을 꺼 둔 ★ 는 저장된 래스터가 읽히면 그것을 내준다(_brush_mask)
     adjust = store.cand_adjust_record(m, key)
     effect = store.cand_adjust_effect(adjust)
     base_quad = t["it"]["base_quad"]
@@ -2206,10 +2222,23 @@ def _layer_png(root: str, m: dict, pref: dict | None, key: str, box: list[int], 
     return data
 
 
+def _brush_mask(root: str, rec: dict | None, it: dict, rect: list[int]) -> dict | None:
+    """붓 층의 래스터 = 저장된 편집을 지금 편집 창으로 옮긴 것(기록 창 밖은 기준) — 마스크 필터를 걸기 **전**의 값.
+    계획 항목의 mask 는 붓 층을 껐으면 기준이고 경계·불투명도가 걸렸으면 구운 창 래스터라, 편집 창에 내주거나(/mask/img edit)
+    다음 저장의 창 밖 획 보존(mask_save)에 쓰면 획을 잃거나 구운 경계가 붓 래스터에 들어간다. 편집을 읽지 못하면 None."""
+    if "brush" in it.get("stack_off", []) or it.get("mask_stacked"):
+        try:
+            mask, _why = dmask.edit_mask(root, rec) if rec else (None, None)
+        except OSError as e:  # 잠김·권한 — 계획이 편집을 읽다 실패할 때(_mask_target)와 같은 422
+            raise _Reject(422, f"편집 대상을 계산할 수 없습니다: {e}") from e
+        return None if mask is None else dmask.expand_edit_mask(mask, it["base_mask"], rect)
+    return it["mask"] if it["mask_edit"] is not None else None
+
+
 def mask_image(root: str, key, kind, v) -> tuple[bytes, str]:
-    """GET /mask/img → (PNG, 서명). v ≠ 지금 서명이면 409 stale(낡은 요청에 계산하지 않음). base = 기준 마스크(편집 창 L), edit = _plan 이
-    쓰는 편집 래스터(기록 창의 캔버스 자리)를 지금 편집 창으로 옮긴 L(v = _edit_sig — 창이 그대로면 기록 파일과 같은 픽셀. 정합·
-    use_registration 이 바뀌어 창이 달라져도 미리보기 = Compose·PSD), under·patch·over = 3층(v = layers.sig — 계획 없이 서명만 보고, 없을 때만 계산)."""
+    """GET /mask/img → (PNG, 서명). v ≠ 지금 서명이면 409 stale. base = 기준 마스크(편집 창 L), edit = 저장한 붓 래스터를 지금
+    창으로 옮긴 L(v = _edit_sig, 기록 창 밖은 기준). 붓 층을 끄거나 경계·불투명도를 바꿔도 저장된 획을 편집한다.
+    under·patch·over = 3층(v = layers.sig — 계획 없이 서명만 보고, 없을 때만 계산)."""
     if kind not in _MASK_KINDS:
         raise _Reject(400, f"kind 는 {' · '.join(_MASK_KINDS)} 중 하나여야 합니다")
     if not isinstance(v, str) or not _MASK_V_RE.fullmatch(v):
@@ -2229,9 +2258,10 @@ def mask_image(root: str, key, kind, v) -> tuple[bytes, str]:
             raise _Reject(404, "마스크 편집이 없습니다")
         t = _mask_target(root, m, cand, pref)
         sig = fresh(_edit_sig(rec, t["rect"], t["fp"], _edit_placement(m, cand, t["it"]["entry"], t["fp"])))
-        if t["it"]["mask_edit"] is None:  # _plan 이 편집을 읽지 못해 기준을 씀(GET /mask 의 edit.url 은 그때 기준 url)
+        mask = _brush_mask(root, rec, t["it"], t["rect"])
+        if mask is None:
             raise _Reject(404, f"마스크 편집 파일을 읽지 못했습니다: {rec['file']}")
-        return _png(_window_l(t["it"]["mask"], t["rect"])), sig
+        return _png(_window_l(mask, t["rect"])), sig
     if kind == "base":
         t = _mask_target(root, m, cand, pref)
         sig = fresh(t["base_sig"])
@@ -2266,7 +2296,7 @@ def mask_save(root: str, key, data: bytes, seen, ops, rect) -> dict:
         return _edit_window(mm, _cand(mm, key), _entry_for(mm, key, _PREF.get(rk)), bool(_compose_settings(root, mm)["use_registration"]))
 
     rec, rev = dmask.save_edit(root, key, data, seen=_seen(seen), rect=t["rect"], base=t["fp"], ops=ops, placed=placed,
-                              preserve_mask=t["it"]["mask"] if t["it"]["mask_edit"] else None)
+                              preserve_mask=_brush_mask(root, _edit_rec(m, key), t["it"], t["rect"]))
     return {"ok": True, "edit": _edit_view(rk, key, rec, t["fp"], t["rect"]), "rev": rev,
             "composite_sig": _composite_sig(root, store.load_manifest(root), pref)}
 
@@ -2468,7 +2498,7 @@ def mask_ps_import(root: str, data: dict) -> dict:
                                      use_registration=bool((export.get("compose") or {}).get("use_registration", True)))
         return {"rect": rect, "quad": it["quad"], "fp": dmask.base_fp(cand, it["entry"], cs["mask_source"]),
                 "mask": _window_l(it["mask"], rect), "export_mask": _window_l(old_mask, rect),
-                "preserve_mask": it["mask"] if it["mask_edit"] else None,
+                "preserve_mask": _brush_mask(root, _edit_rec(m, cand["key"]), it, rect),
                 "crop": p["crop"]["name"], "group": group}
 
     def placed(mm, key, fp):
@@ -2586,6 +2616,130 @@ def mask_adjust(root: str, data: dict) -> dict:
     rec, rev = store.update_manifest(root, mutate)
     return {"ok": True, "adjust": rec, "rev": rev,
             "composite_sig": _composite_sig(root, store.load_manifest(root), _PREF.get(store.root_key(root)))}
+
+
+def _stack_fields(fields, allowed):
+    unknown = fields.keys() - allowed
+    if unknown:
+        raise _Reject(400, "허용되지 않은 칸: " + ", ".join(sorted(unknown)))
+
+
+def _stack_values(data, old):
+    base = old or store.mask_stack_defaults()
+    edge = data.get("edge", base["edge"])
+    if isinstance(edge, dict):
+        _stack_fields(edge, {"feather", "fade"})
+        fade = edge.get("fade", base["edge"]["fade"])
+        if isinstance(fade, dict):
+            _stack_fields(fade, set(store.MASK_STACK_SIDES))
+            fade = {**base["edge"]["fade"], **fade}
+        edge = {"feather": edge.get("feather", base["edge"]["feather"]), "fade": fade}
+    return store.mask_stack_values(data.get("off", base["off"]), edge, data.get("opacity", base["opacity"]))
+
+
+def _stack_at(seen: str) -> str:
+    ns = time.time_ns()
+    seconds = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ns // 1_000_000_000))
+    now = f"{seconds}.{ns % 1_000_000_000:09d}"
+    if not seen:
+        return now
+    seconds, _, fraction = seen.partition(".")
+    fraction = fraction.ljust(9, "0")
+    if now > f"{seconds}.{fraction}":
+        return now
+    # 시계가 돌아갔거나 같은 나노초면 앞 판의 현지 시각에서 한 나노초 전진한다.
+    nanos = int(fraction) + 1
+    if nanos == 1_000_000_000:
+        try:
+            seconds = (datetime.fromisoformat(seconds) + timedelta(seconds=1)).isoformat(" ")
+        except (OverflowError, ValueError) as e:
+            raise _Reject(400, "스택 시각을 늘릴 수 없습니다 — 기록을 초기화하세요") from e
+        nanos = 0
+    return f"{seconds}.{nanos:09d}"
+
+
+def _stack_final(root, m, cand, pref):
+    """계획을 그리기 전, 편집 창과 실제 효과 값만으로 최종 PNG의 주소를 만든다."""
+    key = cand["key"]
+    cs = _compose_settings(root, m)
+    entry = _entry_for(m, key, pref)
+    rect = _edit_window(m, cand, entry, cs["use_registration"], picked=True)
+    if not rect or (rect[2] - rect[0]) * (rect[3] - rect[1]) > dmask.MAX_PIXELS:
+        return None
+    fp = dmask.base_fp(cand, entry, cs["mask_source"])
+    base_sig = _sig("maskbase", rect, fp, _edit_placement(m, cand, entry, fp))
+    fx = store.mask_stack_applied(m, key)
+    rec = _edit_rec(m, key) if "brush" not in (fx or {}).get("off", ()) else None
+    edit = [rec["file"], rec["rect"]] if rec and _edit_usable(root, rec) else None
+    adjust = store.cand_adjust_effect(store.cand_adjust_record(m, key))
+    sig = _sig("maskstack", rect, base_sig, edit, fx, adjust)
+    return {"sig": sig, "url": "mask/stack/img?" + urlencode({"root": store.root_key(root), "key": key, "v": sig})}
+
+
+def mask_stack(root: str, data: dict) -> dict:
+    key = _field(data, "key", _KEY_RE)
+    op, seen = data.get("op"), data.get("seen")
+    if op not in ("set", "undo", "reset"):
+        raise _Reject(400, "op 는 set · undo · reset 중 하나여야 합니다")
+    fields = {"root", "key", "seen", "op"}
+    _stack_fields(data, fields | {"off", "edge", "opacity"} if op == "set" else fields)
+    if not isinstance(seen, str) or not (seen == "" or re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{1,9})?", seen)):
+        raise _Reject(400, "seen 은 이 창에서 받은 스택 시각 또는 빈 문자열이어야 합니다")
+
+    def mutate(m):
+        cand = _mask_cand(m, key)
+        old = store.mask_stack_record(m, key)
+        if seen != (old["at"] if old else ""):
+            raise _Reject(409, "마스크 스택이 다른 창에서 바뀌었습니다 — 다시 받기", reason="changed", stack=old)
+        records = m.get("mask_stack")
+        if op == "reset":
+            if isinstance(records, dict):
+                records.pop(key, None)
+            return m, cand, None
+        hist = old["hist"] if old else []
+        if op == "undo":
+            if not hist:
+                raise _Reject(400, "되돌릴 이전 스택이 없습니다")
+            new, hist = hist[0], hist[1:]
+        else:
+            new = _stack_values(data, old)
+            if old and all(old[k] == v for k, v in new.items()):
+                return m, cand, old
+            if old:
+                hist = [{k: v for k, v in old.items() if k != "hist"}, *hist][:store.RECORD_HIST_KEEP]
+        rec = dict(new, at=_stack_at(seen), hist=hist)
+        if not isinstance(records, dict):
+            records = m["mask_stack"] = {}
+        records[key] = rec
+        return m, cand, rec
+
+    (m, cand, rec), rev = store.update_manifest(root, mutate)
+    pref = _PREF.get(store.root_key(root))
+    return {"ok": True, "stack": rec, "rev": rev, "composite_sig": _composite_sig(root, m, pref),
+            "final": _stack_final(root, m, cand, pref)}
+
+
+def _server_mask_view(root, key, enabled):
+    m = store.load_manifest(root)
+    view = mask_view(root, key, m)  # 같은 판으로 — 따로 읽으면 그 사이의 쓰기 때문에 두 값이 다른 판을 볼 수 있다
+    view["stack_fx"] = store.mask_stack_applied(m, key)
+    if enabled:
+        view["stack"] = store.mask_stack_record(m, key)
+        view["final"] = _stack_final(root, m, _mask_cand(m, key), _PREF.get(store.root_key(root)))
+    return view
+
+
+def mask_stack_image(root, key, v):
+    if not isinstance(v, str) or not _MASK_V_RE.fullmatch(v):
+        raise _Reject(400, "v 형식이 잘못되었습니다")
+    m = store.load_manifest(root)
+    pref = _PREF.get(store.root_key(root))
+    cand = _mask_cand(m, key)
+    final = _stack_final(root, m, cand, pref)
+    if not final or v != final["sig"]:
+        raise _Reject(409, "★ 합성·마스크가 그 사이 바뀌었습니다 — 다시 받기", reason="stale")
+    t = _mask_target(root, m, cand, pref)
+    return _png(_window_l(t["it"]["mask"], t["rect"])), v
 
 
 def mask_alts(root: str, key) -> dict | None:
@@ -7349,7 +7503,25 @@ async def draft_adopt_handler(request: web.Request) -> web.StreamResponse:
 @_guard
 async def mask_handler(request: web.Request) -> web.StreamResponse:
     root = _root_param(request.query.get("root"))
-    return _json(await asyncio.to_thread(mask_view, root, request.query.get("key")))
+    key = request.query.get("key")
+    if server_mode():
+        return _json(await asyncio.to_thread(_server_mask_view, root, key, request.app.get(MASK_STACK_ENABLED, False)))
+    return _json(await asyncio.to_thread(mask_view, root, key))
+
+
+@_guard
+async def mask_stack_handler(request: web.Request) -> web.StreamResponse:
+    data = await _body(request)
+    root = _root_param(data.get("root"))
+    return _json(await asyncio.to_thread(mask_stack, root, data))
+
+
+@_guard
+async def mask_stack_img_handler(request: web.Request) -> web.StreamResponse:
+    q = request.query
+    root = _root_param(q.get("root"))
+    data, sig = await asyncio.to_thread(mask_stack_image, root, q.get("key"), q.get("v"))
+    return _image_response(data, "image/png", sig, q.get("v"))
 
 
 @_guard
@@ -8140,6 +8312,12 @@ async def import_received(data: dict, raw: bytes, filename: str, source=None) ->
                 logger.warning("Forge 출처 기록을 저장하지 못했습니다.")
         await _project_new_thread(record)
     return response
+
+
+MASK_STACK_ROUTES = (
+    ("POST", f"{API}/mask/stack", mask_stack_handler),
+    ("GET", f"{API}/mask/stack/img", mask_stack_img_handler),
+)
 
 
 _ROUTES = (

@@ -56,7 +56,8 @@
         "v2_auto_prepare": false,
         "v2_crop_model": false,
         "v2_postprocess": false,
-        "v2_psd_reimport": false
+        "v2_psd_reimport": false,
+        "v2_mask_stack": false
       }
     }
   },
@@ -88,7 +89,8 @@
         "v2_auto_prepare": true,
         "v2_crop_model": false,
         "v2_postprocess": false,
-        "v2_psd_reimport": false
+        "v2_psd_reimport": false,
+        "v2_mask_stack": false
       },
       "backend": "mock"
     }
@@ -118,7 +120,8 @@
         "v2_auto_prepare": true,
         "v2_crop_model": false,
         "v2_postprocess": false,
-        "v2_psd_reimport": false
+        "v2_psd_reimport": false,
+        "v2_mask_stack": false
       },
       "backend": "mock"
     }
@@ -403,6 +406,7 @@
         "v2_crop_model": false,
         "v2_postprocess": false,
         "v2_psd_reimport": false,
+        "v2_mask_stack": false,
         "forge_import": true,
         "forge_save": true
       },

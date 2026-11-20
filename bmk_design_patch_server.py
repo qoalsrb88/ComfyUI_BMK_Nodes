@@ -645,6 +645,7 @@ class ServerConfig:
     forge: object | None = None                # bmk_design_patch_forge.ForgeConfig — 있으면 실제 검증기·Forge 생성 백엔드(F2), 없으면 F1 그대로(mock)
     assist_model: str | None = None
     crop_model: bool = False                   # 새 화면이 /crop_gen 계약에 맞춘 뒤 켠다.
+    mask_stack: bool = False
 
 
 class DevVerifier:
@@ -843,6 +844,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                     "caps": {name: name in SERVER_CAPS for name in board.LOCAL_CAPS}, "backend": backend_name()}
             result["caps"]["ui_v2"] = await asyncio.to_thread(board.v2_available)
             result["caps"]["v2_crop_model"] = config.crop_model
+            result["caps"]["v2_mask_stack"] = config.mask_stack
             if accounts is not None:
                 result["caps"]["v2_forge_prompt"] = result["backend"] == "forge"
                 result["caps"].update(forge_import=bool(forge_routes), forge_save=bool(forge_routes))
@@ -1059,7 +1061,9 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
         if config.crop_model:
             app[cropgen.MODEL_ROWS] = model_rows
             crop_routes = cropgen.routes()
-        for method, path, handler in (*jobs_module.routes(runner), *v2.routes(), *crop_routes):
+        app[board.MASK_STACK_ENABLED] = config.mask_stack
+        stack_routes = board.MASK_STACK_ROUTES if config.mask_stack else ()
+        for method, path, handler in (*jobs_module.routes(runner), *v2.routes(), *crop_routes, *stack_routes):
             app.router.add_route(method, path, handler)
         app.add_routes([web.get("/", index), web.get("/api/session", session_get), web.post("/api/session", session_post),
                         web.post("/api/session/logout", logout), web.get("/api/preferences", preferences),
@@ -1170,6 +1174,7 @@ def main(argv=None) -> int:
     parser.add_argument("--forge-api")
     parser.add_argument("--assist-model")
     parser.add_argument("--crop-model", action="store_true")
+    parser.add_argument("--mask-stack", action="store_true")
     parser.add_argument("--forge-media-origin", action="append")
     parser.add_argument("--forge-access-key", action="append")
     parser.add_argument("--forge-concurrency", type=int)
@@ -1205,7 +1210,7 @@ def main(argv=None) -> int:
                           parent_origins=tuple(dict.fromkeys(parents)), allowed_hosts=tuple(args.allowed_host),
                           dev_handoff=args.dev_handoff, dev_parent_port=args.dev_parent_port,
                           cookie_samesite=args.cookie_samesite, workers=args.workers, trusted_proxies=tuple(args.trusted_proxy),
-                          forge=forge_config, assist_model=args.assist_model, crop_model=args.crop_model)
+                          forge=forge_config, assist_model=args.assist_model, crop_model=args.crop_model, mask_stack=args.mask_stack)
     try:
         config = _validate_config(config)
     except ValueError as e:
