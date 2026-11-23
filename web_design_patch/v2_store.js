@@ -506,7 +506,8 @@ window.DPV2Store = (() => {
   async function loadSpec(cropId, force = false) {
     if (!state.root || !cropId || !Api.can("v2_spec_edit")) return null;
     const m = ensurePatchMeta(cropId);
-    if (m.specLoaded && !force) {
+    // #C30-2: 직전 조회가 실패(_lastLoadOk === false)했으면 캐시된 specLoaded 로 건너뛰지 않고 다시 읽는다
+    if (m.specLoaded && m._lastLoadOk !== false && !force) {
       m._lastLoadOk = true;
       m._lastLoadErr = null;
       return m;
@@ -676,18 +677,25 @@ window.DPV2Store = (() => {
     }
   }
 
-  // #C21-3② · #C23-5: 읽지 않은 영역의 목적·AI 자동을 누르고 응답 전에 생성을 눌러도 빠지지 않도록 추적하며,
-  // 서로 다른 두 칸을 잇달아 바꿔도 앞의 것이 취소되거나 같은 seen 으로 409 나지 않게 크롭별 직렬 큐 + 칸별 시퀀스로 처리한다
+  // #C21-3② · #C23-5 · #C30-4: 읽지 않은 영역의 목적·AI 자동을 누르고 응답 전에 생성·작성을 눌러도 빠지지 않도록 추적하며,
+  // 서로 다른 두 칸을 잇달아 바꿔도 앞의 것이 취소되거나 같은 seen 으로 409 나지 않게 크롭별 직렬 큐 + 칸별 시퀀스로 처리하고
+  // 선행 조회·저장이 실패로 끝난 크롭 ID 를 호출자에게 돌려줘 옛 값으로 작성이 나가지 않게 막는다
   const pendingQuickSpecPromises = new Set();
   const quickSpecQueues = new Map();
 
   async function awaitPendingQuickSpecs() {
+    const failedCropIds = new Set();
     while (pendingQuickSpecPromises.size > 0) {
-      await Promise.allSettled([...pendingQuickSpecPromises]);
+      const batch = [...pendingQuickSpecPromises];
+      await Promise.allSettled(batch.map((entry) => entry.promise));
+      for (const entry of batch) {
+        if (entry.failed) failedCropIds.add(entry.cropId);
+      }
     }
+    return { failedCropIds: [...failedCropIds] };
   }
 
-  // #C13-11 · #C18-2 · #C18-3 · #C18-4 · #C18-6① · #C21-2 · #C21-3② · #C21-4 · #C23-5:
+  // #C13-11 · #C18-2 · #C18-3 · #C18-4 · #C18-6① · #C21-2 · #C21-3② · #C21-4 · #C23-5 · #C30-4:
   // 단일 선택에서 목적·AI 자동을 바꿀 때 그 칸만 즉시 저장하고 정확한 이전 값 기준으로 토스트 [되돌리기] + Ctrl+Z 실행 취소를 제공한다
   function applyQuickSpecChange(patch, field, nextVal) {
     if (!patch || !patch.meta) return Promise.resolve(null);
@@ -700,6 +708,7 @@ window.DPV2Store = (() => {
       m._quickSpecSeqByField = {};
     }
     const seq = (m._quickSpecSeqByField[field] = (m._quickSpecSeqByField[field] || 0) + 1);
+    const entry = { promise: null, cropId, failed: false };
 
     const prevChain = quickSpecQueues.get(cropId) || Promise.resolve();
     const task = prevChain.catch(() => null).then(async () => {
@@ -714,6 +723,7 @@ window.DPV2Store = (() => {
           if (m._quickSpecSeqByField[field] !== seq) return null;
         }
         if (!m.specLoaded && !m.needsApplyForSpec) {
+          entry.failed = true;
           toast("서버에서 기존 스펙을 읽지 못했습니다 — 잠시 후 다시 시도해 주세요.", "err");
           return null;
         }
@@ -797,17 +807,21 @@ window.DPV2Store = (() => {
         }
         return res;
       } catch (err) {
+        if (m._quickSpecSeqByField[field] === seq && !m.needsApplyForSpec) {
+          entry.failed = true;
+        }
         toast(`지시문 저장 실패: ${(err && (err.userMessage || err.message)) || "저장 실패"}`, "err");
         return null;
       }
     });
 
     const tracked = task.finally(() => {
-      pendingQuickSpecPromises.delete(tracked);
+      pendingQuickSpecPromises.delete(entry);
       if (quickSpecQueues.get(cropId) === tracked) quickSpecQueues.delete(cropId);
     });
+    entry.promise = tracked;
     quickSpecQueues.set(cropId, tracked);
-    pendingQuickSpecPromises.add(tracked);
+    pendingQuickSpecPromises.add(entry);
     return tracked;
   }
 
@@ -1313,18 +1327,48 @@ window.DPV2Store = (() => {
     } catch (_) { /* layout 라우트 없는 환경이면 state.S.crops 로 유지 */ }
   }
 
+  // #C30-3: 레퍼런스 쓰기 직후 재조회(/refs)가 끝나지 않았거나 실패한 채 생성을 눌러도 옛 same 상태로 빠지지 않게 추적한다
+  let refsDirtyAfterWrite = false;
+  const pendingRefRefreshPromises = new Set();
+
   async function loadRefs(force = false) {
-    if (!state.root) return;
+    if (!state.root) return false;
+    let ok = false;
     try {
       const d = await Api.getRefs(state.root, force ? undefined : (state.R && state.R.rev));
-      if (!d.unchanged) state.R = d;
-    } catch (_) { /* 무시 */ }
+      if (d && !d.unchanged) state.R = d;
+      if (d) {
+        ok = true;
+        if (force || !d.unchanged) refsDirtyAfterWrite = false;
+      }
+    } catch (_) { /* 무시 — refsDirtyAfterWrite 는 유지되어 생성 전 재시도됨 */ }
     try {
       const sh = await Api.listSheets(state.root);
       // #C07-1: GET /refs/sheets 는 배열을 그대로 반환 (테스트/호환용 { sheets: [...] } 도 함께 수용)
       if (Array.isArray(sh)) state.sheets = sh;
       else if (sh && Array.isArray(sh.sheets)) state.sheets = sh.sheets;
     } catch (_) { /* 무시 */ }
+    return ok;
+  }
+
+  function refreshAfterRefWrite() {
+    refsDirtyAfterWrite = true;
+    const p = refreshAll(true).finally(() => {
+      pendingRefRefreshPromises.delete(p);
+    });
+    pendingRefRefreshPromises.add(p);
+    return p;
+  }
+
+  async function ensureFreshRefsAfterWrite() {
+    while (pendingRefRefreshPromises.size > 0) {
+      await Promise.allSettled([...pendingRefRefreshPromises]);
+    }
+    if (refsDirtyAfterWrite) {
+      const ok = await loadRefs(true);
+      if (!ok && refsDirtyAfterWrite) return false;
+    }
+    return true;
   }
 
   async function loadPipelineAndPlan() {
@@ -1386,6 +1430,9 @@ window.DPV2Store = (() => {
             queuedForceRefresh = false;
             return refreshAll(true);
           }
+          if (activeRefreshPromise) {
+            await activeRefreshPromise;
+          }
         }
       }
       return;
@@ -1441,7 +1488,10 @@ window.DPV2Store = (() => {
         const prevRefsRev = prev ? prev.refs_rev : undefined;
         const prevPipeRev = prev ? prev.pipeline_rev : undefined;
         state.S = d.unchanged ? await Api.getState(state.root) : d;
-        // #C08-2: 모델·레퍼런스 판이 바뀌면 모든 패치의 스펙 캐시를 무효화해 생성 시 최신 판정을 읽도록 한다
+        // #C08-2 · #C30-3: 모델·레퍼런스 판이 바뀌면 스펙 캐시를 무효화하고, 레퍼런스 판 변화 시 /refs 조회 실패에 대비해 표시한다
+        if (prevRefsRev !== undefined && state.S.refs_rev !== prevRefsRev) {
+          refsDirtyAfterWrite = true;
+        }
         if ((prevRefsRev !== undefined && state.S.refs_rev !== prevRefsRev)
             || (prevPipeRev !== undefined && state.S.pipeline_rev !== prevPipeRev)) {
           invalidateAllSpecs();
@@ -1823,7 +1873,7 @@ window.DPV2Store = (() => {
     currentCandidate, selectCandidate, selectTargetForCrop, moveCropZ, isPickBusy, pickCandidateGuarded,
     selectPatch, selectAllPatches, getCommonOrMixed,
     pushHistory, undoHistory, redoHistory, jumpHistory,
-    loadLayout, loadRefs, loadPipelineAndPlan, loadSeams, refreshAll,
+    loadLayout, loadRefs, refreshAfterRefWrite, ensureFreshRefsAfterWrite, loadPipelineAndPlan, loadSeams, refreshAll,
     startPolling, stopPolling,
     addCrop, updateCrop, deleteCrop,
     openMaskSession, closeMaskSession, saveMaskSession,

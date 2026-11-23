@@ -64,6 +64,9 @@ window.DPV2Inspector = (() => {
       }
       if (linked > 0) {
         Store.invalidateAllSpecs();
+        const refSync = typeof Store.refreshAfterRefWrite === "function"
+          ? Store.refreshAfterRefWrite()
+          : Store.refreshAll(true);
         Store.toast(
           linked > 1
             ? `"${fileName}"를 선택된 ${linked}개 영역에 연결했습니다.`
@@ -71,9 +74,14 @@ window.DPV2Inspector = (() => {
           "ok"
         );
         pulseCard("#ref-drop-slot");
-        await Store.refreshAll(true);
+        await refSync;
       }
     } catch (err) {
+      if (linked > 0) {
+        Store.invalidateAllSpecs();
+        if (typeof Store.refreshAfterRefWrite === "function") Store.refreshAfterRefWrite();
+        else Store.refreshAll(true);
+      }
       Store.toast(`레퍼런스 연결 실패: ${err.message}`, "err");
     }
   }
@@ -84,8 +92,11 @@ window.DPV2Inspector = (() => {
       const r = await sendLinkOp(Store.state.R?.rev ?? null, { op: "remove", crop_id: patch.id, name: fileName });
       if (r && r.cancelled) return;
       Store.invalidateAllSpecs();
+      const refSync = typeof Store.refreshAfterRefWrite === "function"
+        ? Store.refreshAfterRefWrite()
+        : Store.refreshAll(true);
       Store.toast(`"${fileName}" 연결을 해제했습니다.`);
-      await Store.refreshAll(true);
+      await refSync;
     } catch (err) {
       Store.toast(`연결 해제 실패: ${err.message}`, "err");
     }
@@ -1256,10 +1267,16 @@ window.DPV2Inspector = (() => {
     let written = 0;
     let aborted = false;
     try {
-      // #C26-4: 직전에 줄 서 있던 목적·AI 자동 즉시 저장이 알림 없이 빠지지 않도록 먼저 완료를 기다린다
-      await Store.awaitPendingQuickSpecs();
+      // #C26-4 · #C30-4: 직전에 줄 서 있던 목적·AI 자동 즉시 저장이 알림 없이 빠지지 않도록 완료를 기다리고,
+      // 선행 조회·저장이 실패로 끝난 영역은 서버의 옛 목적/설정으로 작성되지 않도록 이번 클릭의 작성에서 제외한다
+      const quickRes = await Store.awaitPendingQuickSpecs();
+      const failedQuickIds = new Set((quickRes && Array.isArray(quickRes.failedCropIds)) ? quickRes.failedCropIds : []);
       for (let idx = 0; idx < list.length; idx++) {
         const p = list[idx];
+        if (failedQuickIds.has(p.id)) {
+          Store.toast(`${p.name}: 직전 설정을 저장하지 못해 이번 AI 프롬프트 작성에서 제외했습니다 — 다시 선택한 뒤 시도해 주세요.`, "err");
+          continue;
+        }
         if (!p.meta.specLoaded || p.meta._lastLoadOk === false) {
           await Store.loadSpec(p.id, true);
           if (!p.meta._lastLoadOk && !p.meta.needsApplyForSpec) {
@@ -1497,14 +1514,50 @@ window.DPV2Inspector = (() => {
       return Array.isArray(sr) && Array.isArray(lr) && sr.length === 4 && lr.length === 4
         && sr.some((v, i) => Number(v) !== Number(lr[i]));
     };
+    const isPendingMainRefChanged = (p, rc) => {
+      // #C30-1: blocked 영역에서 대표 레퍼런스(pick vs 반영된 manifest 대표)가 실제로 달라졌는지 판정한다
+      if (!rc) return false;
+      const mc = rc.manifest;
+      if (!mc || typeof mc !== "object") return true;
+      const hasPick = Object.prototype.hasOwnProperty.call(rc, "pick");
+      const nextMain = hasPick
+        ? (rc.pick || null)
+        : (Array.isArray(rc.files) ? ((rc.files.find((f) => f && f.role === "main") || {}).name || null) : undefined);
+      if (nextMain === undefined) return true;
+      const mAuto = Array.isArray(mc.refs_auto) ? mc.refs_auto : [];
+      let appliedMain;
+      if (mc.refs_main && mAuto.includes(mc.refs_main)) {
+        appliedMain = mc.refs_main;
+      } else if (mAuto.length === 0) {
+        appliedMain = null;
+      } else if (mAuto.length === 1) {
+        appliedMain = mAuto[0];
+      } else {
+        const refImgs = Array.isArray(p.meta.specImages)
+          ? p.meta.specImages.filter((im) => im && im.role === "ref" && im.label)
+          : [];
+        if (refImgs.length === 1) {
+          appliedMain = refImgs[0].label;
+        } else {
+          return true;
+        }
+      }
+      return nextMain !== appliedMain;
+    };
     const hasPendingRefsForAssist = (p) => {
-      // #C26-1: 레퍼런스 연결·역할이 아직 반영되지 않은 영역(GET /refs status === "pending")이
-      // AI 자동 작성 경로(template·manual 제외)에 있으면 선행 무료 반영 후 스펙을 다시 확인해 한 번에 작성한다
+      // #C26-1 · #C30-1: 레퍼런스가 미반영(GET /refs status === "pending")인 AI 자동 작성 영역(template·manual 제외):
+      // - body: 그대로 선행 반영 (반영 전에는 blocked 로 바뀌지 않아 자동 작성이 누락되므로)
+      // - blocked: 대표 레퍼런스가 실제로 바뀐 경우에만 선행 반영 (보조 파일만 더한 경우는 작성 뒤 공용 반영 1회로 충분)
       if (!p || !p.meta || !p.meta.aiAuto || p.meta.needsApplyForSpec) return false;
       if (p.meta.promptSource === "manual") return false;
       if (p.meta.specState !== "body" && p.meta.specState !== "blocked") return false;
       const latest = Store.getPatch(p.id) || p;
-      return !!(latest && latest.refCrop && latest.refCrop.status === "pending");
+      const rc = latest && latest.refCrop;
+      if (!rc || rc.status !== "pending") return false;
+      if (p.meta.specState === "blocked") {
+        return isPendingMainRefChanged(p, rc);
+      }
+      return true;
     };
     const reloadTargetSpecs = async (list) => {
       // #C26-3: 반영 뒤 스펙 다시 읽기가 하나라도 실패하면 옛 상태(body)로 승인 상자에 넘어가지 않도록 즉시 중단·안내한다
@@ -1544,14 +1597,35 @@ window.DPV2Inspector = (() => {
     Store.state.runFlowBusy = true;
     Store.emit("selection");
     try {
-      // #C21-3②: 생성 직전에 눌린 목적·AI 자동 즉시 저장(미로드 패치 조회 대기 포함)이 끝난 뒤 이어서 진행한다
-      await Store.awaitPendingQuickSpecs();
+      // #C21-3② · #C30-4: 생성 직전에 눌린 목적·AI 자동 즉시 저장(미로드 패치 조회 대기 포함)이 끝난 뒤 이어서 진행한다
+      // 즉시 저장이 실패로 끝난 기존 영역이 있으면 옛 목적으로 작성·승인되지 않도록 중단한다
+      const quickRes = await Store.awaitPendingQuickSpecs();
+      const failedQuickIds = new Set((quickRes && Array.isArray(quickRes.failedCropIds)) ? quickRes.failedCropIds : []);
+      const failedQuickTargets = targets.filter((p) => failedQuickIds.has(p.id) && !p.meta.needsApplyForSpec);
+      if (failedQuickTargets.length) {
+        const names = failedQuickTargets.map((p) => p.name).join(", ");
+        Store.toast(`${names}: 직전 설정을 저장하지 못해 생성을 중단했습니다 — 다시 선택한 뒤 시도해 주세요.`, "err");
+        return;
+      }
+      // #C30-3: 레퍼런스 쓰기 직후 재조회(/refs)가 아직 돌고 있거나 실패했다면 최신 상태를 확보한 뒤 진행한다
+      if (typeof Store.ensureFreshRefsAfterWrite === "function") {
+        const refsFresh = await Store.ensureFreshRefsAfterWrite();
+        if (!refsFresh) {
+          Store.toast("최신 레퍼런스 상태를 읽지 못했습니다 — 잠시 후 다시 눌러 주세요.", "err");
+          return;
+        }
+      }
 
-      // 1) 미로드 패치 스펙 동기화(칸별 dirty 보존) 및 반영 전 새 영역 선행 반영(#C06·#C09-1·#C10)
+      // 1) 미로드·직전 조회 실패 패치 스펙 동기화(칸별 dirty 보존) 및 반영 전 새 영역 선행 반영(#C06·#C09-1·#C10·#C30-2)
       if (Api.can("v2_spec_edit")) {
         for (const p of targets) {
-          if (!p.meta.specLoaded) {
-            await Store.loadSpec(p.id);
+          if (!p.meta.specLoaded || p.meta._lastLoadOk === false) {
+            const forceReload = p.meta._lastLoadOk === false && !!p.meta.specLoaded;
+            await Store.loadSpec(p.id, forceReload);
+            if (!p.meta._lastLoadOk && !p.meta.needsApplyForSpec) {
+              Store.toast(`${p.name}: 최신 지시문 상태를 읽지 못했습니다 — 잠시 후 다시 눌러 주세요.`, "err");
+              return;
+            }
           }
         }
 
