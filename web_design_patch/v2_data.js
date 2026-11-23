@@ -231,6 +231,11 @@ window.DPV2Data = (() => {
     gridSnap: [["path", { d: "M3 9h18M3 15h18M9 3v18M15 3v18" }]],
     maximize: [["polyline", { points: "15 3 21 3 21 9" }], ["polyline", { points: "9 21 3 21 3 15" }], ["line", { x1: 21, y1: 3, x2: 14, y2: 10 }], ["line", { x1: 3, y1: 21, x2: 10, y2: 14 }]],
     minimize: [["polyline", { points: "4 14 10 14 10 20" }], ["polyline", { points: "20 10 14 10 14 4" }], ["line", { x1: 14, y1: 10, x2: 21, y2: 3 }], ["line", { x1: 3, y1: 21, x2: 10, y2: 14 }]],
+    pin: [["path", { d: "M12 17v5" }], ["path", { d: "M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" }]],
+    gridView: [["rect", { x: 3, y: 3, width: 7, height: 7, rx: 1 }], ["rect", { x: 14, y: 3, width: 7, height: 7, rx: 1 }], ["rect", { x: 3, y: 14, width: 7, height: 7, rx: 1 }], ["rect", { x: 14, y: 14, width: 7, height: 7, rx: 1 }]],
+    listView: [["line", { x1: 8, y1: 6, x2: 21, y2: 6 }], ["line", { x1: 8, y1: 12, x2: 21, y2: 12 }], ["line", { x1: 8, y1: 18, x2: 21, y2: 18 }], ["circle", { cx: 4, cy: 6, r: 1, fill: "currentColor", stroke: "none" }], ["circle", { cx: 4, cy: 12, r: 1, fill: "currentColor", stroke: "none" }], ["circle", { cx: 4, cy: 18, r: 1, fill: "currentColor", stroke: "none" }]],
+    arrowRight: [["line", { x1: 5, y1: 12, x2: 19, y2: 12 }], ["polyline", { points: "12 5 19 12 12 19" }]],
+    image: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], ["circle", { cx: 8.5, cy: 8.5, r: 1.5 }], ["polyline", { points: "21 15 16 10 5 21" }]],
   };
 
   function icon(name, size = 14) {
@@ -569,6 +574,43 @@ window.DPV2Data = (() => {
     return "";
   }
 
+  function suggestProjectName(filename) {
+    let base = String(filename || "")
+      .replace(/\.[^.]+$/, "")
+      .replace(/[^\p{L}\p{N}_.-]+/gu, "_")
+      .replace(/\.{2,}/g, "_")
+      .replace(/^[_.-]+|[_.-]+$/g, "");
+    if (!base || validateProjectName(base)) {
+      base = base ? `proj_${base.replace(/\.+$/g, "")}` : "new_project";
+    }
+    if (validateProjectName(base)) return "new_project";
+    return base.slice(0, 64);
+  }
+
+  function projectDisplayName(proj) {
+    if (!proj || typeof proj !== "object") return "";
+    return String(proj.title || proj.name || proj.project || proj.id || "");
+  }
+
+  function formatRelativeTime(raw) {
+    const s = String(raw || "").trim();
+    if (!s) return "";
+    const normalized = s.includes("T") ? s : s.replace(" ", "T");
+    const ts = Date.parse(normalized);
+    if (!Number.isFinite(ts)) return s;
+    const diffSec = Math.floor((Date.now() - ts) / 1000);
+    if (diffSec < 0) return s.slice(0, 16);
+    if (diffSec < 60) return "방금 전";
+    const diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) return `${diffMin}분 전`;
+    const diffHour = Math.floor(diffMin / 60);
+    if (diffHour < 24) return `${diffHour}시간 전`;
+    const diffDay = Math.floor(diffHour / 24);
+    if (diffDay === 1) return "어제";
+    if (diffDay < 7) return `${diffDay}일 전`;
+    return s.slice(0, 10);
+  }
+
   function formatElapsed(sec) {
     if (typeof sec !== "number" || !Number.isFinite(sec) || sec < 0) return "";
     if (sec < 9.95) return `${Math.round(sec * 10) / 10}초`;
@@ -604,7 +646,7 @@ window.DPV2Data = (() => {
     return { level: "ok", icon: "🟢", label: "경계 자연스러움", detail: "원본 영역 보존 및 톤 매칭이 안정적입니다." };
   }
 
-  // v1 ↔ v2 전환 주소 생성 (D2/D489: root·parent_origin 등 기존 쿼리 유지, 같은 프레임 이동)
+  // v1 ↔ v2 전환 주소 생성 (#C27-1 · STUDIO_UX_V2_HOME_SPEC §10.3-1: v1 전환 시 항상 ui=v1 명시, root·parent_origin 등 쿼리 유지)
   function buildSwitchUrl(toV2) {
     const url = new URL(location.href);
     const slash = url.pathname.lastIndexOf("/");
@@ -616,7 +658,7 @@ window.DPV2Data = (() => {
       url.pathname = dir;
     }
     if (toV2) url.searchParams.set("ui", "v2");
-    else url.searchParams.delete("ui");
+    else url.searchParams.set("ui", "v1");
     return url.pathname + url.search;
   }
 
@@ -690,6 +732,6 @@ window.DPV2Data = (() => {
   return {
     THEMES, POINT_COLORS, LAYOUT_PRESETS, PURPOSES, SNAP_STEPS, MODEL_GUIDE, RATIO_SIZES, THINKING_LABELS,
     el, svgEl, icon, appendSvgIcon, askDialogConfirm, askDialogChoice, showDialogNotice, hexMix, hexToRgba, computeAutoCropFrame,
-    validateProjectName, formatElapsed, trafficLight, buildSwitchUrl, purposeInfo, purposeColor, modelCatalog, findModel,
+    validateProjectName, suggestProjectName, projectDisplayName, formatRelativeTime, formatElapsed, trafficLight, buildSwitchUrl, purposeInfo, purposeColor, modelCatalog, findModel,
   };
 })();

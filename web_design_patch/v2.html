@@ -19,20 +19,77 @@
   <script defer src="v2_app.js"></script>
 </head>
 <body class="layout-standard">
+  <!-- 스크립트 로드 실패 대비 비상 탈출구 (#C27-4 · 정상 부트 완료 시 숨김) -->
+  <div id="v2-boot-fallback" class="v2-boot-fallback">
+    <span id="v2-boot-fallback-msg">화면을 준비하는 중입니다…</span>
+    <a id="link-emergency-v1" href="?ui=v1">기존 화면(v1)으로</a>
+  </div>
+
   <!-- ==================== 1. 프로젝트 홈 (?root= 미지정 시) ==================== -->
   <div id="projects-view" class="hidden">
     <div class="projects-inner">
-      <div class="projects-head">
-        <div>
-          <h1><span class="brand-dot"></span>Design Patch Studio <span class="round-pill">v2</span></h1>
-          <p>작업을 선택하거나 새 원화로 부분 수정 스튜디오를 시작하세요.</p>
+      <header class="projects-head">
+        <div class="projects-brand">
+          <h1>
+            <span class="brand-dot"></span>
+            <span>Design Patch Studio</span>
+            <span class="round-pill" id="home-version-pill">v2</span>
+            <span class="round-pill home-beta-pill" id="home-beta-pill">시험판</span>
+          </h1>
+          <p id="home-subtitle">원화 이미지를 끌어 놓거나 프로젝트를 선택해 부분 수정 스튜디오를 시작하세요.</p>
         </div>
         <div class="projects-actions">
+          <button type="button" class="icon-btn" id="btn-home-refresh" title="프로젝트 목록 새로고침"></button>
           <button type="button" class="btn-secondary-sm" id="btn-home-settings">환경설정</button>
-          <button type="button" class="btn-secondary-sm" id="btn-home-switch-v1">기존 화면(v1)</button>
+          <button type="button" class="btn-secondary-sm" id="btn-home-switch-v1" title="기존 v1 화면으로 전환">기존 화면(v1)</button>
           <button type="button" class="btn-primary-sm" id="btn-home-new">+ 새 프로젝트</button>
         </div>
+      </header>
+
+      <!-- 상단 하이라이트: 최근 작업 이어하기 + 빠른 원화 드롭존 -->
+      <section class="home-hero-grid" id="home-hero">
+        <div class="home-resume-card hidden" id="home-resume-card"></div>
+        <div class="home-drop-card" id="home-quick-drop" tabindex="0" role="region" aria-label="새 원화 드래그 앤 드롭 영역">
+          <div class="home-drop-icon" id="home-drop-icon"></div>
+          <div class="home-drop-copy">
+            <strong>새 원화로 바로 시작</strong>
+            <span>PNG · JPG · WEBP · PSD 파일을 여기에 끌어 놓으세요 (여러 장이면 나머지는 레퍼런스로 자동 추가)</span>
+          </div>
+          <div class="home-drop-actions">
+            <button type="button" class="btn-secondary-sm" id="btn-home-drop-pick">내 PC에서 원화 선택</button>
+            <button type="button" class="btn-secondary-sm accent-outline hidden" id="btn-home-drop-forge">Forge 자료함에서 시작</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 검색 · 상태 필터 · 정렬 · 카드/리스트 보기 툴바 -->
+      <section class="home-toolbar" id="home-toolbar">
+        <div class="home-search-wrap">
+          <span class="home-search-ico" id="home-search-ico"></span>
+          <input type="text" class="home-search-input" id="home-search-input" placeholder="프로젝트 이름 검색… (/)" autocomplete="off" />
+          <button type="button" class="home-search-clear hidden" id="btn-home-search-clear" title="검색어 지우기">×</button>
+        </div>
+        <div class="home-filter-bar" id="home-filter-bar" role="tablist" aria-label="프로젝트 상태 필터"></div>
+        <div class="home-toolbar-right">
+          <select class="select-input home-sort-select" id="home-sort-select" title="프로젝트 정렬 기준">
+            <option value="recent">최근 수정순</option>
+            <option value="name">이름순</option>
+            <option value="stars">확정 ★ 많은 순</option>
+            <option value="crops">영역 많은 순</option>
+          </select>
+          <div class="btn-group home-view-toggle" id="home-view-toggle" role="group" aria-label="보기 방식">
+            <button type="button" class="pill-btn on" id="home-view-grid" data-view="grid" title="카드 보기"></button>
+            <button type="button" class="pill-btn" id="home-view-list" data-view="list" title="리스트 보기"></button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 결과 요약 & 브라우저 로컬 저장 안내 -->
+      <div class="home-section-meta" id="home-section-meta">
+        <span id="home-result-count">프로젝트를 불러오는 중…</span>
+        <span class="home-prefs-hint" id="home-prefs-hint" title="핀 고정·정렬·보기 방식은 현재 브라우저/계정의 화면 설정(bmk-dp-v2-prefs)에 저장됩니다">고정·정렬·보기 설정은 이 환경의 화면 설정에 저장됩니다</span>
       </div>
+
       <div class="projects-grid" id="projects-grid"></div>
     </div>
   </div>
