@@ -697,9 +697,12 @@ window.DPV2Overlays = (() => {
       const saved = await sendSave(saveBody);
       if (saved && saved.cancelled) return;
       Store.invalidateAllSpecs();
+      const refSync = typeof Store.refreshAfterRefWrite === "function"
+        ? Store.refreshAfterRefWrite()
+        : Store.refreshAll(true);
       closeSheetOverlay();
       Store.toast(cropId ? "시트 컷을 저장하고 선택한 영역에 연결했습니다." : "시트 컷을 레퍼런스 보관함에 저장했습니다.", "ok");
-      await Store.refreshAll(true);
+      await refSync;
     } catch (err) {
       Store.toast(`시트 컷 저장 실패: ${err.message}`, "err");
     }
@@ -1393,8 +1396,12 @@ window.DPV2Overlays = (() => {
         root: Store.state.root,
         into: "refs",
         onDone: async () => {
+          Store.invalidateAllSpecs();
+          const refSync = typeof Store.refreshAfterRefWrite === "function"
+            ? Store.refreshAfterRefWrite()
+            : Store.refreshAll(true);
           Store.toast("Forge 자료함에서 레퍼런스를 가져왔습니다.", "ok");
-          await Store.refreshAll(true);
+          await refSync;
         },
       });
       if (!opened) Store.toast("Forge 자료함을 열 수 없습니다.", "err");

@@ -377,13 +377,23 @@
       $("projects-view").classList.add("hidden");
       $("studio-view").classList.remove("hidden");
       await Store.refreshAll(true);
-      // #C26-5: 새 프로젝트 첫 진입(가져오기 전 — S.canvas 없음) 초기 반영도 공용 모듈 Api.applyChecked 로 통일해 잠금 밖 중복 반영을 막는다
+      // #C26-5 · #C30-5: 새 프로젝트 첫 진입(가져오기 전 — S.canvas 없음) 초기 반영도 공용 모듈 Api.applyChecked 로 통일하고,
+      // 계획 잠금 경합(busy)으로 끝나며 캔버스가 여전히 없으면 딱 1회 더 재시도한다
       if (Store.state.S && !Store.state.S.canvas && !Store.state.S.running && Api.submitAdapter()) {
         Store.toast("새 프로젝트 원화를 불러오는 중입니다 (무료 초기 반영)…");
         try {
-          const applied = await Api.applyChecked(root);
+          let applied = await Api.applyChecked(root);
           await Store.refreshAll(true);
-          if (applied && !applied.ok) {
+          if (applied && !applied.ok && applied.reason === "busy"
+              && Store.state.S && !Store.state.S.canvas && !Store.state.S.running) {
+            Store.toast("서버가 바빠 초기 반영을 한 번 더 시도합니다…");
+            await new Promise((r) => setTimeout(r, 500));
+            if (Store.state.S && !Store.state.S.canvas && !Store.state.S.running) {
+              applied = await Api.applyChecked(root);
+              await Store.refreshAll(true);
+            }
+          }
+          if (applied && !applied.ok && !(Store.state.S && Store.state.S.canvas)) {
             if (applied.reason === "cancelled") {
               Store.toast(applied.error || "초기 반영을 취소했습니다.");
             } else {
