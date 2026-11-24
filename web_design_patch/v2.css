@@ -3614,7 +3614,33 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   background: var(--panel2); border: 1px solid var(--accent-border); border-radius: var(--r-md); font-size: 12px;
 }
 .np-picked-chip.ref { border-color: var(--line2); }
+.np-picked-chip.ref-failed { border-color: var(--err); background: rgba(239, 68, 68, 0.1); }
 .np-picked-chip img { width: 32px; height: 32px; object-fit: cover; border-radius: var(--r-xs); }
+.np-ref-failures {
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 12px;
+  border-radius: var(--r-md); border: 1px solid rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.08); font-size: 12px; color: var(--text);
+}
+.np-ref-failures strong { color: var(--err); font-size: 12px; line-height: 1.45; word-break: keep-all; }
+.np-drop button:disabled { opacity: 0.42; cursor: not-allowed; pointer-events: none; }
+.np-text-input:disabled { opacity: 0.6; cursor: not-allowed; }
+.np-ref-failures ul { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; }
+.np-ref-failures li { line-height: 1.45; word-break: keep-all; }
+.np-ref-failures .np-fail-name { font-weight: 600; color: var(--text-strong); }
+
+/* 새 프로젝트 변환 알림 배너 (#C36-6 · projects/new notes) */
+.studio-notes-banner {
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 14px;
+  background: rgba(245, 158, 11, 0.14);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.35);
+  color: var(--text-strong);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.studio-notes-text { min-width: 0; word-break: keep-all; }
+.studio-notes-close { width: 22px; height: 22px; flex-shrink: 0; font-size: 14px; }
 
 /* 전역 파일 드롭 가드 & 토스트 */
 .global-drop-overlay {

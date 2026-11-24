@@ -110,46 +110,70 @@ window.DPV2Store = (() => {
     try { return window.localStorage; } catch (_) { return null; }
   }
 
+  function readStoredPrefsRaw(st) {
+    if (!st) return null;
+    try {
+      const raw = st.getItem(PREF_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function normalizeHomePrefs(rawHome) {
+    const h = (rawHome && typeof rawHome === "object") ? rawHome : {};
+    return {
+      pinnedIds: Array.isArray(h.pinnedIds)
+        ? h.pinnedIds.filter((id) => typeof id === "string" && id).slice(0, 100)
+        : [],
+      viewMode: h.viewMode === "list" ? "list" : "grid",
+      sortBy: ["recent", "name", "stars", "crops"].includes(h.sortBy) ? h.sortBy : "recent",
+    };
+  }
+
   function loadPrefs() {
     const st = storageObj();
     if (!st) return;
     try {
-      const raw = st.getItem(PREF_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
+      const parsed = readStoredPrefsRaw(st);
+      if (parsed) {
         Object.assign(state.prefs, DEFAULT_PREFS, parsed);
         // 기존 snapGrid(boolean)만 있던 설정을 snapStep으로 호환 마이그레이션
-        if (parsed && parsed.snapStep === undefined && parsed.snapGrid === false) {
+        if (parsed.snapStep === undefined && parsed.snapGrid === false) {
           state.prefs.snapStep = 1;
         }
         if (![1, 16, 32, 64, 128].includes(Number(state.prefs.snapStep))) {
           state.prefs.snapStep = 128;
         }
-        state.prefs.historyPanel = Object.assign({}, DEFAULT_PREFS.historyPanel, (parsed && parsed.historyPanel) || {});
-        state.prefs.modelPopoverSize = Object.assign({}, DEFAULT_PREFS.modelPopoverSize, (parsed && parsed.modelPopoverSize) || {});
-        const rawHome = (parsed && parsed.home && typeof parsed.home === "object") ? parsed.home : {};
-        state.prefs.home = {
-          pinnedIds: Array.isArray(rawHome.pinnedIds)
-            ? rawHome.pinnedIds.filter((id) => typeof id === "string" && id).slice(0, 100)
-            : [],
-          viewMode: rawHome.viewMode === "list" ? "list" : "grid",
-          sortBy: ["recent", "name", "stars", "crops"].includes(rawHome.sortBy) ? rawHome.sortBy : "recent",
-        };
+        state.prefs.historyPanel = Object.assign({}, DEFAULT_PREFS.historyPanel, parsed.historyPanel || {});
+        state.prefs.modelPopoverSize = Object.assign({}, DEFAULT_PREFS.modelPopoverSize, parsed.modelPopoverSize || {});
+        state.prefs.home = normalizeHomePrefs(parsed.home);
       } else {
-        state.prefs.home = { pinnedIds: [], viewMode: "grid", sortBy: "recent" };
+        state.prefs.home = normalizeHomePrefs(null);
       }
     } catch (_) { /* 손상된 설정은 기본값 사용 */ }
   }
 
   function getHomePrefs() {
     if (!state.prefs.home || typeof state.prefs.home !== "object") {
-      state.prefs.home = { pinnedIds: [], viewMode: "grid", sortBy: "recent" };
+      state.prefs.home = normalizeHomePrefs(null);
     }
     return state.prefs.home;
   }
 
+  function latestHomePrefs() {
+    const latest = readStoredPrefsRaw(storageObj());
+    if (latest && latest.home && typeof latest.home === "object") {
+      return normalizeHomePrefs(latest.home);
+    }
+    return normalizeHomePrefs(getHomePrefs());
+  }
+
   function saveHomePrefs(patch) {
-    const cur = getHomePrefs();
+    // #C36-7: 저장 직전 최신 저장소의 home 값을 읽어 바뀐 항목만 합친다
+    const cur = latestHomePrefs();
     const next = {
       pinnedIds: Array.isArray(patch && patch.pinnedIds)
         ? patch.pinnedIds.filter((id) => typeof id === "string" && id).slice(0, 100)
@@ -168,7 +192,7 @@ window.DPV2Store = (() => {
   function togglePinnedProject(projectId) {
     const id = String(projectId || "");
     if (!id) return false;
-    const cur = getHomePrefs();
+    const cur = latestHomePrefs();
     const exists = cur.pinnedIds.includes(id);
     const nextIds = exists
       ? cur.pinnedIds.filter((x) => x !== id)
@@ -178,11 +202,17 @@ window.DPV2Store = (() => {
   }
 
   function savePrefs(patch) {
-    Object.assign(state.prefs, patch || {});
+    const delta = (patch && typeof patch === "object") ? patch : {};
+    Object.assign(state.prefs, delta);
     applyPrefsToDom();
     const st = storageObj();
     if (st) {
-      try { st.setItem(PREF_KEY, JSON.stringify(state.prefs)); } catch (_) { /* 저장소 차단 무시 */ }
+      try {
+        // #C36-7: 오래 열어 둔 탭이 다른 탭의 설정(테마·포인트 등)을 통째로 덮어쓰지 않도록 최신 저장 값에 변경분만 합친다
+        const latest = readStoredPrefsRaw(st);
+        const toSave = latest ? Object.assign({}, latest, delta) : Object.assign({}, state.prefs);
+        st.setItem(PREF_KEY, JSON.stringify(toSave));
+      } catch (_) { /* 저장소 차단 무시 */ }
     }
     emit("prefs");
   }

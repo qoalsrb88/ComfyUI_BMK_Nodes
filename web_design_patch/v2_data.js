@@ -566,6 +566,22 @@ window.DPV2Data = (() => {
     return { x, y, w, h };
   }
 
+  // #C36-5: projects/new 서버 허용 원화 확장자(v1 board.js 와 동일)
+  const TARGET_ACCEPT = ".psd,.psb,.png,.jpg,.jpeg,.webp";
+  const TARGET_EXT_RE = /\.(psd|psb|png|jpe?g|webp)$/i;
+  const MAX_UPLOAD_BYTES = 2 * 1024 ** 3;
+
+  function validateTargetFile(file) {
+    if (!file) return "타깃 원화 이미지를 먼저 선택하거나 끌어 놓아 주세요.";
+    if (typeof file.size === "number" && file.size > MAX_UPLOAD_BYTES) {
+      return "파일은 2GB 까지 올릴 수 있습니다";
+    }
+    if (!TARGET_EXT_RE.test(String(file.name || ""))) {
+      return "PSD·PSB·PNG·JPG·WEBP 파일만 받습니다";
+    }
+    return "";
+  }
+
   function validateProjectName(raw) {
     const name = String(raw || "").trim();
     if (!name || !/^[\p{L}\p{N}_.-]+$/u.test(name)) return "이름에는 문자·숫자·_ - . 만 쓸 수 있습니다";
@@ -580,11 +596,13 @@ window.DPV2Data = (() => {
       .replace(/[^\p{L}\p{N}_.-]+/gu, "_")
       .replace(/\.{2,}/g, "_")
       .replace(/^[_.-]+|[_.-]+$/g, "");
+    // #C36-5: 64자 절단 뒤 끝이 '.'·'_'·'-' 로 남지 않도록 정리한 뒤 다시 검사한다
+    base = base.slice(0, 64).replace(/[_.-]+$/g, "").replace(/^[_.-]+/g, "");
     if (!base || validateProjectName(base)) {
-      base = base ? `proj_${base.replace(/\.+$/g, "")}` : "new_project";
+      base = base ? `proj_${base}`.slice(0, 64).replace(/\.+$/g, "") : "new_project";
     }
-    if (validateProjectName(base)) return "new_project";
-    return base.slice(0, 64);
+    if (!base || validateProjectName(base)) return "new_project";
+    return base;
   }
 
   function projectDisplayName(proj) {
@@ -730,8 +748,8 @@ window.DPV2Data = (() => {
   }
 
   return {
-    THEMES, POINT_COLORS, LAYOUT_PRESETS, PURPOSES, SNAP_STEPS, MODEL_GUIDE, RATIO_SIZES, THINKING_LABELS,
+    THEMES, POINT_COLORS, LAYOUT_PRESETS, PURPOSES, SNAP_STEPS, MODEL_GUIDE, RATIO_SIZES, THINKING_LABELS, TARGET_ACCEPT,
     el, svgEl, icon, appendSvgIcon, askDialogConfirm, askDialogChoice, showDialogNotice, hexMix, hexToRgba, computeAutoCropFrame,
-    validateProjectName, suggestProjectName, projectDisplayName, formatRelativeTime, formatElapsed, trafficLight, buildSwitchUrl, purposeInfo, purposeColor, modelCatalog, findModel,
+    validateTargetFile, validateProjectName, suggestProjectName, projectDisplayName, formatRelativeTime, formatElapsed, trafficLight, buildSwitchUrl, purposeInfo, purposeColor, modelCatalog, findModel,
   };
 })();
