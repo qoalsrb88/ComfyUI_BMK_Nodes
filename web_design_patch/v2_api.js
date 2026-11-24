@@ -265,12 +265,17 @@ window.DPV2Api = (() => {
     }
   }
 
-  async function batchUpdateCrops(root, seen, patch) {
+  // ── 6.5 V2-B 패치별 생성 설정 (STUDIO_UX_V2B_SPEC §10.3 · #C19 · caps.v2_crop_model 게이트) ──
+  async function getCropGen(root) {
+    if (!can("v2_crop_model")) return null;
+    return getJson("crop_gen?" + qs({ root }));
+  }
+
+  async function postCropGen(root, seen, changes) {
     if (!can("v2_crop_model")) {
-      return { ok: false, unsupported: true };
+      return { ok: false, unsupported: true, error: "패치별 모델 선택 기능이 아직 켜져 있지 않습니다." };
     }
-    // 계약 §7.1 A7: 동시성 토큰은 seen 사용
-    return postJson("layout/batch_update", Object.assign({ root, seen }, patch));
+    return postJson("crop_gen", { root, seen, changes });
   }
 
   // ── 7. 유료·무료 실행 제출 어댑터 (STUDIO_UX_V2A_SPEC §3.6 · 계약 §7.4 D4·D5: 공용 모듈 DPSubmit 만 호출) ──
@@ -338,6 +343,6 @@ window.DPV2Api = (() => {
     pickCandidate, rejectCandidate, drainRun,
     getSeams, saveToForge, exportDownloadUrl,
     getMask, adjustMask, fetchImageRgba, encodePngL, saveMaskPng,
-    getSpec, saveSpec, assistPrompt, batchUpdateCrops, submitAdapter, submitStage, applyChecked, waitJob, getJobQueue,
+    getSpec, saveSpec, assistPrompt, getCropGen, postCropGen, submitAdapter, submitStage, applyChecked, waitJob, getJobQueue,
   };
 })();

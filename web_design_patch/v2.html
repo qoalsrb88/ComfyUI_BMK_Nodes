@@ -377,7 +377,7 @@
               <!-- 모델 & 생성 옵션 -->
               <div class="card-block" id="model-card">
                 <div class="block-head">
-                  <span class="block-label">사용 모델 · 옵션</span>
+                  <span class="block-label">사용 모델 · 옵션 <span class="model-override-badge hidden" id="model-override-badge"></span></span>
                   <label class="chk-inline">
                     <input type="checkbox" id="chk-inherit-model" checked />
                     <span>프로젝트 기본 모델</span>
@@ -392,12 +392,19 @@
                 </button>
                 <div class="param-row">
                   <div class="param-col">
-                    <label>후보 장수</label>
+                    <div class="param-label-row">
+                      <label>후보 장수</label>
+                      <span class="count-override-wrap hidden" id="count-override-wrap">
+                        <span class="count-override-tag" id="count-override-tag">개별</span>
+                        <button type="button" class="text-link-btn" id="btn-count-inherit" title="프로젝트 기본 장수로 되돌리기">기본값</button>
+                      </span>
+                    </div>
                     <div class="seg-group" id="seg-count">
                       <button type="button" data-val="1">1</button>
                       <button type="button" data-val="2">2</button>
                       <button type="button" data-val="4" class="on">4</button>
                       <button type="button" data-val="6">6</button>
+                      <button type="button" data-val="8">8</button>
                     </div>
                   </div>
                   <div class="param-col">
@@ -406,7 +413,11 @@
                   </div>
                 </div>
                 <div class="param-row hidden" id="model-extra-opts"></div>
-                <div class="block-sub" id="model-scope-note" style="margin-top:6px;">모델·장수·품질·복잡도는 프로젝트 전체에 적용되며, 변경 시 다음 생성에서 반영 확인이 표시됩니다.</div>
+                <div class="crop-gen-status-list hidden" id="crop-gen-status-list"></div>
+                <div class="model-scope-row" id="model-scope-row">
+                  <div class="block-sub" id="model-scope-note">모델·장수·품질·복잡도는 프로젝트 전체에 적용되며, 변경 시 다음 생성에서 반영 확인이 표시됩니다.</div>
+                  <button type="button" class="text-link-btn hidden" id="btn-project-defaults" title="프로젝트 기본 모델·품질·장수를 일괄 변경합니다">프로젝트 기본값 변경</button>
+                </div>
               </div>
 
               <!-- 전문가 설정 (접이식) -->
@@ -421,7 +432,7 @@
                     <span>AI 자동 크롭 가이드 표시</span>
                     <input type="checkbox" id="adv-show-autocrop" />
                   </div>
-                  <div class="adv-row">
+                  <div class="adv-row" id="adv-complexity-row">
                     <span>지시 복잡도</span>
                     <select id="adv-complexity">
                       <option value="low">낮음</option>
@@ -585,10 +596,10 @@
               <div class="forge-tools-card">
                 <span class="block-label">Forge 후처리 도구</span>
                 <button type="button" class="forge-tool-btn" id="btn-tool-upscale">
-                  <span><strong>업스케일 · 질감 정리</strong><small id="upscale-desc">Phase V2-B 연결 예정</small></span>
+                  <span><strong>업스케일 · 질감 정리</strong><small id="upscale-desc">Phase V2-C 연결 예정</small></span>
                 </button>
                 <button type="button" class="forge-tool-btn" id="btn-tool-bgremove">
-                  <span><strong>배경 제거 (누끼)</strong><small id="bgremove-desc">Phase V2-B 연결 예정</small></span>
+                  <span><strong>배경 제거 (누끼)</strong><small id="bgremove-desc">Phase V2-C 연결 예정</small></span>
                 </button>
               </div>
             </div>
