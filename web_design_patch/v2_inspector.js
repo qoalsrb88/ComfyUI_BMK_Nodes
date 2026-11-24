@@ -52,21 +52,33 @@ window.DPV2Inspector = (() => {
       Store.toast("먼저 왼쪽 목록이나 캔버스에서 수정 영역을 선택해 주세요.");
       return;
     }
-    let rev = Store.state.R?.rev ?? null;
-    let linked = 0;
-    try {
-      for (const p of list) {
-        const r = await sendLinkOp(rev, { op: "add", crop_id: p.id, name: fileName });
-        if (r && r.cancelled) continue;
-        if (r && typeof r.rev === "number") rev = r.rev;
-        if (p.meta) p.meta.specLoaded = false; // 레퍼런스 구성 변경 시 /spec seen 지문이 달라짐
-        linked += 1;
+    // #C33-2: 첫 POST refs/link 를 보내기 전부터 쓰기 단계를 activeRefWritePromises 로 추적해 다중 연결 도중 생성 클릭이 옛 /refs 로 진행되지 않게 한다
+    const doWrites = async () => {
+      let rev = Store.state.R?.rev ?? null;
+      let linked = 0;
+      let err = null;
+      try {
+        for (const p of list) {
+          const r = await sendLinkOp(rev, { op: "add", crop_id: p.id, name: fileName });
+          if (r && r.cancelled) continue;
+          if (r && typeof r.rev === "number") rev = r.rev;
+          if (p.meta) p.meta.specLoaded = false; // 레퍼런스 구성 변경 시 /spec seen 지문이 달라짐
+          linked += 1;
+        }
+      } catch (e) {
+        err = e;
       }
-      if (linked > 0) {
-        Store.invalidateAllSpecs();
-        const refSync = typeof Store.refreshAfterRefWrite === "function"
-          ? Store.refreshAfterRefWrite()
-          : Store.refreshAll(true);
+      return { linked, err };
+    };
+    const { linked, err } = await (typeof Store.trackRefWrite === "function"
+      ? Store.trackRefWrite(doWrites())
+      : doWrites());
+    if (linked > 0) {
+      Store.invalidateAllSpecs();
+      const refSync = typeof Store.refreshAfterRefWrite === "function"
+        ? Store.refreshAfterRefWrite()
+        : Store.refreshAll(true);
+      if (!err) {
         Store.toast(
           linked > 1
             ? `"${fileName}"를 선택된 ${linked}개 영역에 연결했습니다.`
@@ -74,32 +86,50 @@ window.DPV2Inspector = (() => {
           "ok"
         );
         pulseCard("#ref-drop-slot");
-        await refSync;
+      } else {
+        Store.toast(`레퍼런스 연결 실패: ${err.message}`, "err");
       }
-    } catch (err) {
-      if (linked > 0) {
-        Store.invalidateAllSpecs();
-        if (typeof Store.refreshAfterRefWrite === "function") Store.refreshAfterRefWrite();
-        else Store.refreshAll(true);
-      }
+      await refSync;
+    } else if (err) {
+      // 응답 유실 등으로 서버 반영 여부가 불명확한 실패에서도 즉시 최신 /refs 를 다시 읽어 정합을 맞춘다
+      Store.invalidateAllSpecs();
+      const refSync = typeof Store.refreshAfterRefWrite === "function"
+        ? Store.refreshAfterRefWrite()
+        : Store.refreshAll(true);
       Store.toast(`레퍼런스 연결 실패: ${err.message}`, "err");
+      await refSync;
     }
   }
 
   async function unlinkRefFromPatch(patch, fileName) {
     if (!patch || !fileName) return;
-    try {
-      const r = await sendLinkOp(Store.state.R?.rev ?? null, { op: "remove", crop_id: patch.id, name: fileName });
-      if (r && r.cancelled) return;
+    const doWrite = async () => {
+      try {
+        const r = await sendLinkOp(Store.state.R?.rev ?? null, { op: "remove", crop_id: patch.id, name: fileName });
+        return { cancelled: !!(r && r.cancelled), err: null };
+      } catch (e) {
+        return { cancelled: false, err: e };
+      }
+    };
+    const { cancelled, err } = await (typeof Store.trackRefWrite === "function"
+      ? Store.trackRefWrite(doWrite())
+      : doWrite());
+    if (err) {
       Store.invalidateAllSpecs();
       const refSync = typeof Store.refreshAfterRefWrite === "function"
         ? Store.refreshAfterRefWrite()
         : Store.refreshAll(true);
-      Store.toast(`"${fileName}" 연결을 해제했습니다.`);
-      await refSync;
-    } catch (err) {
       Store.toast(`연결 해제 실패: ${err.message}`, "err");
+      await refSync;
+      return;
     }
+    if (cancelled) return;
+    Store.invalidateAllSpecs();
+    const refSync = typeof Store.refreshAfterRefWrite === "function"
+      ? Store.refreshAfterRefWrite()
+      : Store.refreshAll(true);
+    Store.toast(`"${fileName}" 연결을 해제했습니다.`);
+    await refSync;
   }
 
   // ── 1. 좌측 동시 도크: 수정 영역 레이어 목록 ──

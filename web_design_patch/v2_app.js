@@ -120,15 +120,19 @@
       Overlays.openNewProjectModal(list[0], list.slice(1));
       return;
     }
-    for (const f of list) {
-      try {
-        await Api.uploadSheet(Store.state.root, f, Store.state.R?.rev ?? null);
-        Store.toast(`"${f.name}" 레퍼런스 시트를 추가했습니다.`, "ok");
-      } catch (err) {
-        Store.toast(`업로드 실패: ${err.message}`, "err");
+    const doUploads = async () => {
+      for (const f of list) {
+        try {
+          await Api.uploadSheet(Store.state.root, f, Store.state.R?.rev ?? null);
+          Store.toast(`"${f.name}" 레퍼런스 시트를 추가했습니다.`, "ok");
+        } catch (err) {
+          Store.toast(`업로드 실패: ${err.message}`, "err");
+        }
       }
-    }
-    await Store.refreshAll(true);
+    };
+    if (typeof Store.trackRefWrite === "function") await Store.trackRefWrite(doUploads());
+    else await doUploads();
+    await (typeof Store.refreshAfterRefWrite === "function" ? Store.refreshAfterRefWrite() : Store.refreshAll(true));
     if (Overlays.sheetState.open) {
       Overlays.openSheetOverlay();
     }
@@ -205,12 +209,18 @@
     const fSheet = $("hidden-file-sheet");
     if (fSheet) fSheet.addEventListener("change", (e) => { handleUploadFiles(e.target.files, "ref"); e.target.value = ""; });
 
-    // 페이지 전역 파일 드롭 가드 (모달·홈 빠른 드롭존 안에서는 각 드롭존이 직접 처리)
+    // 페이지 전역 파일 드롭 가드 (모달·Forge 자료함·대화상자·홈 빠른 드롭존 안에서는 전역 드롭이 가로채지 않는다 — #C40-2)
     let dragCounter = 0;
     const dropOv = $("global-drop-overlay");
+    const isExternalOverlayOpen = () => !!(
+      (window.DPDialog && window.DPDialog.open)
+      || Array.from(document.querySelectorAll("body > .overlay:not(.hidden), [aria-modal='true']:not(.hidden)"))
+        .some((el) => !el.closest || !el.closest("#modal-backdrop"))
+    );
     const isModalOpen = () => {
       const bd = $("modal-backdrop");
-      return !!(bd && !bd.classList.contains("hidden"));
+      if (bd && !bd.classList.contains("hidden")) return true;
+      return isExternalOverlayOpen();
     };
     window.addEventListener("dragenter", (e) => {
       if (e.dataTransfer?.types?.includes("Files")) {
@@ -238,9 +248,10 @@
         e.preventDefault();
         dragCounter = 0;
         if (dropOv) dropOv.classList.add("hidden");
-        if (isModalOpen() && e.target.closest("#modal-backdrop")) return;
-        if (!Store.state.root && e.target.closest("#home-quick-drop")) return;
-        const zone = e.target.closest(".drop-zone");
+        // #C40-2: 모달 또는 Forge 자료함/대화상자 오버레이가 떠 있을 때는 전역 드롭이 열려 있는 프로젝트에 시트를 올리지 않게 차단한다
+        if (isModalOpen()) return;
+        if (!Store.state.root && e.target && e.target.closest && e.target.closest("#home-quick-drop")) return;
+        const zone = e.target && e.target.closest ? e.target.closest(".drop-zone") : null;
         const role = !Store.state.root ? "target" : (zone ? zone.dataset.dropRole : "ref");
         handleUploadFiles(e.dataTransfer.files, role);
       }
@@ -265,6 +276,8 @@
     // 전역 포토샵 표준 단축키
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
+        // Forge 자료함·공용 확인 상자(body > .overlay)가 떠 있으면 각 오버레이 자체 Esc 처리에 맡긴다
+        if (isExternalOverlayOpen()) return;
         const bd = $("modal-backdrop");
         if (bd && !bd.classList.contains("hidden")) { Overlays.closeModal(); return; }
         if (Overlays.cmpState.open) { Overlays.closeCompareOverlay(); return; }
@@ -280,6 +293,9 @@
         }
         return;
       }
+
+      // #C40-1: 모달·Forge 자료함·대화상자가 열려 있는 동안에는 배경 전역 단축키(?, Ctrl+Z, 도구 전환 등)를 모두 차단한다
+      if (isModalOpen()) return;
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         if (Store.state.root && !isTyping(document.activeElement)) {
@@ -498,12 +514,14 @@
                 && Store.state.S && !Store.state.S.canvas && !Store.state.S.running) {
               Store.toast("서버가 바빠 초기 반영을 한 번 더 시도합니다…");
               await new Promise((r) => setTimeout(r, 500));
-              if (Store.state.S && !Store.state.S.canvas && !Store.state.S.running) {
+              // #C33-5: 500ms 대기 중 다른 창이 초기 반영을 끝냈을 수 있으므로 /state 를 먼저 다시 읽어 성공 응답에서 확인한다
+              const stateRefreshed = await Store.refreshAll(true);
+              if (stateRefreshed && Store.state.S && !Store.state.S.canvas && !Store.state.S.running) {
                 applied = await Api.applyChecked(root);
                 await Store.refreshAll(true);
               }
             }
-            if (applied && !applied.ok && !(Store.state.S && Store.state.S.canvas)) {
+            if (applied && !applied.ok && !(Store.state.S && (Store.state.S.canvas || Store.state.S.running))) {
               if (applied.reason === "cancelled") {
                 Store.toast(applied.error || "초기 반영을 취소했습니다.");
               } else {

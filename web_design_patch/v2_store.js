@@ -110,6 +110,57 @@ window.DPV2Store = (() => {
   }
 
   // ── 설정 불러오기 · 저장 · DOM 적용 ──
+  const PREFS_CHANNEL_NAME = "bmk-dp-v2-prefs";
+  let syncedPrefsDelta = {};
+  let prefsChannel = null;
+
+  function currentAccountTag() {
+    return String((window.DPEnv && window.DPEnv.account && window.DPEnv.account.tag) || "");
+  }
+
+  function mergePrefsObjects(base, patch) {
+    const out = Object.assign({}, base && typeof base === "object" ? base : {});
+    if (!patch || typeof patch !== "object") return out;
+    for (const [k, v] of Object.entries(patch)) {
+      if ((k === "historyPanel" || k === "home") && v && typeof v === "object" && !Array.isArray(v)) {
+        out[k] = Object.assign({}, out[k] && typeof out[k] === "object" ? out[k] : {}, v);
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  }
+
+  function ensurePrefsSyncChannel() {
+    if (prefsChannel || typeof BroadcastChannel !== "function") return prefsChannel;
+    try {
+      prefsChannel = new BroadcastChannel(PREFS_CHANNEL_NAME);
+      prefsChannel.onmessage = (ev) => {
+        const msg = ev && ev.data;
+        if (!msg || typeof msg !== "object" || !msg.patch || typeof msg.patch !== "object") return;
+        // 서버 모드에서 계정 태그가 다르면 다른 계정의 설정을 섞지 않는다
+        if (String(msg.accountTag || "") !== currentAccountTag()) return;
+        syncedPrefsDelta = mergePrefsObjects(syncedPrefsDelta, msg.patch);
+        if (msg.patch.historyPanel && typeof msg.patch.historyPanel === "object") {
+          state.prefs.historyPanel = Object.assign({}, state.prefs.historyPanel || DEFAULT_PREFS.historyPanel, msg.patch.historyPanel);
+        }
+        if (msg.patch.home && typeof msg.patch.home === "object") {
+          state.prefs.home = normalizeHomePrefs(Object.assign({}, getHomePrefs(), msg.patch.home));
+        }
+      };
+    } catch (_) { prefsChannel = null; }
+    return prefsChannel;
+  }
+
+  function broadcastPrefsDelta(patch) {
+    if (!patch || typeof patch !== "object") return;
+    const ch = ensurePrefsSyncChannel();
+    if (!ch) return;
+    try {
+      ch.postMessage({ accountTag: currentAccountTag(), patch });
+    } catch (_) { /* 채널 차단 환경 무시 */ }
+  }
+
   function storageObj() {
     if (window.DPEnv && window.DPEnv.store) return window.DPEnv.store;
     try { return window.localStorage; } catch (_) { return null; }
@@ -127,6 +178,13 @@ window.DPV2Store = (() => {
     }
   }
 
+  function readMergedStoredPrefs(st) {
+    const raw = readStoredPrefsRaw(st);
+    const hasDelta = Object.keys(syncedPrefsDelta).length > 0;
+    if (!raw && !hasDelta) return null;
+    return mergePrefsObjects(raw || {}, syncedPrefsDelta);
+  }
+
   function normalizeHomePrefs(rawHome) {
     const h = (rawHome && typeof rawHome === "object") ? rawHome : {};
     return {
@@ -139,10 +197,11 @@ window.DPV2Store = (() => {
   }
 
   function loadPrefs() {
+    ensurePrefsSyncChannel();
     const st = storageObj();
     if (!st) return;
     try {
-      const parsed = readStoredPrefsRaw(st);
+      const parsed = readMergedStoredPrefs(st);
       if (parsed) {
         Object.assign(state.prefs, DEFAULT_PREFS, parsed);
         // 기존 snapGrid(boolean)만 있던 설정을 snapStep으로 호환 마이그레이션
@@ -169,7 +228,7 @@ window.DPV2Store = (() => {
   }
 
   function latestHomePrefs() {
-    const latest = readStoredPrefsRaw(storageObj());
+    const latest = readMergedStoredPrefs(storageObj());
     if (latest && latest.home && typeof latest.home === "object") {
       return normalizeHomePrefs(latest.home);
     }
@@ -179,18 +238,34 @@ window.DPV2Store = (() => {
   function saveHomePrefs(patch) {
     // #C36-7: 저장 직전 최신 저장소의 home 값을 읽어 바뀐 항목만 합친다
     const cur = latestHomePrefs();
-    const next = {
-      pinnedIds: Array.isArray(patch && patch.pinnedIds)
-        ? patch.pinnedIds.filter((id) => typeof id === "string" && id).slice(0, 100)
-        : cur.pinnedIds.slice(),
-      viewMode: (patch && patch.viewMode !== undefined)
-        ? (patch.viewMode === "list" ? "list" : "grid")
-        : cur.viewMode,
-      sortBy: (patch && patch.sortBy !== undefined && ["recent", "name", "stars", "crops"].includes(patch.sortBy))
-        ? patch.sortBy
-        : cur.sortBy,
-    };
-    savePrefs({ home: next });
+    const homeDelta = {};
+    if (Array.isArray(patch && patch.pinnedIds)) {
+      homeDelta.pinnedIds = patch.pinnedIds.filter((id) => typeof id === "string" && id).slice(0, 100);
+    }
+    if (patch && patch.viewMode !== undefined) {
+      homeDelta.viewMode = patch.viewMode === "list" ? "list" : "grid";
+    }
+    if (patch && patch.sortBy !== undefined && ["recent", "name", "stars", "crops"].includes(patch.sortBy)) {
+      homeDelta.sortBy = patch.sortBy;
+    }
+    const next = Object.assign({}, cur, homeDelta);
+    savePrefs({ home: next }, { broadcastPatch: { home: homeDelta } });
+    return next;
+  }
+
+  // #C40-6: 히스토리 패널 도킹/위치 변경 시 다른 탭이 저장한 크기(w/h) 등을 덮어쓰지 않도록 최신 저장 값에 변경분만 합친다
+  function saveHistoryPanelPrefs(patch) {
+    const latest = readMergedStoredPrefs(storageObj());
+    const base = Object.assign(
+      {},
+      DEFAULT_PREFS.historyPanel,
+      (latest && latest.historyPanel && typeof latest.historyPanel === "object")
+        ? latest.historyPanel
+        : (state.prefs.historyPanel || {})
+    );
+    const delta = (patch && typeof patch === "object") ? patch : {};
+    const next = Object.assign({}, base, delta);
+    savePrefs({ historyPanel: next }, { broadcastPatch: { historyPanel: delta } });
     return next;
   }
 
@@ -206,19 +281,21 @@ window.DPV2Store = (() => {
     return !exists;
   }
 
-  function savePrefs(patch) {
+  function savePrefs(patch, opts = {}) {
     const delta = (patch && typeof patch === "object") ? patch : {};
     Object.assign(state.prefs, delta);
     applyPrefsToDom();
     const st = storageObj();
     if (st) {
       try {
-        // #C36-7: 오래 열어 둔 탭이 다른 탭의 설정(테마·포인트 등)을 통째로 덮어쓰지 않도록 최신 저장 값에 변경분만 합친다
-        const latest = readStoredPrefsRaw(st);
+        // #C36-7 · #C40-6: 오래 열어 둔 탭이 다른 탭의 설정(테마·포인트·히스토리 크기 등)을 통째로 덮어쓰지 않도록 최신 저장·동기화 값에 변경분만 합친다
+        const latest = readMergedStoredPrefs(st);
         const toSave = latest ? Object.assign({}, latest, delta) : Object.assign({}, state.prefs);
         st.setItem(PREF_KEY, JSON.stringify(toSave));
+        syncedPrefsDelta = {};
       } catch (_) { /* 저장소 차단 무시 */ }
     }
+    broadcastPrefsDelta((opts && opts.broadcastPatch) || delta);
     emit("prefs");
   }
 
@@ -811,6 +888,8 @@ window.DPV2Store = (() => {
         if (!m.specLoaded && !m.needsApplyForSpec) {
           entry.failed = true;
           toast("서버에서 기존 스펙을 읽지 못했습니다 — 잠시 후 다시 시도해 주세요.", "err");
+          // #C33-1: 브라우저가 이미 뒤집어 둔 체크박스(#chk-ai-auto)와 목적 단추를 실제 값으로 되돌린다
+          emit("selection");
           return null;
         }
       }
@@ -897,6 +976,7 @@ window.DPV2Store = (() => {
           entry.failed = true;
         }
         toast(`지시문 저장 실패: ${(err && (err.userMessage || err.message)) || "저장 실패"}`, "err");
+        emit("selection");
         return null;
       }
     });
@@ -1449,31 +1529,67 @@ window.DPV2Store = (() => {
     } catch (_) { /* layout 라우트 없는 환경이면 state.S.crops 로 유지 */ }
   }
 
-  // #C30-3: 레퍼런스 쓰기 직후 재조회(/refs)가 끝나지 않았거나 실패한 채 생성을 눌러도 옛 same 상태로 빠지지 않게 추적한다
+  // #C30-3 · #C33-2 · #C33-3 · #C33-4:
+  // - 첫 레퍼런스 쓰기 전부터 진행 중 표지(activeRefWritePromises)와 쓰기 세대(refsWriteEpoch)를 올려 다중 연결 도중 생성 클릭을 대기시킨다
+  // - 조회 순번(refsLoadSeq)과 세대 번호로 쓰기 전에 떠났거나 더 최신 조회보다 늦게 온 GET /refs 응답을 폐기한다
+  // - 첫 프로젝트 진입에서 /refs 조회가 실패해 state.R 이 비어 있으면 생성 전에 다시 읽고 실패 시 중단한다
   let refsDirtyAfterWrite = false;
+  let refsWriteEpoch = 0;
+  let refsLoadSeq = 0;
+  let refsLoadedOnce = false;
+  const activeRefWritePromises = new Set();
   const pendingRefRefreshPromises = new Set();
 
-  async function loadRefs(force = false) {
-    if (!state.root) return false;
+  function trackRefWrite(promise) {
+    refsWriteEpoch += 1;
+    refsDirtyAfterWrite = true;
+    const p = Promise.resolve(promise).finally(() => {
+      // 쓰기 도중 출발한 GET /refs 가 쓰기 종료(또는 응답 유실) 직후 도착해 옛 스냅샷으로 dirty 를 지우지 못하게 종료 시점에도 세대를 올린다
+      refsWriteEpoch += 1;
+      refsDirtyAfterWrite = true;
+      activeRefWritePromises.delete(p);
+    });
+    activeRefWritePromises.add(p);
+    return p;
+  }
+
+  async function loadRefsDetailed(force = false) {
+    if (!state.root) return { ok: false, superseded: false };
+    const startEpoch = refsWriteEpoch;
+    const mySeq = ++refsLoadSeq;
     let ok = false;
     try {
       const d = await Api.getRefs(state.root, force ? undefined : (state.R && state.R.rev));
+      if (startEpoch !== refsWriteEpoch || mySeq !== refsLoadSeq) {
+        return { ok: false, superseded: true };
+      }
       if (d && !d.unchanged) state.R = d;
       if (d) {
         ok = true;
-        if (force || !d.unchanged) refsDirtyAfterWrite = false;
+        if (state.R) refsLoadedOnce = true;
+        if ((force || !d.unchanged) && activeRefWritePromises.size === 0) {
+          refsDirtyAfterWrite = false;
+        }
       }
     } catch (_) { /* 무시 — refsDirtyAfterWrite 는 유지되어 생성 전 재시도됨 */ }
     try {
       const sh = await Api.listSheets(state.root);
-      // #C07-1: GET /refs/sheets 는 배열을 그대로 반환 (테스트/호환용 { sheets: [...] } 도 함께 수용)
-      if (Array.isArray(sh)) state.sheets = sh;
-      else if (sh && Array.isArray(sh.sheets)) state.sheets = sh.sheets;
+      if (startEpoch === refsWriteEpoch && mySeq === refsLoadSeq) {
+        // #C07-1: GET /refs/sheets 는 배열을 그대로 반환 (테스트/호환용 { sheets: [...] } 도 함께 수용)
+        if (Array.isArray(sh)) state.sheets = sh;
+        else if (sh && Array.isArray(sh.sheets)) state.sheets = sh.sheets;
+      }
     } catch (_) { /* 무시 */ }
-    return ok;
+    const superseded = startEpoch !== refsWriteEpoch || mySeq !== refsLoadSeq;
+    return { ok: ok && !superseded, superseded };
+  }
+
+  async function loadRefs(force = false) {
+    return (await loadRefsDetailed(force)).ok;
   }
 
   function refreshAfterRefWrite() {
+    refsWriteEpoch += 1;
     refsDirtyAfterWrite = true;
     const p = refreshAll(true).finally(() => {
       pendingRefRefreshPromises.delete(p);
@@ -1483,14 +1599,19 @@ window.DPV2Store = (() => {
   }
 
   async function ensureFreshRefsAfterWrite() {
-    while (pendingRefRefreshPromises.size > 0) {
-      await Promise.allSettled([...pendingRefRefreshPromises]);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      while (activeRefWritePromises.size > 0 || pendingRefRefreshPromises.size > 0) {
+        const batch = [...activeRefWritePromises, ...pendingRefRefreshPromises];
+        await Promise.allSettled(batch);
+      }
+      if (!refsDirtyAfterWrite && refsLoadedOnce && state.R) return true;
+      const res = await loadRefsDetailed(true);
+      if (res.ok && !refsDirtyAfterWrite && refsLoadedOnce && state.R) return true;
+      if (!res.superseded && activeRefWritePromises.size === 0 && pendingRefRefreshPromises.size === 0) {
+        return false;
+      }
     }
-    if (refsDirtyAfterWrite) {
-      const ok = await loadRefs(true);
-      if (!ok && refsDirtyAfterWrite) return false;
-    }
-    return true;
+    return !refsDirtyAfterWrite && refsLoadedOnce && !!state.R;
   }
 
   // ── V2-B 패치별 생성 설정(crop_gen · STUDIO_UX_V2B_SPEC §10.3 · #C19) ──
@@ -1959,7 +2080,7 @@ window.DPV2Store = (() => {
   let queuedForceRefresh = false;
 
   async function refreshAll(force = false) {
-    if (!state.root) return;
+    if (!state.root) return false;
     if (state.polling) {
       if (force) {
         queuedForceRefresh = true;
@@ -1970,11 +2091,11 @@ window.DPV2Store = (() => {
             return refreshAll(true);
           }
           if (activeRefreshPromise) {
-            await activeRefreshPromise;
+            return !!(await activeRefreshPromise);
           }
         }
       }
-      return;
+      return state.syncState !== "err";
     }
     state.polling = true;
     let resolveRun;
@@ -1994,6 +2115,7 @@ window.DPV2Store = (() => {
         }
       }, 450);
     }
+    let refreshedOk = false;
     try {
       const prev = state.S;
       const prevRunning = !!(prev && prev.running);
@@ -2092,6 +2214,7 @@ window.DPV2Store = (() => {
       }
       state.syncState = "idle";
       state.syncMsg = state.S ? "동기화됨" : "연결됨";
+      refreshedOk = true;
       if (fullReload || statusChanged || isInitial) {
         emit("state");
       } else if (prevSyncState !== "idle" || prevSyncMsg !== state.syncMsg) {
@@ -2105,8 +2228,9 @@ window.DPV2Store = (() => {
       if (slowTimer) clearTimeout(slowTimer);
       state.polling = false;
       activeRefreshPromise = null;
-      if (resolveRun) resolveRun();
+      if (resolveRun) resolveRun(refreshedOk);
     }
+    return refreshedOk;
   }
 
   // 계약 §7.3 C3 · #C08-6: 탭이 숨으면 폴링 완전 정지, 세대 번호로 중복 타이머 방지
@@ -2436,14 +2560,14 @@ window.DPV2Store = (() => {
   return {
     state, subscribe, emit, toast,
     loadPrefs, savePrefs, applyPrefsToDom, activeTheme, activeAccentHex, initForgeThemeListener,
-    getHomePrefs, saveHomePrefs, togglePinnedProject,
+    getHomePrefs, saveHomePrefs, saveHistoryPanelPrefs, togglePinnedProject,
     ensurePatchMeta, getCandidateFilters, syncCandidateFiltersFromAdjust, markFieldDirty, loadSpec, savePatchSpec, applyQuickSpecChange, awaitPendingQuickSpecs, applySpecResponse, invalidateAllSpecs, projectPrepareRaw, projectPrepare, buildPreparePayload,
     isPatchCheckedForRun, setPatchCheckedForRun, setAllCheckedForRun,
     getPatches, getPatch, primaryPatch, selectedPatches, clearSelection,
     currentCandidate, selectCandidate, selectTargetForCrop, moveCropZ, isPickBusy, pickCandidateGuarded,
     selectPatch, selectAllPatches, getCommonOrMixed,
     pushHistory, undoHistory, redoHistory, jumpHistory,
-    loadLayout, loadRefs, refreshAfterRefWrite, ensureFreshRefsAfterWrite, loadPipelineAndPlan, loadSeams, refreshAll,
+    loadLayout, loadRefs, trackRefWrite, refreshAfterRefWrite, ensureFreshRefsAfterWrite, loadPipelineAndPlan, loadSeams, refreshAll,
     applyCropGenResponse, loadCropGen, buildCropGenModelPatch, genEntryToPatch, buildGroupedChanges, updateCropGen, countCropGenOverrides, countCustomModelOverrides,
     startPolling, stopPolling,
     addCrop, updateCrop, deleteCrop,
