@@ -515,7 +515,7 @@ window.DPV2Inspector = (() => {
             Data.el("span", {}, Data.el("b", { text: curPurp.short }), " 추천: ", Data.el("b", { text: recModelObj.shortName })),
             Data.el("button", {
               type: "button", className: "mini-btn accent-outline",
-              disabled: specLocked || !!Store.state.cropGenBusy,
+              disabled: specLocked || !!Store.state.cropGenBusy || !!Store.state.pipelineSettingsBusy || !!Store.state.freeApplyBusy || (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()),
               text: isMulti ? `${selList.length}개 적용` : "이 영역에 적용",
               onClick: () => applyModelSelection(recModelObj.name),
             }),
@@ -600,7 +600,7 @@ window.DPV2Inspector = (() => {
             ? "AI 프롬프트 작성 중…"
             : (patch.meta.body_en ? "AI 프롬프트 다시 작성" : "AI 프롬프트 미리 작성"),
         );
-        aiDraftBtn.disabled = specLocked || !!Store.state.cropGenBusy;
+        aiDraftBtn.disabled = specLocked || !!Store.state.cropGenBusy || !!Store.state.pipelineSettingsBusy || !!Store.state.freeApplyBusy;
       }
 
       // D503 · #C18-5 차단 상태 · 미저장 충돌 원문 확인 · 미반영 새 크롭 배너
@@ -684,26 +684,31 @@ window.DPV2Inspector = (() => {
         fullEl.textContent = patch.meta.prompt_en || "";
       }
 
-      // 모델 & 생성 옵션 (#C19 V2-B 굳은 계약 §10.3)
+      // 모델 & 생성 옵션 (#C19 V2-B 굳은 계약 §10.3 · #C43-2 · #C43-9 · #C46-1)
       const chkInherit = $("chk-inherit-model");
       const canPerCropModel = Api.can("v2_crop_model");
-      const modelLocked = specLocked || !!Store.state.cropGenBusy;
+      const cropGenNeverLoaded = canPerCropModel && !Store.state.CG;
+      const cropGenUnavail = typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable();
+      const settingsBusy = !!(Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.freeApplyBusy);
+      const modelLocked = specLocked || settingsBusy || cropGenUnavail;
       const allInheritModel = selList.every((p) => !p.cropGenBroken && p.effectiveInherit && p.effectiveInherit.model === true);
       const noneInheritModel = selList.every((p) => p.cropGenBroken || !p.effectiveInherit || p.effectiveInherit.model === false);
-      const mixedInheritModel = canPerCropModel && !allInheritModel && !noneInheritModel;
+      const mixedInheritModel = canPerCropModel && !cropGenNeverLoaded && !allInheritModel && !noneInheritModel;
 
       if (chkInherit) {
         chkInherit.disabled = !canPerCropModel || modelLocked;
-        chkInherit.checked = canPerCropModel ? allInheritModel : true;
+        chkInherit.checked = canPerCropModel ? (!cropGenNeverLoaded && allInheritModel) : true;
         chkInherit.indeterminate = mixedInheritModel;
-        chkInherit.title = canPerCropModel
-          ? "체크 시 프로젝트 기본 모델을 따르고, 해제 시 이 영역만의 모델을 개별 고정합니다."
-          : "영역별 개별 모델 지정은 다음 단계(V2-B)에서 지원됩니다 — 현재는 프로젝트 기본 모델로 저장됩니다.";
+        chkInherit.title = cropGenUnavail
+          ? "패치별 모델 설정을 읽지 못해 편집이 잠겨 있습니다 — 아래 [다시 읽기]로 확인해 주세요."
+          : canPerCropModel
+            ? "체크 시 프로젝트 기본 모델을 따르고, 해제 시 이 영역만의 모델을 개별 고정합니다."
+            : "영역별 개별 모델 지정은 다음 단계(V2-B)에서 지원됩니다 — 현재는 프로젝트 기본 모델로 저장됩니다.";
       }
 
       const ovBadge = $("model-override-badge");
       if (ovBadge) {
-        if (!canPerCropModel || allInheritModel) {
+        if (!canPerCropModel || cropGenNeverLoaded || allInheritModel) {
           ovBadge.classList.add("hidden");
           ovBadge.classList.remove("mixed");
           ovBadge.textContent = "";
@@ -724,7 +729,10 @@ window.DPV2Inspector = (() => {
       const mName = $("mdt-name"), mSub = $("mdt-sub");
       const commonMi = commonModel.mixed ? null : (patch.modelInfo || (patch.effectiveModel ? Data.findModelExact(patch.effectiveModel) : null));
       if (mName && mSub) {
-        if (commonModel.mixed) {
+        if (canPerCropModel && !Store.state.CG) {
+          mName.textContent = "패치별 모델 설정 확인 필요";
+          mSub.textContent = Store.state.cropGenError || "서버에서 설정을 읽지 못해 편집이 잠겨 있습니다";
+        } else if (commonModel.mixed) {
           mName.textContent = `혼합됨 (${new Set(selList.map((p) => p.effectiveModel || "__broken__")).size}종 모델)`;
           mSub.textContent = "클릭해 선택된 모든 영역의 모델을 한 번에 통일할 수 있습니다";
         } else if (selList.every((p) => p.cropGenBroken)) {
@@ -823,9 +831,38 @@ window.DPV2Inspector = (() => {
         cgStatusEl.innerHTML = "";
         const banners = [];
         if (canPerCropModel) {
-          if (Store.state.cropGenError) {
+          if (cropGenUnavail) {
+            // #C43-2: 첫 GET /crop_gen 실패·파일 오류 상태에서는 모델 카드를 잠그고 [다시 읽기]로만 해제한다
             banners.push(Data.el("div", { className: "cg-banner err" },
-              Data.el("span", { text: `생성 설정 파일 오류: ${Store.state.cropGenError}` }),
+              Data.el("span", {
+                text: Store.state.cropGenError
+                  ? `생성 설정 파일 오류: ${Store.state.cropGenError}`
+                  : "패치별 모델 설정을 읽지 못해 편집이 잠겨 있습니다",
+              }),
+              Data.el("button", {
+                type: "button",
+                id: "btn-crop-gen-retry",
+                className: "mini-btn",
+                text: "다시 읽기",
+                disabled: settingsBusy,
+                onClick: async (e) => {
+                  const b = e && e.currentTarget;
+                  if (b) b.disabled = true;
+                  try {
+                    const res = await Store.loadCropGen();
+                    if (res) {
+                      await Store.loadPipelineAndPlan();
+                      Store.emit("selection");
+                      Store.toast("패치별 모델 설정을 다시 불러왔습니다.", "ok");
+                    } else {
+                      Store.emit("selection");
+                      Store.toast(Store.state.cropGenError || "패치별 모델 설정을 읽지 못했습니다.", "err");
+                    }
+                  } finally {
+                    if (b && b.isConnected) b.disabled = false;
+                  }
+                },
+              }),
             ));
           }
           const brokenList = selList.filter((p) => p.cropGenBroken);
@@ -857,6 +894,7 @@ window.DPV2Inspector = (() => {
             const nearest = ratioBadList.length === 1 && ratioBadList[0].cropGenRatio.nearest
               ? ` (권장 ${ratioBadList[0].cropGenRatio.nearest})` : "";
             const allLocked = ratioBadList.every((p) => p.locked);
+            const targetIds = ratioBadList.filter((p) => !p.locked).map((p) => p.id);
             banners.push(Data.el("div", { className: "cg-banner warn" },
               Data.el("span", { text: ratioBadList.length > 1 ? `비율 안 맞음 (${ratioBadList.length}개 영역)` : `비율 안 맞음${nearest} — 생성 전 넓히기가 필요합니다` }),
               Data.el("button", {
@@ -867,8 +905,9 @@ window.DPV2Inspector = (() => {
                 disabled: allLocked || modelLocked,
                 title: allLocked ? "영역 잠금을 해제한 뒤 넓힐 수 있습니다" : "해당 패치 효과 모델의 허용 비율에 맞게 영역 넓히기",
                 onClick: async () => {
-                  for (const rp of ratioBadList) {
-                    if (!rp.locked) await Canvas.fitPatchToModelRatio(rp);
+                  // #C43-6 보강: 각 영역마다 쓰기 큐 내부에서 최신 좌표를 다시 읽고 계산·저장한다
+                  for (const cid of targetIds) {
+                    await Canvas.fitPatchToModelRatio(cid);
                   }
                 },
               }),
@@ -1171,25 +1210,27 @@ window.DPV2Inspector = (() => {
     }
     if (rightEl) rightEl.textContent = models.length ? models.join(", ") : "-";
 
-    const flowBusy = !!(Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy);
+    const flowBusy = !!(Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.freeApplyBusy);
     const btnRun = $("btn-run-selected");
     if (btnRun) {
-      // #C15-2 · R2-4: AI 프롬프트 작성(assistBusy)·모델 저장(cropGenBusy) 중에도 생성 단추를 비활성화해 옛 조건 승인 상자를 막는다
+      // #C15-2 · R2-4 · #C43-9 · #C46-1: AI 프롬프트 작성·합성 적용·패치별/프로젝트 모델 설정 저장 중에도 생성 단추를 비활성화해 옛 조건 승인 상자를 막는다
       btnRun.disabled = targets.length === 0 || running || flowBusy;
       btnRun.textContent = running
         ? "서버에서 생성 중…"
-        : Store.state.cropGenBusy
+        : (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy)
           ? "모델 설정 저장 중…"
-          : Store.state.assistBusy
-            ? "AI 프롬프트 작성 중…"
-            : Store.state.runFlowBusy
-              ? "생성 준비 중…"
-              : targets.length ? `선택 영역 ${targets.length}개 생성 시작` : "생성할 영역을 체크하세요";
+          : Store.state.freeApplyBusy
+            ? "합성 반영 중…"
+            : Store.state.assistBusy
+              ? "AI 프롬프트 작성 중…"
+              : Store.state.runFlowBusy
+                ? "생성 준비 중…"
+                : targets.length ? `선택 영역 ${targets.length}개 생성 시작` : "생성할 영역을 체크하세요";
     }
     const btnApply = $("btn-apply-free");
     if (btnApply) {
-      // #C26: 생성·흐름·무료 반영 진행 중에는 [합성 적용] 단추도 흐리게(비활성) 표시한다
-      btnApply.disabled = running || flowBusy || freeApplyBusy;
+      // #C26 · #C46-1: 생성·흐름·무료 반영 진행 중에는 [합성 적용] 단추도 흐리게(비활성) 표시한다
+      btnApply.disabled = running || flowBusy;
       btnApply.title = running
         ? "생성이 실행 중입니다 — 끝난 뒤 다시 눌러 주세요."
         : "크롭·레퍼런스·설정을 서버에 무료 반영합니다";
@@ -1254,6 +1295,11 @@ window.DPV2Inspector = (() => {
   }
 
   function openModelPopover(anchorEl) {
+    if (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.runFlowBusy || Store.state.assistBusy || Store.state.freeApplyBusy) return;
+    if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) {
+      Store.toast("패치별 모델 설정을 먼저 [다시 읽기]로 확인해 주세요.", "err");
+      return;
+    }
     const pop = $("model-popover");
     if (!pop) return;
     if (!pop.classList.contains("hidden") && popoverAnchor === anchorEl) {
@@ -1388,7 +1434,7 @@ window.DPV2Inspector = (() => {
             className: "mp-item-sub",
             text: unavailable
               ? `사용 불가 · ${m.why || "서버 모델 목록에 없음"}`
-              : `${m.family} · 최대 참조 ${m.max_refs}장`,
+              : [m.family || m.kind, Number.isFinite(m.max_refs) ? `최대 참조 ${m.max_refs}장` : ""].filter(Boolean).join(" · "),
           }),
         ),
         Data.el("span", { className: "mp-badge", text: unavailable ? "사용 불가" : m.badge }),
@@ -1403,6 +1449,7 @@ window.DPV2Inspector = (() => {
     const box = $("mp-guide");
     if (!box || !m) return;
     const g = m.guide || {};
+    const familyLabel = m.family || m.kind || "";
     box.innerHTML = "";
     box.append(
       Data.el("h3", { text: m.label }),
@@ -1410,8 +1457,8 @@ window.DPV2Inspector = (() => {
         ? Data.el("div", { className: "mp-guide-warn", text: m.why || "이 모델은 현재 서버에서 사용할 수 없습니다." })
         : null,
       Data.el("div", { className: "mp-guide-tags" },
-        Data.el("span", { className: "mp-guide-tag", text: m.family || m.kind }),
-        Data.el("span", { className: "mp-guide-tag", text: m.badge }),
+        familyLabel ? Data.el("span", { className: "mp-guide-tag", text: familyLabel }) : null,
+        m.badge ? Data.el("span", { className: "mp-guide-tag", text: m.badge }) : null,
         Data.el("span", { className: "mp-guide-tag", text: `최대 참조 ${m.max_refs}장` }),
         Data.el("span", { className: "mp-guide-tag", text: `최대 ${m.max_n}장/회` }),
       ),
@@ -1434,16 +1481,51 @@ window.DPV2Inspector = (() => {
     );
   }
 
-  // #C19-3·4 (D564) · R2-1 · R2-2: 플래그 켜짐 시 「프로젝트 기본값」 vs 「이 패치만」을 명확히 분리하고,
-  // 빈 선택이 프로젝트 전체 변경으로 새지 않게 차단하며, 확인 상자 대기 중 다른 창의 변경을 판 번호로 감지한다.
+  // #C19-3·4 (D564) · R2-1 · R2-2 · #C43-1 · #C43-3:
+  // - 플래그 켜짐 시 「프로젝트 기본값」 vs 「이 패치만」을 분리하고, 기본값 따름 영역과 개별 고정 영역이 섞인 다중 선택에서도 확인을 받는다
+  // - 확인 상자 대기 중 다른 창의 변경(crop_gen seen · pipeline rev · 프로젝트 모델 · 대상 상속 상태)을 함께 재확인한다
+  function captureModelScopeSnapshot(selList) {
+    const inheritById = Object.create(null);
+    for (const p of selList) {
+      inheritById[p.id] = !!(p && !p.cropGenBroken && p.effectiveInherit && p.effectiveInherit.model === true);
+    }
+    return {
+      selIds: selList.map((p) => p.id),
+      cropGenSeen: Store.state.cropGenSeen,
+      pipeRev: Store.state.P ? Store.state.P.rev : 0,
+      projModel: Store.projectPrepare().model,
+      inheritById,
+    };
+  }
+
   async function resolveModelChangeScope(selList, changeLabel) {
-    if (!Api.can("v2_crop_model")) return "project";
+    if (!Api.can("v2_crop_model")) return { scope: "project", asked: false };
+    if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) {
+      Store.toast("패치별 모델 설정을 먼저 [다시 읽기]로 확인해 주세요.", "err");
+      return { scope: "cancel", asked: false };
+    }
     if (!selList.length) {
       Store.toast("선택된 수정 영역이 없습니다 — 영역을 먼저 선택해 주세요.");
-      return "cancel";
+      return { scope: "cancel", asked: false };
     }
-    const allInherit = selList.every((p) => !p.cropGenBroken && p.effectiveInherit && p.effectiveInherit.model === true);
-    if (!allInherit) return "patch";
+    const inheritList = selList.filter((p) => !p.cropGenBroken && p.effectiveInherit && p.effectiveInherit.model === true);
+    if (inheritList.length === 0) return { scope: "patch", asked: false };
+    // #C43-1: 기본값 따름 영역과 개별 고정 영역이 섞여 있으면 따름 영역이 확인 없이 고정되지 않도록 건수를 알려 확인받는다
+    if (inheritList.length < selList.length) {
+      const choice = await Data.askDialogChoice(
+        [
+          `선택한 ${selList.length}개 영역 가운데 ${inheritList.length}개는 현재 「프로젝트 기본 모델」을 따르고 있습니다.`,
+          `"${changeLabel}"을 적용하면 해당 ${inheritList.length}개 영역도 개별 모델로 고정되어 앞으로 프로젝트 기본 모델 변경을 따르지 않게 됩니다.`,
+          "선택한 모든 영역에 개별 적용할까요?",
+        ],
+        [
+          { id: "patch", label: `선택 ${selList.length}개 영역에 적용`, primary: true },
+          { id: "cancel", label: "취소" },
+        ],
+        { title: "혼합 영역 개별 고정 확인", cancelId: "cancel", focusId: "patch" }
+      );
+      return { scope: choice, asked: true };
+    }
     const customCount = typeof Store.countCustomModelOverrides === "function" ? Store.countCustomModelOverrides() : 0;
     const lines = [
       selList.length > 1
@@ -1453,7 +1535,7 @@ window.DPV2Inspector = (() => {
       ...(customCount > 0 ? [`따로 모델을 정한 영역 ${customCount}개는 기존 모델을 유지합니다.`] : []),
       "어떻게 적용할까요?",
     ];
-    return Data.askDialogChoice(
+    const choice = await Data.askDialogChoice(
       lines,
       [
         { id: "patch", label: selList.length > 1 ? `선택 ${selList.length}개 영역만 지정` : "이 영역만 따로 지정", primary: true },
@@ -1462,49 +1544,83 @@ window.DPV2Inspector = (() => {
       ],
       { title: "적용 범위 확인", cancelId: "cancel", focusId: "patch" }
     );
+    return { scope: choice, asked: true };
   }
 
   async function saveProjectPreparePatch(patchObj, successMsg, expectedPipeRev = null) {
-    const curPipeRev = Store.state.P?.rev ?? 0;
-    if (Number.isInteger(expectedPipeRev) && curPipeRev !== expectedPipeRev) {
-      Store.toast("다른 창에서 프로젝트 기본 설정이 변경되어 저장을 중단했습니다 — 최신 값을 확인한 뒤 다시 시도해 주세요.", "err");
-      Store.emit("selection");
-      return false;
-    }
-    try {
-      const nextVals = Store.buildPreparePayload(patchObj);
-      await Api.savePipelineSettings(Store.state.root, Number.isInteger(expectedPipeRev) ? expectedPipeRev : curPipeRev, "prepare", nextVals);
-      Store.invalidateAllSpecs();
-      if (successMsg) Store.toast(successMsg, "ok");
-      await Store.refreshAll(true);
-      return true;
-    } catch (err) {
-      Store.toast(`프로젝트 기본 설정 저장 실패: ${err.message}`, "err");
-      Store.emit("selection");
-      return false;
-    }
+    const r = await Store.saveProjectPrepare(patchObj, {
+      expectedPipeRev,
+      successToast: successMsg,
+    });
+    return !!(r && r.ok);
   }
 
-  function validateScopeAfterConfirm(scope, selIds, baseCropGenSeen, basePipeRev) {
-    if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) {
+  async function validateScopeAfterConfirm(scope, scopeSnap, asked = false) {
+    if (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.runFlowBusy || Store.state.assistBusy || Store.state.freeApplyBusy) {
       Store.toast("다른 작업이 진행 중이어서 모델 변경을 중단했습니다.");
       Store.emit("selection");
       return null;
     }
+    if (asked && Api.can("v2_crop_model")) {
+      // #C43-3: 확인 창을 열어 둔 사이 다른 창에서 바꾼 pipeline/crop_gen 변경을 폴링 전이라도 즉시 확인한다
+      if (Store.state.S && Store.state.S.rev !== undefined) {
+        const okFresh = await Store.refreshAll(false, { awaitInFlight: true });
+        if (!okFresh) {
+          Store.toast("최신 설정 상태를 확인하지 못해 저장을 중단했습니다 — 잠시 후 다시 시도해 주세요.", "err");
+          Store.emit("selection");
+          return null;
+        }
+      }
+      // #C43-3 · #C46-1 보강: 재조회 대기 중 AI 작성·생성·합성 적용·다른 저장이 시작되었는지 다시 확인한다
+      if (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.runFlowBusy || Store.state.assistBusy || Store.state.freeApplyBusy) {
+        Store.toast("다른 작업이 시작되어 모델 변경을 중단했습니다.");
+        Store.emit("selection");
+        return null;
+      }
+      const stateCgRev = Store.state.S && ("crop_gen_rev" in Store.state.S) ? Store.state.S.crop_gen_rev : undefined;
+      const statePipeRev = Store.state.S && ("pipeline_rev" in Store.state.S) ? Store.state.S.pipeline_rev : undefined;
+      const curPipeRev = Store.state.P ? Store.state.P.rev : 0;
+      const cgRevMismatch = stateCgRev !== undefined && (stateCgRev === null || stateCgRev !== Store.state.cropGenSeen);
+      const pipeRevMismatch = statePipeRev !== undefined && (statePipeRev === null || statePipeRev !== curPipeRev);
+      if ((typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) || cgRevMismatch || pipeRevMismatch) {
+        Store.toast(
+          pipeRevMismatch
+            ? "최신 프로젝트 설정을 확인하지 못해 저장을 중단했습니다 — 잠시 후 다시 시도해 주세요."
+            : "패치별 모델 설정을 읽을 수 없어 저장을 중단했습니다 — [다시 읽기]로 확인해 주세요.",
+          "err"
+        );
+        Store.emit("selection");
+        return null;
+      }
+      const cgChanged = Number.isInteger(scopeSnap.cropGenSeen) && Store.state.cropGenSeen !== scopeSnap.cropGenSeen;
+      const pipeChanged = Number.isInteger(scopeSnap.pipeRev)
+        && (curPipeRev !== scopeSnap.pipeRev || (statePipeRev !== undefined && statePipeRev !== scopeSnap.pipeRev));
+      const projModelChanged = !!(scopeSnap.projModel && Store.projectPrepare().model !== scopeSnap.projModel);
+      const liveForCheck = scopeSnap.selIds.map((id) => Store.getPatch(id)).filter(Boolean);
+      const inheritChanged = liveForCheck.length !== scopeSnap.selIds.length || liveForCheck.some((p) => {
+        const curInh = !!(p && !p.cropGenBroken && p.effectiveInherit && p.effectiveInherit.model === true);
+        return curInh !== !!scopeSnap.inheritById[p.id];
+      });
+      if (cgChanged || pipeChanged || projModelChanged || inheritChanged) {
+        Store.toast("확인 창을 열어 둔 사이 다른 창에서 모델 설정이 변경되어 저장을 중단했습니다 — 최신 값을 확인한 뒤 다시 시도해 주세요.", "err");
+        Store.emit("selection");
+        return null;
+      }
+    }
     if (scope === "project") {
-      if (Number.isInteger(basePipeRev) && (Store.state.P?.rev ?? 0) !== basePipeRev) {
+      if (Number.isInteger(scopeSnap.pipeRev) && (Store.state.P?.rev ?? 0) !== scopeSnap.pipeRev) {
         Store.toast("확인 창을 열어 둔 사이 다른 창에서 프로젝트 기본 설정이 바뀌어 저장을 중단했습니다 — 최신 값을 확인한 뒤 다시 시도해 주세요.", "err");
         Store.emit("selection");
         return null;
       }
       return [];
     }
-    if (Number.isInteger(baseCropGenSeen) && Store.state.cropGenSeen !== baseCropGenSeen) {
+    if (Number.isInteger(scopeSnap.cropGenSeen) && Store.state.cropGenSeen !== scopeSnap.cropGenSeen) {
       Store.toast("확인 창을 열어 둔 사이 다른 창에서 패치별 모델 설정이 바뀌어 저장을 중단했습니다 — 최신 값을 확인한 뒤 다시 시도해 주세요.", "err");
       Store.emit("selection");
       return null;
     }
-    const live = selIds.map((id) => Store.getPatch(id)).filter(Boolean);
+    const live = scopeSnap.selIds.map((id) => Store.getPatch(id)).filter(Boolean);
     if (!live.length) {
       Store.toast("대상 수정 영역이 사라져 모델 변경을 취소했습니다.");
       Store.emit("selection");
@@ -1514,11 +1630,14 @@ window.DPV2Inspector = (() => {
   }
 
   async function applyModelSelection(modelName) {
-    if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+    if (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.runFlowBusy || Store.state.assistBusy || Store.state.freeApplyBusy) return;
+    if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) {
+      Store.toast("패치별 모델 설정을 먼저 [다시 읽기]로 확인해 주세요.", "err");
+      Store.emit("selection");
+      return;
+    }
     const selList = Store.selectedPatches();
-    const selIds = selList.map((p) => p.id);
-    const baseCropGenSeen = Store.state.cropGenSeen;
-    const basePipeRev = Store.state.P ? Store.state.P.rev : 0;
+    const scopeSnap = captureModelScopeSnapshot(selList);
     const m = Data.findModelExact(modelName);
     if (m && m.available === false) {
       Store.toast(m.why || "이 모델은 현재 서버에서 사용할 수 없습니다.", "err");
@@ -1526,18 +1645,18 @@ window.DPV2Inspector = (() => {
       return;
     }
     const label = m ? m.shortName : modelName;
-    const scope = await resolveModelChangeScope(selList, `모델 ${label}`);
+    const { scope, asked } = await resolveModelChangeScope(selList, `모델 ${label}`);
     if (scope === "cancel") {
       Store.emit("selection");
       return;
     }
-    const liveSel = validateScopeAfterConfirm(scope, selIds, baseCropGenSeen, basePipeRev);
+    const liveSel = await validateScopeAfterConfirm(scope, scopeSnap, asked);
     if (liveSel === null) return;
 
     if (scope === "project") {
       const projPatch = { model: modelName };
       if (m && m.supports_quality) projPatch.quality = m.default_quality || Store.projectPrepare().quality;
-      const ok = await saveProjectPreparePatch(projPatch, `프로젝트 기본 모델을 ${label}(으)로 변경했습니다.`, basePipeRev);
+      const ok = await saveProjectPreparePatch(projPatch, `프로젝트 기본 모델을 ${label}(으)로 변경했습니다.`, scopeSnap.pipeRev);
       if (ok) pulseCard("#model-card");
       return;
     }
@@ -1549,7 +1668,7 @@ window.DPV2Inspector = (() => {
     const changes = Store.buildGroupedChanges(pairs);
     const r = await Store.updateCropGen(changes, {
       historyLabel: liveSel.length > 1 ? `모델 일괄 변경 (${liveSel.length}개 → ${label})` : `모델 변경 (${liveSel[0].name} → ${label})`,
-      expectedSeen: baseCropGenSeen,
+      expectedSeen: scopeSnap.cropGenSeen,
     });
     if (r && r.ok) {
       if (r.changed) {
@@ -1565,21 +1684,24 @@ window.DPV2Inspector = (() => {
   }
 
   async function applyQualitySelection(q) {
-    if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+    if (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.runFlowBusy || Store.state.assistBusy || Store.state.freeApplyBusy) return;
+    if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) {
+      Store.toast("패치별 모델 설정을 먼저 [다시 읽기]로 확인해 주세요.", "err");
+      Store.emit("selection");
+      return;
+    }
     const selList = Store.selectedPatches();
-    const selIds = selList.map((p) => p.id);
-    const baseCropGenSeen = Store.state.cropGenSeen;
-    const basePipeRev = Store.state.P ? Store.state.P.rev : 0;
-    const scope = await resolveModelChangeScope(selList, `품질 ${q}`);
+    const scopeSnap = captureModelScopeSnapshot(selList);
+    const { scope, asked } = await resolveModelChangeScope(selList, `품질 ${q}`);
     if (scope === "cancel") {
       Store.emit("selection");
       return;
     }
-    const liveSel = validateScopeAfterConfirm(scope, selIds, baseCropGenSeen, basePipeRev);
+    const liveSel = await validateScopeAfterConfirm(scope, scopeSnap, asked);
     if (liveSel === null) return;
 
     if (scope === "project") {
-      await saveProjectPreparePatch({ quality: q }, "", basePipeRev);
+      await saveProjectPreparePatch({ quality: q }, "", scopeSnap.pipeRev);
       return;
     }
 
@@ -1591,7 +1713,7 @@ window.DPV2Inspector = (() => {
     const changes = Store.buildGroupedChanges(pairs);
     const r = await Store.updateCropGen(changes, {
       historyLabel: liveSel.length > 1 ? `품질 일괄 변경 (${liveSel.length}개 → ${q})` : `품질 변경 (${liveSel[0].name} → ${q})`,
-      expectedSeen: baseCropGenSeen,
+      expectedSeen: scopeSnap.cropGenSeen,
     });
     if (r && r.ok && r.changed) {
       Store.toast(liveSel.length > 1 ? `${liveSel.length}개 영역의 품질을 ${q}(으)로 설정했습니다.` : `품질을 ${q}(으)로 설정했습니다.`, "ok");
@@ -1599,23 +1721,26 @@ window.DPV2Inspector = (() => {
   }
 
   async function applyExtraOpt(key, val) {
-    if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+    if (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.runFlowBusy || Store.state.assistBusy || Store.state.freeApplyBusy) return;
+    if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) {
+      Store.toast("패치별 모델 설정을 먼저 [다시 읽기]로 확인해 주세요.", "err");
+      Store.emit("selection");
+      return;
+    }
     const selList = Store.selectedPatches();
-    const selIds = selList.map((p) => p.id);
-    const baseCropGenSeen = Store.state.cropGenSeen;
-    const basePipeRev = Store.state.P ? Store.state.P.rev : 0;
+    const scopeSnap = captureModelScopeSnapshot(selList);
     const valLabel = key === "thinking_level" ? (Data.THINKING_LABELS[val] || val) : val;
     const keyLabel = key === "image_size" ? "해상도" : key === "thinking_level" ? "추론 깊이" : key;
-    const scope = await resolveModelChangeScope(selList, `${keyLabel} ${valLabel}`);
+    const { scope, asked } = await resolveModelChangeScope(selList, `${keyLabel} ${valLabel}`);
     if (scope === "cancel") {
       Store.emit("selection");
       return;
     }
-    const liveSel = validateScopeAfterConfirm(scope, selIds, baseCropGenSeen, basePipeRev);
+    const liveSel = await validateScopeAfterConfirm(scope, scopeSnap, asked);
     if (liveSel === null) return;
 
     if (scope === "project") {
-      await saveProjectPreparePatch({ [key]: val }, "", basePipeRev);
+      await saveProjectPreparePatch({ [key]: val }, "", scopeSnap.pipeRev);
       return;
     }
 
@@ -1627,7 +1752,7 @@ window.DPV2Inspector = (() => {
     const changes = Store.buildGroupedChanges(pairs);
     const r = await Store.updateCropGen(changes, {
       historyLabel: liveSel.length > 1 ? `${keyLabel} 일괄 변경 (${valLabel})` : `${keyLabel} 변경 (${liveSel[0].name} → ${valLabel})`,
-      expectedSeen: baseCropGenSeen,
+      expectedSeen: scopeSnap.cropGenSeen,
     });
     if (r && r.ok && r.changed) {
       Store.toast(`${keyLabel}를 ${valLabel}(으)로 설정했습니다.`, "ok");
@@ -1635,22 +1760,25 @@ window.DPV2Inspector = (() => {
   }
 
   async function applyComplexitySelection(compVal) {
-    if (!compVal || Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+    if (!compVal || Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.runFlowBusy || Store.state.assistBusy || Store.state.freeApplyBusy) return;
+    if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) {
+      Store.toast("패치별 모델 설정을 먼저 [다시 읽기]로 확인해 주세요.", "err");
+      Store.emit("selection");
+      return;
+    }
     const selList = Store.selectedPatches();
-    const selIds = selList.map((p) => p.id);
-    const baseCropGenSeen = Store.state.cropGenSeen;
-    const basePipeRev = Store.state.P ? Store.state.P.rev : 0;
+    const scopeSnap = captureModelScopeSnapshot(selList);
     const compLabel = (Data.COMPLEXITY_LABELS && Data.COMPLEXITY_LABELS[compVal]) || compVal;
-    const scope = await resolveModelChangeScope(selList, `지시 복잡도 ${compLabel}`);
+    const { scope, asked } = await resolveModelChangeScope(selList, `지시 복잡도 ${compLabel}`);
     if (scope === "cancel") {
       Store.emit("selection");
       return;
     }
-    const liveSel = validateScopeAfterConfirm(scope, selIds, baseCropGenSeen, basePipeRev);
+    const liveSel = await validateScopeAfterConfirm(scope, scopeSnap, asked);
     if (liveSel === null) return;
 
     if (scope === "project") {
-      await saveProjectPreparePatch({ complexity: compVal }, "", basePipeRev);
+      await saveProjectPreparePatch({ complexity: compVal }, "", scopeSnap.pipeRev);
       return;
     }
 
@@ -1661,7 +1789,7 @@ window.DPV2Inspector = (() => {
     const changes = Store.buildGroupedChanges(pairs);
     const r = await Store.updateCropGen(changes, {
       historyLabel: liveSel.length > 1 ? `복잡도 일괄 변경 (${compLabel})` : `복잡도 변경 (${liveSel[0].name} → ${compLabel})`,
-      expectedSeen: baseCropGenSeen,
+      expectedSeen: scopeSnap.cropGenSeen,
     });
     if (r && r.ok && r.changed) {
       Store.toast(`지시 복잡도를 ${compLabel}(으)로 설정했습니다.`, "ok");
@@ -1681,9 +1809,14 @@ window.DPV2Inspector = (() => {
 
   // ── 6. AI 스마트 프롬프트 작성 (계약 §3.4 · 최대 8패치 직렬 · 확인 창 없이 즉시 호출 D521 · 429/5xx/timeout/401/전송오류 즉시 중단 D520) ──
   async function runAssistForPatches(patches, force = true, opts = {}) {
-    // #C08-1① · R2-4: 이미 작성이 진행 중이거나 패치별 모델 저장 중이면 재진입/옛 모델 작성을 막는다
-    if (Store.state.assistBusy || Store.state.cropGenBusy) {
-      Store.toast(Store.state.cropGenBusy ? "패치별 모델 설정 저장이 끝난 뒤 AI 프롬프트를 작성해 주세요." : "AI 프롬프트 작성이 이미 진행 중입니다.");
+    // #C08-1① · R2-4 · #C43-9 · #C46-1: 이미 작성이 진행 중이거나 합성 적용·모델/기본 설정 저장 중이면 재진입/옛 모델 작성을 막는다
+    if (Store.state.assistBusy || Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.freeApplyBusy) {
+      Store.toast(
+        (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy)
+          ? "모델 설정 저장이 끝난 뒤 AI 프롬프트를 작성해 주세요."
+          : Store.state.freeApplyBusy ? "합성 적용이 끝난 뒤 AI 프롬프트를 작성해 주세요."
+          : "AI 프롬프트 작성이 이미 진행 중입니다."
+      );
       return { ok: false, count: 0, attempted: 0, calledIds: [], aborted: true, didApply: false };
     }
     const list = (patches || []).slice(0, 8);
@@ -1866,6 +1999,10 @@ window.DPV2Inspector = (() => {
         }
       }
       if (written > 0) {
+        if (typeof Store.invalidateCropGen === "function") Store.invalidateCropGen();
+        if (Api.can("v2_crop_model") && !Store.state.cropGenNeedsManualRetry) {
+          await Store.loadCropGen();
+        }
         pulseCard("#prompt-card");
         Store.toast(`${written}개 영역의 AI 스마트 프롬프트를 작성했습니다.`, "ok");
       }
@@ -1881,10 +2018,8 @@ window.DPV2Inspector = (() => {
   }
 
   // ── 6.5 공용 가드 무료 반영 (#C10 · #C19-9 · #C23-7: 공용 모듈 DPSubmit.applyChecked 에 확인·expect·대기 정리 위임) ──
-  let freeApplyBusy = false;
-
   async function runGuardedFreeApply(root, { statusToast = "무료 반영 작업을 실행 중입니다…" } = {}) {
-    if (freeApplyBusy) {
+    if (Store.state.freeApplyBusy) {
       Store.toast("무료 반영이 이미 진행 중입니다.");
       return { ok: false, reason: "busy" };
     }
@@ -1892,7 +2027,7 @@ window.DPV2Inspector = (() => {
       Store.toast("생성이 실행 중입니다 — 끝난 뒤 다시 시도해 주세요.", "err");
       return { ok: false, reason: "running" };
     }
-    freeApplyBusy = true;
+    Store.state.freeApplyBusy = true;
     Store.emit("selection");
     try {
       if (statusToast) Store.toast(statusToast);
@@ -1902,6 +2037,7 @@ window.DPV2Inspector = (() => {
         return { ok: false, reason: "pendingIntegration" };
       }
       if (res && res.ok) {
+        if (typeof Store.invalidateCropGen === "function") Store.invalidateCropGen();
         await Store.refreshAll(true);
         return { ok: true, res };
       }
@@ -1919,17 +2055,18 @@ window.DPV2Inspector = (() => {
       Store.toast(`합성 적용 실패: ${err.message}`, "err");
       return { ok: false, reason: "error", error: err.message };
     } finally {
-      freeApplyBusy = false;
+      Store.state.freeApplyBusy = false;
       Store.emit("selection");
     }
   }
 
   // ── 7. 선택 영역 생성 실행 (#C06·#C09·#C10·#C11-1·#C13-3·#C15-2·#C21-1·#C23-1·#C23-2·#C26-1~3 선행 반영·미저장 스펙 저장 → D519 자동 assist → DPSubmit.submitPaid §3.6) ──
   async function runSelectedGeneration(useSelectedOnly = false) {
-    if (Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy) {
+    if (Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.freeApplyBusy) {
       Store.toast(
-        Store.state.cropGenBusy
-          ? "패치별 모델 설정 저장이 끝난 뒤 생성해 주세요."
+        (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy)
+          ? "모델 설정 저장이 끝난 뒤 생성해 주세요."
+          : Store.state.freeApplyBusy ? "합성 적용이 끝난 뒤 생성해 주세요."
           : Store.state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 생성해 주세요." : "앞선 제출을 처리하는 중입니다"
       );
       return;
@@ -2536,7 +2673,7 @@ window.DPV2Inspector = (() => {
 
     const btnAiDraft = $("btn-ai-draft");
     if (btnAiDraft) btnAiDraft.addEventListener("click", () => {
-      if (Store.state.runFlowBusy || Store.state.assistBusy) return;
+      if (Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy || Store.state.pipelineSettingsBusy) return;
       runAssistForSelection();
     });
 
@@ -2553,7 +2690,8 @@ window.DPV2Inspector = (() => {
         Store.toast("영역별 개별 모델 지정은 다음 단계(V2-B)에서 지원됩니다 — 현재는 프로젝트 기본 모델로 적용됩니다.");
         return;
       }
-      if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) {
+      if (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.runFlowBusy || Store.state.assistBusy || Store.state.freeApplyBusy
+          || (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable())) {
         Store.emit("selection");
         return;
       }
@@ -2604,7 +2742,11 @@ window.DPV2Inspector = (() => {
 
     const btnModel = $("btn-model-dropdown");
     if (btnModel) btnModel.addEventListener("click", (e) => {
-      if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+      if (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.runFlowBusy || Store.state.assistBusy || Store.state.freeApplyBusy) return;
+      if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) {
+        Store.toast("패치별 모델 설정을 먼저 [다시 읽기]로 확인해 주세요.", "err");
+        return;
+      }
       openModelPopover(e.currentTarget);
     });
     const mpSearch = $("mp-search");
@@ -2612,7 +2754,11 @@ window.DPV2Inspector = (() => {
 
     const btnProjDef = $("btn-project-defaults");
     if (btnProjDef) btnProjDef.addEventListener("click", () => {
-      if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+      if (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.runFlowBusy || Store.state.assistBusy || Store.state.freeApplyBusy) return;
+      if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) {
+        Store.toast("패치별 모델 설정을 먼저 [다시 읽기]로 확인해 주세요.", "err");
+        return;
+      }
       if (window.DPV2Overlays && typeof window.DPV2Overlays.openProjectDefaultsModal === "function") {
         window.DPV2Overlays.openProjectDefaultsModal();
       }
@@ -2620,7 +2766,8 @@ window.DPV2Inspector = (() => {
 
     const btnCountInherit = $("btn-count-inherit");
     if (btnCountInherit) btnCountInherit.addEventListener("click", async () => {
-      if (!Api.can("v2_crop_model") || Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+      if (!Api.can("v2_crop_model") || Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.runFlowBusy || Store.state.assistBusy || Store.state.freeApplyBusy) return;
+      if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) return;
       const customIds = Store.selectedPatches()
         .filter((p) => p.effectiveInherit && p.effectiveInherit.n === false)
         .map((p) => p.id);
@@ -2636,19 +2783,17 @@ window.DPV2Inspector = (() => {
 
     document.querySelectorAll("#seg-count button").forEach((b) => {
       b.addEventListener("click", async () => {
-        if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+        if (Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
         const val = Number(b.dataset.val);
         const selList = Store.selectedPatches();
         if (!Api.can("v2_crop_model")) {
-          // 플래그 꺼짐: 기존처럼 프로젝트 기본 장수(POST /pipeline/settings) 저장
-          try {
-            const nextVals = Store.buildPreparePayload({ n: val });
-            await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? 0, "prepare", nextVals);
-            await Store.refreshAll(true);
-          } catch (err) {
-            Store.toast(`후보 장수 저장 실패: ${err.message}`, "err");
-            Store.emit("selection");
-          }
+          // 플래그 꺼짐: 기존처럼 프로젝트 기본 장수(POST /pipeline/settings) 저장 (#C43-9: 저장+재조회 동안 생성·AI 작성 잠금)
+          await Store.saveProjectPrepare({ n: val }, { errorPrefix: "후보 장수 저장 실패" });
+          return;
+        }
+        if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) {
+          Store.toast("패치별 모델 설정을 먼저 [다시 읽기]로 확인해 주세요.", "err");
+          Store.emit("selection");
           return;
         }
         // #C19-4 · R2-3: 플래그 켜짐 시 선택 패치의 개별 count(POST /crop_gen)로 저장
@@ -2882,6 +3027,7 @@ window.DPV2Inspector = (() => {
     if (btnRun) btnRun.addEventListener("click", () => runSelectedGeneration(false));
     const btnApplyFree = $("btn-apply-free");
     if (btnApplyFree) btnApplyFree.addEventListener("click", async () => {
+      if (Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.freeApplyBusy) return;
       const ap = await runGuardedFreeApply(Store.state.root, {
         statusToast: "무료 반영 작업을 실행 중입니다…",
       });

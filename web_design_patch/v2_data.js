@@ -741,9 +741,13 @@ window.DPV2Data = (() => {
         ? m.ratio_sizes
         : (ratios.length ? RATIO_SIZES : {});
       const ratioTolerance = typeof m.ratio_tolerance === "number" ? m.ratio_tolerance : (ratios.length ? 0.01 : null);
+      const family = (typeof m.family === "string" && m.family.trim())
+        ? m.family.trim()
+        : (guide.family || (m.kind ? String(m.kind).toUpperCase() : ""));
       return Object.assign({}, guide, m, {
         label: m.label || m.name,
         shortName: guide.shortName || m.label || m.name,
+        family,
         available: typeof m.available === "boolean" ? m.available : true,
         why: m.why || null,
         qualities,

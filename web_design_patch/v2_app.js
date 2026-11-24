@@ -89,8 +89,8 @@
       if (syncTxt.textContent !== nextMsg) syncTxt.textContent = nextMsg;
     }
 
-    // #C18-3 · R2-4: 생성 흐름·AI 프롬프트 작성·모델 설정 저장 진행 중에는 상단 실행 취소/다시 실행 버튼도 잠근다
-    const histLocked = !!(Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy);
+    // #C18-3 · R2-4 · #C43-9 · #C46-1: 생성 흐름·무료 반영·AI 프롬프트 작성·모델/기본 설정 저장 진행 중에는 상단 실행 취소/다시 실행 버튼도 잠근다
+    const histLocked = !!(Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.freeApplyBusy);
     const btnUndo = $("btn-undo"), btnRedo = $("btn-redo");
     if (btnUndo) btnUndo.disabled = histLocked || Store.state.histIndex < 0;
     if (btnRedo) btnRedo.disabled = histLocked || Store.state.histIndex >= Store.state.history.length - 1;
@@ -507,8 +507,12 @@
         // 계획 잠금 경합(busy)으로 끝나며 캔버스가 여전히 없으면 딱 1회 더 재시도한다
         if (Store.state.S && !Store.state.S.canvas && !Store.state.S.running && Api.submitAdapter()) {
           Store.toast("새 프로젝트 원화를 불러오는 중입니다 (무료 초기 반영)…");
+          // #C46-1 보강: 초기 자동 반영도 수동 [합성 적용]과 같은 공유 잠금(freeApplyBusy)을 써서 중복 반영·모달 겹침을 막는다
+          Store.state.freeApplyBusy = true;
+          Store.emit("selection");
           try {
             let applied = await Api.applyChecked(root);
+            if (applied && applied.ok && typeof Store.invalidateCropGen === "function") Store.invalidateCropGen();
             await Store.refreshAll(true);
             if (applied && !applied.ok && applied.reason === "busy"
                 && Store.state.S && !Store.state.S.canvas && !Store.state.S.running) {
@@ -518,6 +522,7 @@
               const stateRefreshed = await Store.refreshAll(true);
               if (stateRefreshed && Store.state.S && !Store.state.S.canvas && !Store.state.S.running) {
                 applied = await Api.applyChecked(root);
+                if (applied && applied.ok && typeof Store.invalidateCropGen === "function") Store.invalidateCropGen();
                 await Store.refreshAll(true);
               }
             }
@@ -533,6 +538,9 @@
             }
           } catch (err) {
             Store.toast(`초기 반영 실패: ${(err && err.message) || "알 수 없는 오류"}`, "err");
+          } finally {
+            Store.state.freeApplyBusy = false;
+            Store.emit("selection");
           }
         }
         Store.startPolling();
