@@ -263,7 +263,7 @@ window.DPV2Data = (() => {
       speed: "보통",
       guide: {
         when: "의상 장식 보정, 부분 형태 수정, 다중 레퍼런스 참조 패칭 등 대부분의 정밀 수정 작업에 가장 먼저 선택하세요.",
-        strengths: "복잡한 한국어 의도 파악, 최대 16장 레퍼런스 일관성, 마스크 바깥 영역 보존력이 뛰어납니다.",
+        strengths: "복잡한 한국어 의도 파악, 최대 15장 레퍼런스 일관성, 마스크 바깥 영역 보존력이 뛰어납니다.",
         caution: "해상도와 품질을 최대로 올리면 생성 시간이 다소 길어질 수 있습니다.",
         tip: "시트에서 오린 레퍼런스를 @참조1 로 연결하고 '수정 · 보정' 목적과 함께 쓰면 성공률이 가장 높습니다.",
       },
@@ -339,7 +339,7 @@ window.DPV2Data = (() => {
       guide: {
         when: "불필요한 요소 제거·정리, 문양·엠블럼·로고·텍스트가 포함된 의상·소품 수정에 가장 뛰어납니다.",
         strengths: "기하학적 패턴과 문양 윤곽이 뭉개지지 않고 깔끔하게 떨어집니다.",
-        caution: "최대 참조 장수가 5장으로 제한되므로 핵심 레퍼런스 위주로 연결하세요.",
+        caution: "최대 참조 장수가 4장으로 제한되므로 핵심 레퍼런스 위주로 연결하세요.",
         tip: "깔끔한 제거·복원이나 갑옷 문양·텍스트 수정 시 선택하면 실패율이 크게 줄어듭니다.",
       },
     },
@@ -391,10 +391,10 @@ window.DPV2Data = (() => {
   };
 
   const DEFAULT_MODELS = [
-    { name: "gpt-image-2.6-sunburst", label: "GPT Image 2.6 Sunburst", kind: "gpt", max_inputs: 16, max_n: 10, qualities: ["max", "xhigh", "high", "medium", "low"], default_quality: "max", opts: {}, opt_defaults: {}, ratios: [] },
-    { name: "gpt-image-2.6-flare", label: "GPT Image 2.6 Flare", kind: "gpt", max_inputs: 16, max_n: 10, qualities: ["max", "xhigh", "high", "medium", "low"], default_quality: "high", opts: {}, opt_defaults: {}, ratios: [] },
-    { name: "gpt-image-2.5-sunburst", label: "GPT Image 2.5 Sunburst", kind: "gpt", max_inputs: 16, max_n: 10, qualities: ["max", "xhigh", "high", "medium", "low"], default_quality: "max", opts: {}, opt_defaults: {}, ratios: [] },
-    { name: "gpt-image-2.5-flare", label: "GPT Image 2.5 Flare", kind: "gpt", max_inputs: 16, max_n: 10, qualities: ["max", "xhigh", "high", "medium", "low"], default_quality: "high", opts: {}, opt_defaults: {}, ratios: [] },
+    { name: "gpt-image-2.6-sunburst", label: "GPT Image 2.6 Sunburst", kind: "gpt", available: true, why: null, max_inputs: 16, max_refs: 15, max_n: 10, supports_quality: true, qualities: ["max", "xhigh", "high", "medium", "low"], default_quality: "max", complexities: ["low", "medium", "high"], opts: {}, opt_defaults: {}, ratios: [], ratio_sizes: {}, ratio_tolerance: null },
+    { name: "gpt-image-2.6-flare", label: "GPT Image 2.6 Flare", kind: "gpt", available: true, why: null, max_inputs: 16, max_refs: 15, max_n: 10, supports_quality: true, qualities: ["max", "xhigh", "high", "medium", "low"], default_quality: "max", complexities: ["low", "medium", "high"], opts: {}, opt_defaults: {}, ratios: [], ratio_sizes: {}, ratio_tolerance: null },
+    { name: "gpt-image-2.5-sunburst", label: "GPT Image 2.5 Sunburst", kind: "gpt", available: true, why: null, max_inputs: 16, max_refs: 15, max_n: 10, supports_quality: true, qualities: ["max", "xhigh", "high", "medium", "low"], default_quality: "max", complexities: [], opts: {}, opt_defaults: {}, ratios: [], ratio_sizes: {}, ratio_tolerance: null },
+    { name: "gpt-image-2.5-flare", label: "GPT Image 2.5 Flare", kind: "gpt", available: true, why: null, max_inputs: 16, max_refs: 15, max_n: 10, supports_quality: true, qualities: ["max", "xhigh", "high", "medium", "low"], default_quality: "max", complexities: [], opts: {}, opt_defaults: {}, ratios: [], ratio_sizes: {}, ratio_tolerance: null },
   ];
 
   // Gemini 비율 기준 1K 픽셀 표 (DPLayoutGeom.ratioFitRect 용)
@@ -438,23 +438,21 @@ window.DPV2Data = (() => {
     return node;
   }
 
-  // DPDialog 공용 호출 래퍼 (sandbox iframe 에서 안전 — 네이티브 다이얼로그 미사용)
+  // DPDialog 공용 호출 래퍼 (sandbox iframe 에서 안전 — 네이티브 다이얼로그 미사용 · #C19-12: DPDialog.confirm 평범하게 호출)
   function askDialogConfirm(message, options = {}) {
     const dlg = window.DPDialog;
-    const fn = dlg && dlg["con" + "firm"];
-    if (typeof fn !== "function") return Promise.resolve(false);
+    if (!dlg || typeof dlg.confirm !== "function") return Promise.resolve(false);
     const normalized = {
       ok: options.ok || options.okText || "확인",
       cancel: options.cancel || options.cancelText || "취소",
       danger: !!options.danger,
     };
-    return fn.call(dlg, message, normalized);
+    return dlg.confirm(message, normalized);
   }
 
   function showDialogNotice(message) {
     const dlg = window.DPDialog;
-    const fn = dlg && dlg["al" + "ert"];
-    return typeof fn === "function" ? fn.call(dlg, message) : Promise.resolve();
+    return dlg && typeof dlg.alert === "function" ? dlg.alert(message) : Promise.resolve();
   }
 
   // #C15-5: 닫기(Esc·배경 클릭)와 「버리기」를 명확히 구분하는 다중 선택 대화 상자 (sandbox iframe 안전 · textContent 전용)
@@ -709,6 +707,8 @@ window.DPV2Data = (() => {
     return nested;
   }
 
+  const COMPLEXITY_LABELS = { low: "낮음", medium: "보통", high: "높음 (기본)" };
+
   function modelCatalog() {
     const live = window.DPEnv && window.DPEnv.caps && Array.isArray(window.DPEnv.caps.models)
       ? window.DPEnv.caps.models : null;
@@ -729,17 +729,42 @@ window.DPV2Data = (() => {
           tip: "후보를 비교한 뒤 후보정 탭에서 경계를 미세 조정할 수 있습니다.",
         },
       };
+      const qualities = Array.isArray(m.qualities) ? m.qualities : [];
+      const maxInputs = Number(m.max_inputs) || 10;
+      const maxRefs = Number.isInteger(m.max_refs) ? m.max_refs : Math.max(0, maxInputs - 1);
+      const supportsQuality = typeof m.supports_quality === "boolean" ? m.supports_quality : qualities.length > 0;
+      const complexities = Array.isArray(m.complexities)
+        ? m.complexities
+        : (/^gpt-image-2\.6-/.test(String(m.name || "")) ? ["low", "medium", "high"] : []);
+      const ratios = Array.isArray(m.ratios) ? m.ratios : [];
+      const ratioSizes = (m.ratio_sizes && typeof m.ratio_sizes === "object" && Object.keys(m.ratio_sizes).length)
+        ? m.ratio_sizes
+        : (ratios.length ? RATIO_SIZES : {});
+      const ratioTolerance = typeof m.ratio_tolerance === "number" ? m.ratio_tolerance : (ratios.length ? 0.01 : null);
       return Object.assign({}, guide, m, {
         label: m.label || m.name,
         shortName: guide.shortName || m.label || m.name,
-        qualities: Array.isArray(m.qualities) ? m.qualities : [],
-        ratios: Array.isArray(m.ratios) ? m.ratios : [],
-        opts: m.opts || {},
-        opt_defaults: m.opt_defaults || {},
+        available: typeof m.available === "boolean" ? m.available : true,
+        why: m.why || null,
+        qualities,
+        supports_quality: supportsQuality,
+        complexities,
+        ratios,
+        ratio_sizes: ratioSizes,
+        ratio_tolerance: ratioTolerance,
+        opts: (m.opts && typeof m.opts === "object") ? m.opts : {},
+        opt_defaults: (m.opt_defaults && typeof m.opt_defaults === "object") ? m.opt_defaults : {},
         max_n: Number(m.max_n) || 4,
-        max_inputs: Number(m.max_inputs) || 10,
+        max_inputs: maxInputs,
+        max_refs: maxRefs,
       });
     });
+  }
+
+  function findModelExact(name) {
+    if (!name || typeof name !== "string") return null;
+    const list = modelCatalog();
+    return list.find((m) => m.name === name) || null;
   }
 
   function findModel(name) {
@@ -747,9 +772,47 @@ window.DPV2Data = (() => {
     return list.find((m) => m.name === name) || list[0] || null;
   }
 
+  // #C19-10: GET /state 후보(candidates[].model·quality·opts)의 모델 꼬리표 문자열 생성
+  function formatCandidateModelTag(cand) {
+    if (!cand || typeof cand !== "object" || !cand.model) return "";
+    const mi = findModelExact(cand.model);
+    const parts = [mi ? (mi.shortName || mi.label) : cand.model];
+    const opts = (cand.opts && typeof cand.opts === "object") ? cand.opts : null;
+    if (mi && mi.supports_quality && cand.quality) {
+      parts.push(cand.quality);
+    } else if (!mi && cand.quality && cand.quality !== "standard") {
+      parts.push(cand.quality);
+    }
+    if (opts && opts.image_size) parts.push(opts.image_size);
+    if (opts && opts.thinking_level) parts.push(THINKING_LABELS[opts.thinking_level] || opts.thinking_level);
+    return parts.join(" · ");
+  }
+
+  // 효과 값(effective) 또는 프로젝트 기본 설정 한 줄 요약 (확인 상자·요약 줄용)
+  function formatModelSummary(eff) {
+    if (!eff || !eff.model) return "";
+    const mi = findModelExact(eff.model);
+    const parts = [mi ? mi.label : eff.model];
+    if (mi ? mi.supports_quality : (eff.quality && eff.quality !== "standard")) {
+      if (eff.quality) parts.push(`품질 ${eff.quality}`);
+    }
+    if (mi && mi.complexities && mi.complexities.length && eff.complexity) {
+      parts.push(`복잡도 ${eff.complexity}`);
+    }
+    const opts = (eff.opts && typeof eff.opts === "object") ? eff.opts : null;
+    if (opts && opts.image_size && (!mi || (mi.opts && mi.opts.image_size))) {
+      parts.push(`해상도 ${opts.image_size}`);
+    }
+    if (opts && opts.thinking_level && (!mi || (mi.opts && mi.opts.thinking_level))) {
+      parts.push(`추론 ${THINKING_LABELS[opts.thinking_level] || opts.thinking_level}`);
+    }
+    if (Number.isInteger(eff.n) && eff.n > 0) parts.push(`${eff.n}장`);
+    return parts.join(" · ");
+  }
+
   return {
-    THEMES, POINT_COLORS, LAYOUT_PRESETS, PURPOSES, SNAP_STEPS, MODEL_GUIDE, RATIO_SIZES, THINKING_LABELS, TARGET_ACCEPT,
+    THEMES, POINT_COLORS, LAYOUT_PRESETS, PURPOSES, SNAP_STEPS, MODEL_GUIDE, RATIO_SIZES, THINKING_LABELS, COMPLEXITY_LABELS, TARGET_ACCEPT,
     el, svgEl, icon, appendSvgIcon, askDialogConfirm, askDialogChoice, showDialogNotice, hexMix, hexToRgba, computeAutoCropFrame,
-    validateTargetFile, validateProjectName, suggestProjectName, projectDisplayName, formatRelativeTime, formatElapsed, trafficLight, buildSwitchUrl, purposeInfo, purposeColor, modelCatalog, findModel,
+    validateTargetFile, validateProjectName, suggestProjectName, projectDisplayName, formatRelativeTime, formatElapsed, trafficLight, buildSwitchUrl, purposeInfo, purposeColor, modelCatalog, findModelExact, findModel, formatCandidateModelTag, formatModelSummary,
   };
 })();

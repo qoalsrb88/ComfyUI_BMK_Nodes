@@ -34,6 +34,11 @@ window.DPV2Store = (() => {
     R: null,         // GET /refs
     sheets: [],      // GET /refs/sheets
     P: null,         // GET /pipeline
+    CG: null,        // GET /crop_gen (V2-B #C19)
+    cropGenById: new Map(),
+    cropGenSeen: null,
+    cropGenError: null,
+    cropGenBusy: false,
     plan: null,      // GET /pipeline/plan
     progress: null,  // GET /pipeline/progress
     seams: null,     // GET /seams
@@ -997,6 +1002,7 @@ window.DPV2Store = (() => {
     }
 
     const prep = projectPrepare();
+    const canCropModel = Api.can("v2_crop_model");
 
     return sourceList.map((raw, idx) => {
       const sc = stateMap.get(raw.id) || raw;
@@ -1005,8 +1011,19 @@ window.DPV2Store = (() => {
       const chosenKey = state.selectedTargetByCrop.get(raw.id);
       const activeTarget = (chosenKey && cropTargets.find((t) => t.key === chosenKey)) || cropTargets[0] || null;
       const meta = ensurePatchMeta(raw.id, raw);
-      const effectiveModel = meta.modelOverride || prep.model;
-      const modelInfo = Data.findModel(effectiveModel);
+      const cg = canCropModel ? (state.cropGenById.get(raw.id) || null) : null;
+      const eff = (cg && cg.effective && typeof cg.effective === "object") ? cg.effective : null;
+      const cropGenBroken = !!(cg && cg.effective === null && cg.error);
+      const effectiveModel = eff ? eff.model : (cropGenBroken ? "" : prep.model);
+      const modelInfo = effectiveModel ? Data.findModelExact(effectiveModel) : null;
+      const effectiveQuality = eff ? eff.quality : (cropGenBroken ? "" : prep.quality);
+      const effectiveCount = eff ? eff.n : (cropGenBroken ? 0 : prep.n);
+      const effectiveOpts = eff ? (eff.opts || {}) : (cropGenBroken ? {} : (prep.opts || {}));
+      const effectiveComplexity = eff ? (eff.complexity ?? null) : (cropGenBroken ? null : (prep.complexity ?? null));
+      const effectiveInherit = (eff && eff.inherit && typeof eff.inherit === "object")
+        ? { model: !!eff.inherit.model, n: !!eff.inherit.n }
+        : { model: !cropGenBroken, n: true };
+      const effectiveClamped = (eff && eff.clamped !== undefined && eff.clamped !== null) ? eff.clamped : null;
       const rect = Array.isArray(raw.rect) ? raw.rect : (Array.isArray(sc.rect) ? sc.rect : [0, 0, 512, 512]);
       const pickedKeys = activeTarget && Array.isArray(activeTarget.pick_keys) ? activeTarget.pick_keys : [];
       const pickedCand = pickedKeys.length
@@ -1033,8 +1050,20 @@ window.DPV2Store = (() => {
         selectedForRun: isPatchCheckedForRun(raw.id),
         effectiveModel,
         modelInfo,
-        effectiveQuality: meta.quality || prep.quality,
-        effectiveCount: meta.count || prep.n,
+        effectiveQuality,
+        effectiveCount,
+        effectiveOpts,
+        effectiveComplexity,
+        effectiveInherit,
+        effectiveClamped,
+        cropGen: cg,
+        cropGenApplied: cg ? !!cg.applied : true,
+        cropGenRatio: cg ? (cg.ratio || null) : null,
+        cropGenAvailable: cg ? cg.available !== false : (modelInfo ? modelInfo.available !== false : true),
+        cropGenWhy: cg ? (cg.why || null) : (modelInfo ? modelInfo.why : null),
+        cropGenPromptStale: cg ? !!cg.prompt_stale : false,
+        cropGenError: cg ? (cg.error || null) : null,
+        cropGenBroken,
       };
     });
   }
@@ -1306,9 +1335,13 @@ window.DPV2Store = (() => {
   }
 
   async function undoHistory() {
-    // #C18-3: 생성 흐름·AI 프롬프트 작성 진행 중에는 실행 취소를 잠근다
-    if (state.runFlowBusy || state.assistBusy) {
-      toast(state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 실행 취소해 주세요." : "생성 흐름이 진행 중일 때는 실행 취소할 수 없습니다.");
+    // #C18-3 · R2-4: 생성 흐름·AI 프롬프트 작성·모델 설정 저장 진행 중에는 실행 취소를 잠근다
+    if (state.runFlowBusy || state.assistBusy || state.cropGenBusy) {
+      toast(
+        state.cropGenBusy
+          ? "모델 설정 저장이 끝난 뒤 실행 취소해 주세요."
+          : state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 실행 취소해 주세요." : "생성 흐름이 진행 중일 때는 실행 취소할 수 없습니다."
+      );
       return false;
     }
     if (historyBusy || state.histIndex < 0) return false;
@@ -1335,9 +1368,13 @@ window.DPV2Store = (() => {
   }
 
   async function redoHistory() {
-    // #C18-3: 생성 흐름·AI 프롬프트 작성 진행 중에는 다시 실행을 잠근다
-    if (state.runFlowBusy || state.assistBusy) {
-      toast(state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 다시 실행해 주세요." : "생성 흐름이 진행 중일 때는 다시 실행할 수 없습니다.");
+    // #C18-3 · R2-4: 생성 흐름·AI 프롬프트 작성·모델 설정 저장 진행 중에는 다시 실행을 잠근다
+    if (state.runFlowBusy || state.assistBusy || state.cropGenBusy) {
+      toast(
+        state.cropGenBusy
+          ? "모델 설정 저장이 끝난 뒤 다시 실행해 주세요."
+          : state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 다시 실행해 주세요." : "생성 흐름이 진행 중일 때는 다시 실행할 수 없습니다."
+      );
       return false;
     }
     if (historyBusy || state.histIndex >= state.history.length - 1) return false;
@@ -1364,8 +1401,12 @@ window.DPV2Store = (() => {
   }
 
   async function jumpHistory(targetIdx) {
-    if (state.runFlowBusy || state.assistBusy) {
-      toast(state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 히스토리를 이동해 주세요." : "생성 흐름이 진행 중일 때는 히스토리를 이동할 수 없습니다.");
+    if (state.runFlowBusy || state.assistBusy || state.cropGenBusy) {
+      toast(
+        state.cropGenBusy
+          ? "모델 설정 저장이 끝난 뒤 히스토리를 이동해 주세요."
+          : state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 히스토리를 이동해 주세요." : "생성 흐름이 진행 중일 때는 히스토리를 이동할 수 없습니다."
+      );
       return false;
     }
     while (state.histIndex > targetIdx) {
@@ -1450,6 +1491,423 @@ window.DPV2Store = (() => {
       if (!ok && refsDirtyAfterWrite) return false;
     }
     return true;
+  }
+
+  // ── V2-B 패치별 생성 설정(crop_gen · STUDIO_UX_V2B_SPEC §10.3 · #C19) ──
+  // R1-5: 뒤늦게 도착한 GET /crop_gen 응답이 더 최신 쓰기/조회 응답을 덮어쓰지 않도록 세대 번호로 보호한다
+  let cropGenWriteEpoch = 0;
+  let cropGenGetSeq = 0;
+
+  function applyCropGenResponse(res, opts = {}) {
+    if (!res || typeof res !== "object") return null;
+    if (opts.fromWrite) cropGenWriteEpoch += 1;
+    state.CG = res;
+    if (Number.isInteger(res.seen)) state.cropGenSeen = res.seen;
+    state.cropGenError = null;
+    const map = new Map();
+    if (Array.isArray(res.crops)) {
+      for (const row of res.crops) {
+        if (row && typeof row.crop_id === "string") map.set(row.crop_id, row);
+      }
+    }
+    state.cropGenById = map;
+    if (state.S && Number.isInteger(res.seen)) {
+      state.S.crop_gen_rev = res.seen;
+    }
+    return res;
+  }
+
+  async function loadCropGen() {
+    if (!state.root || !Api.can("v2_crop_model")) return null;
+    const startEpoch = cropGenWriteEpoch;
+    const mySeq = ++cropGenGetSeq;
+    try {
+      const res = await Api.getCropGen(state.root);
+      if (startEpoch !== cropGenWriteEpoch || mySeq !== cropGenGetSeq) {
+        return state.CG;
+      }
+      if (res && typeof res === "object") {
+        applyCropGenResponse(res);
+        return res;
+      }
+      return null;
+    } catch (err) {
+      if (startEpoch !== cropGenWriteEpoch || mySeq !== cropGenGetSeq) {
+        return state.CG;
+      }
+      state.cropGenError = (err && err.message) || "패치별 모델 설정을 읽지 못했습니다";
+      return null;
+    }
+  }
+
+  function cloneGenEntry(gen) {
+    if (!gen || typeof gen !== "object") return null;
+    const out = {};
+    if (typeof gen.model === "string") out.model = gen.model;
+    if (typeof gen.quality === "string") out.quality = gen.quality;
+    if (gen.opts && typeof gen.opts === "object") out.opts = Object.assign({}, gen.opts);
+    if (typeof gen.complexity === "string") out.complexity = gen.complexity;
+    if (Number.isInteger(gen.n)) out.n = gen.n;
+    return Object.keys(out).length ? out : null;
+  }
+
+  function canonicalGenKey(gen) {
+    const g = cloneGenEntry(gen);
+    return g ? canonicalPatchKey(g) : "null";
+  }
+
+  function buildCropGenModelPatch(modelId, overrides = {}, baseEffective = null) {
+    const patch = { model_id: modelId };
+    const m = Data.findModelExact(modelId);
+    if (!m) {
+      if (overrides.quality !== undefined) patch.quality = overrides.quality;
+      if (overrides.opts !== undefined) patch.opts = overrides.opts;
+      if (overrides.complexity !== undefined) patch.complexity = overrides.complexity;
+      return patch;
+    }
+    const sameModel = !!(baseEffective && baseEffective.model === modelId);
+    if (m.supports_quality && Array.isArray(m.qualities) && m.qualities.length) {
+      const candQ = overrides.quality !== undefined
+        ? overrides.quality
+        : (sameModel && m.qualities.includes(baseEffective.quality) ? baseEffective.quality : (m.default_quality || m.qualities[0]));
+      patch.quality = m.qualities.includes(candQ) ? candQ : (m.default_quality || m.qualities[0]);
+    }
+    const optKeys = m.opts && typeof m.opts === "object"
+      ? Object.keys(m.opts).filter((k) => k !== "aspect_ratio" && Array.isArray(m.opts[k]) && m.opts[k].length)
+      : [];
+    if (optKeys.length) {
+      const nextOpts = {};
+      const ovOpts = (overrides.opts && typeof overrides.opts === "object") ? overrides.opts : {};
+      const baseOpts = (sameModel && baseEffective && baseEffective.opts && typeof baseEffective.opts === "object")
+        ? baseEffective.opts : {};
+      for (const k of optKeys) {
+        const choices = m.opts[k];
+        const v = ovOpts[k] !== undefined
+          ? ovOpts[k]
+          : (baseOpts[k] !== undefined ? baseOpts[k] : ((m.opt_defaults && m.opt_defaults[k]) || choices[0]));
+        nextOpts[k] = choices.includes(v) ? v : ((m.opt_defaults && m.opt_defaults[k]) || choices[0]);
+      }
+      patch.opts = nextOpts;
+    }
+    if (Array.isArray(m.complexities) && m.complexities.length) {
+      const candC = overrides.complexity !== undefined
+        ? overrides.complexity
+        : (sameModel && m.complexities.includes(baseEffective.complexity) ? baseEffective.complexity : "high");
+      patch.complexity = m.complexities.includes(candC) ? candC : (m.complexities.includes("high") ? "high" : m.complexities[0]);
+    }
+    return patch;
+  }
+
+  // R1-2 · R1-3: 변경한 묶음(모델 묶음 / 장수 묶음)만 복원 패치에 담아
+  // (1) 장수 일괄 변경이 20개 묶음 상한에 걸려 히스토리에서 빠지지 않게 하고
+  // (2) 모델만 바꿔 서버가 장수 상한으로 낮춘(clamped) 패치를 다시 실행(Redo)할 때 원래 큰 n 을 count 로 보내 400 나는 결함을 막는다
+  function genEntryToPatch(entry, opts = null) {
+    const includeModel = !opts || opts.includeModel !== false;
+    const includeCount = !opts || opts.includeCount !== false;
+    const patch = {};
+    if (includeModel) {
+      if (entry && typeof entry === "object" && typeof entry.model === "string" && entry.model) {
+        patch.model_id = entry.model;
+        if (typeof entry.quality === "string") patch.quality = entry.quality;
+        if (entry.opts && typeof entry.opts === "object") {
+          const cleanOpts = {};
+          for (const [k, v] of Object.entries(entry.opts)) {
+            if (k !== "aspect_ratio") cleanOpts[k] = v;
+          }
+          if (Object.keys(cleanOpts).length) patch.opts = cleanOpts;
+        }
+        if (typeof entry.complexity === "string") patch.complexity = entry.complexity;
+      } else {
+        patch.inherit_model = true;
+      }
+    }
+    if (includeCount) {
+      patch.count = (entry && typeof entry === "object" && Number.isInteger(entry.n)) ? entry.n : null;
+    }
+    return patch;
+  }
+
+  function canonicalPatchKey(patch) {
+    const keys = Object.keys(patch || {}).sort();
+    const norm = {};
+    for (const k of keys) {
+      const v = patch[k];
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        const inner = {};
+        for (const ik of Object.keys(v).sort()) inner[ik] = v[ik];
+        norm[k] = inner;
+      } else {
+        norm[k] = v;
+      }
+    }
+    return JSON.stringify(norm);
+  }
+
+  function buildGroupedChanges(pairs) {
+    const byId = new Map();
+    for (const [cid, patch] of (pairs || [])) {
+      if (typeof cid === "string" && cid && patch && typeof patch === "object") {
+        byId.set(cid, patch);
+      }
+    }
+    const groups = new Map();
+    for (const [cid, patch] of byId.entries()) {
+      const key = canonicalPatchKey(patch);
+      let g = groups.get(key);
+      if (!g) {
+        g = { crop_ids: [], patch };
+        groups.set(key, g);
+      }
+      g.crop_ids.push(cid);
+    }
+    return [...groups.values()];
+  }
+
+  async function updateCropGen(changes, opts = {}) {
+    const {
+      historyLabel = "",
+      skipHistory = false,
+      throwOnError = false,
+      expectedSeen = null,
+      expectedGenById = null,
+    } = opts || {};
+    if (!state.root || !Api.can("v2_crop_model")) {
+      return { ok: false, unsupported: true, error: "패치별 모델 선택 기능이 아직 켜져 있지 않습니다." };
+    }
+    if (state.cropGenBusy) {
+      const msg = "이전 모델 설정을 저장하는 중입니다 — 잠시 후 다시 시도해 주세요.";
+      if (!throwOnError) toast(msg);
+      if (throwOnError) throw new Error(msg);
+      return { ok: false, busy: true, error: msg };
+    }
+    if (!Array.isArray(changes) || !changes.length) {
+      return { ok: true, changed: false, staleCount: 0 };
+    }
+    if (changes.length > 20) {
+      const msg = "한 번에 최대 20개 변경 묶음까지만 저장할 수 있습니다 — 나눠서 적용해 주세요.";
+      if (!throwOnError) toast(msg, "err");
+      if (throwOnError) throw new Error(msg);
+      return { ok: false, error: msg };
+    }
+    const changedIds = [];
+    const seenIds = new Set();
+    const touchedById = new Map();
+    for (const ch of changes) {
+      if (!ch || !Array.isArray(ch.crop_ids) || !ch.crop_ids.length || !ch.patch || typeof ch.patch !== "object") {
+        const msg = "패치별 생성 설정 요청 형식이 올바르지 않습니다.";
+        if (!throwOnError) toast(msg, "err");
+        if (throwOnError) throw new Error(msg);
+        return { ok: false, error: msg };
+      }
+      const incM = ("model_id" in ch.patch) || ("inherit_model" in ch.patch);
+      const incN = ("count" in ch.patch);
+      for (const cid of ch.crop_ids) {
+        if (seenIds.has(cid)) {
+          const msg = `같은 영역이 중복 지정되었습니다: ${cid}`;
+          if (!throwOnError) toast(msg, "err");
+          if (throwOnError) throw new Error(msg);
+          return { ok: false, error: msg };
+        }
+        seenIds.add(cid);
+        changedIds.push(cid);
+        touchedById.set(cid, { includeModel: incM, includeCount: incN });
+      }
+    }
+    if (changedIds.length > 200) {
+      const msg = "한 번에 최대 200개 영역까지만 변경할 수 있습니다 — 나눠서 선택해 주세요.";
+      if (!throwOnError) toast(msg, "err");
+      if (throwOnError) throw new Error(msg);
+      return { ok: false, error: msg };
+    }
+
+    // R2-2: 확인 상자를 열어 둔 사이 다른 창이 저장해 폴링으로 판이 바뀌었으면 저장 전에 중단한다
+    if (Number.isInteger(expectedSeen) && Number.isInteger(state.cropGenSeen) && state.cropGenSeen !== expectedSeen) {
+      const msg = "다른 창에서 패치별 모델 설정이 변경되어 저장을 중단했습니다 — 최신 값을 확인한 뒤 다시 시도해 주세요.";
+      if (!throwOnError) toast(msg, "err");
+      if (throwOnError) throw new Error(msg);
+      return { ok: false, stale: true, error: msg };
+    }
+
+    // R1-2: 변경한 필드 기준 복원 묶음이 20개를 넘으면(서로 다른 모델 조합 21개+ 동시 덮어쓰기) POST 전에 확인을 받는다
+    if (!skipHistory && historyLabel && Number.isInteger(state.cropGenSeen)) {
+      const preCheckPairs = changedIds.map((cid) => {
+        const row = state.cropGenById.get(cid);
+        const gen = (row && !row.error) ? cloneGenEntry(row.gen) : null;
+        return [cid, genEntryToPatch(gen, touchedById.get(cid))];
+      });
+      const preGroups = buildGroupedChanges(preCheckPairs);
+      if (preGroups.length > 20) {
+        const okProceed = await Data.askDialogConfirm(
+          `선택한 영역의 기존 모델 조합이 ${preGroups.length}종(20종 초과)이라 저장 후 실행 취소(Ctrl+Z) 한 번으로 되돌릴 수 없습니다.\n그래도 일괄 적용할까요?`,
+          { ok: "일괄 적용", cancel: "취소" }
+        );
+        if (!okProceed) return { ok: false, cancelled: true };
+        // 확인 창 대기 중 다른 창이 수정했는지 다시 대조
+        if (Number.isInteger(expectedSeen) && state.cropGenSeen !== expectedSeen) {
+          const msg = "다른 창에서 패치별 모델 설정이 변경되어 저장을 중단했습니다 — 최신 값을 확인한 뒤 다시 시도해 주세요.";
+          if (!throwOnError) toast(msg, "err");
+          return { ok: false, stale: true, error: msg };
+        }
+      }
+    }
+
+    state.cropGenBusy = true;
+    emit("selection");
+    try {
+      if (!Number.isInteger(state.cropGenSeen)) {
+        await loadCropGen();
+        if (!Number.isInteger(state.cropGenSeen)) {
+          const msg = state.cropGenError || "서버에서 패치별 모델 설정을 읽지 못했습니다 — 잠시 후 다시 시도해 주세요.";
+          if (!throwOnError) toast(msg, "err");
+          if (throwOnError) throw new Error(msg);
+          return { ok: false, error: msg };
+        }
+      }
+
+      // R1-1: 실행 취소·다시 실행 시 현재 서버/스토어 gen 이 기록이 기대하는 상태와 다르면 다른 창의 수정을 덮어쓰지 않고 중단(histIndex 유지)
+      if (expectedGenById && typeof expectedGenById === "object") {
+        for (const cid of changedIds) {
+          const row = state.cropGenById.get(cid);
+          const curKey = canonicalGenKey(row && !row.error ? row.gen : null);
+          const expKey = expectedGenById[cid] !== undefined ? expectedGenById[cid] : "null";
+          if (!row || row.error || curKey !== expKey) {
+            throw new Error("다른 창이나 이후 작업에서 패치별 모델 설정이 변경되어 되돌릴 수 없습니다.");
+          }
+        }
+      }
+
+      const beforeGenMap = Object.create(null);
+      const beforeGenPairs = changedIds.map((cid) => {
+        const row = state.cropGenById.get(cid);
+        const gen = (row && !row.error) ? cloneGenEntry(row.gen) : null;
+        beforeGenMap[cid] = canonicalGenKey(gen);
+        return [cid, genEntryToPatch(gen, touchedById.get(cid))];
+      });
+      const beforeStaleIds = new Set(
+        changedIds.filter((cid) => {
+          const row = state.cropGenById.get(cid);
+          return !!(row && row.prompt_stale);
+        })
+      );
+
+      const seenToSend = Number.isInteger(expectedSeen) ? expectedSeen : state.cropGenSeen;
+      const res = await Api.postCropGen(state.root, seenToSend, changes);
+      if (res && res.unsupported) {
+        if (!throwOnError) toast(res.error || "패치별 모델 선택 기능이 아직 켜져 있지 않습니다.", "err");
+        if (throwOnError) throw new Error(res.error || "unsupported");
+        return res;
+      }
+      applyCropGenResponse(res, { fromWrite: true });
+
+      let staleCount = 0;
+      if (res && res.changed) {
+        const afterGenMap = Object.create(null);
+        const afterGenPairs = changedIds.map((cid) => {
+          const row = state.cropGenById.get(cid);
+          const gen = (row && !row.error) ? cloneGenEntry(row.gen) : null;
+          afterGenMap[cid] = canonicalGenKey(gen);
+          return [cid, genEntryToPatch(gen, touchedById.get(cid))];
+        });
+        // R1-7: 이번 변경 전에는 prompt_stale=false 였고 응답에서 새로 true 가 된 패치만 집계한다
+        const staleIds = changedIds.filter((cid) => {
+          const row = state.cropGenById.get(cid);
+          return !!(row && row.prompt_stale && !beforeStaleIds.has(cid));
+        });
+        staleCount = staleIds.length;
+
+        invalidateAllSpecs();
+        if (!skipHistory && historyLabel) {
+          const undoChanges = buildGroupedChanges(beforeGenPairs);
+          const redoChanges = buildGroupedChanges(afterGenPairs);
+          const diffFromBefore = JSON.stringify(undoChanges) !== JSON.stringify(redoChanges);
+          if (diffFromBefore && undoChanges.length >= 1 && undoChanges.length <= 20 && redoChanges.length >= 1 && redoChanges.length <= 20) {
+            pushHistory(
+              historyLabel,
+              () => updateCropGen(undoChanges, { skipHistory: true, throwOnError: true, expectedGenById: afterGenMap }),
+              () => updateCropGen(redoChanges, { skipHistory: true, throwOnError: true, expectedGenById: beforeGenMap }),
+              { kind: "crop-gen", cropIds: changedIds.slice() }
+            );
+          }
+        }
+        if (staleCount > 0 && !skipHistory) {
+          toast(`AI 작성본 ${staleCount}개가 다시 작성됩니다(경량 LLM 호출)`);
+        }
+        // R2-4: 최신 스펙과 계획을 받은 뒤 busy 를 풀어 직후 생성/AI 작성이 옛 모델 계획을 보지 않게 한다
+        const syncTasks = [loadPipelineAndPlan()];
+        if (state.primaryId && seenIds.has(state.primaryId) && Api.can("v2_spec_edit")) {
+          syncTasks.push(loadSpec(state.primaryId, true));
+        }
+        await Promise.all(syncTasks);
+      }
+      emit("selection");
+      return { ok: true, res, changed: !!(res && res.changed), staleCount };
+    } catch (err) {
+      if (err && err.status === 409 && err.data && err.data.reason === "stale") {
+        // R1-4: 409 충돌에서 최신 crop_gen 판을 수용할 때 스펙 캐시·활성 스펙·계획도 함께 갱신한다
+        if (Array.isArray(err.data.crops)) {
+          applyCropGenResponse(err.data, { fromWrite: true });
+          invalidateAllSpecs();
+          const syncTasks = [loadPipelineAndPlan()];
+          if (state.primaryId && Api.can("v2_spec_edit")) {
+            syncTasks.push(loadSpec(state.primaryId, true));
+          }
+          await Promise.all(syncTasks);
+        }
+        const msg = "다른 창에서 패치별 모델 설정이 변경되어 최신 값으로 다시 불러왔습니다 — 확인 후 다시 시도해 주세요.";
+        if (!throwOnError) toast(msg, "err");
+        emit("selection");
+        if (throwOnError) throw new Error(msg);
+        return { ok: false, stale: true, error: msg };
+      }
+      if (err && err.status === 400 && err.data && Array.isArray(err.data.rejected) && err.data.rejected.length) {
+        const rej = err.data.rejected;
+        const fmt = rej.slice(0, 3).map((item) => {
+          const p = getPatch(item.crop_id);
+          const pName = p ? p.name : item.crop_id;
+          return `${pName}(${item.key}): ${item.error}`;
+        }).join(" · ");
+        const suffix = rej.length > 3 ? ` 외 ${rej.length - 3}건` : "";
+        const msg = `${fmt}${suffix}`;
+        if (!throwOnError) toast(`모델 설정 거절(저장되지 않음): ${msg}`, "err");
+        emit("selection");
+        if (throwOnError) throw new Error(msg);
+        return { ok: false, rejected: rej, reason: err.data.reason || null, error: msg };
+      }
+      if (err && err.status === 422) {
+        state.cropGenError = err.message || "패치별 생성 설정 파일이 손상되었습니다";
+      } else if (err && err.status === 404) {
+        loadCropGen();
+        refreshAll(true);
+      }
+      const msg = (err && err.message) || "패치별 모델 설정을 저장하지 못했습니다.";
+      if (!throwOnError) toast(`모델 설정 저장 실패: ${msg}`, "err");
+      emit("selection");
+      if (throwOnError) throw new Error(msg);
+      return { ok: false, error: msg };
+    } finally {
+      state.cropGenBusy = false;
+      emit("selection");
+    }
+  }
+
+  // R2-7: 개별 모델·개별 장수·「모델만 개별이고 장수는 상속」 영역 수를 구분 집계한다
+  function countCropGenOverrides() {
+    const out = { customModel: 0, customN: 0, customModelInheritN: 0 };
+    if (!Api.can("v2_crop_model")) return out;
+    for (const row of state.cropGenById.values()) {
+      const inh = row && row.effective && row.effective.inherit;
+      if (!inh) continue;
+      if (inh.model === false) {
+        out.customModel += 1;
+        if (inh.n === true) out.customModelInheritN += 1;
+      }
+      if (inh.n === false) out.customN += 1;
+    }
+    return out;
+  }
+
+  function countCustomModelOverrides() {
+    return countCropGenOverrides().customModel;
   }
 
   async function loadPipelineAndPlan() {
@@ -1549,10 +2007,12 @@ window.DPV2Store = (() => {
       let statusChanged = false;
       if (d.unchanged && prev) {
         const prevTitle = prev.title;
+        const prevCropGenRev = prev.crop_gen_rev;
         prev.running = d.running;
         prev.drain = d.drain;
         prev.drafting = d.drafting;
         if ("title" in d) prev.title = d.title;
+        if ("crop_gen_rev" in d) prev.crop_gen_rev = d.crop_gen_rev;
         if ("export_state" in d) {
           prev.export_state = d.export_state;
           prev.export_last = d.export_last;
@@ -1566,21 +2026,46 @@ window.DPV2Store = (() => {
             || d.refs_files_v !== prev.refs_files_v || d.pipeline_rev !== prev.pipeline_rev
             || d.plan_v !== prev.plan_v) {
           fullReload = true;
+        } else if (Api.can("v2_crop_model") && ("crop_gen_rev" in d)) {
+          // #C19-2 · R1-6: unchanged 응답의 crop_gen_rev 가 직전 seen 과 다르거나,
+          // 손상(null)에서 정수로 복구(같은 판 번호 포함)되었을 때만 GET /crop_gen 을 다시 읽는다(주기적 호출 금지)
+          const recoveredFromNull = (prevCropGenRev === null && d.crop_gen_rev !== null);
+          const revDiff = d.crop_gen_rev !== null
+            ? (d.crop_gen_rev !== state.cropGenSeen || recoveredFromNull || !!state.cropGenError)
+            : prevCropGenRev !== null;
+          if (revDiff) {
+            await loadCropGen();
+            if (prevCropGenRev !== d.crop_gen_rev || recoveredFromNull) {
+              invalidateAllSpecs();
+              if (state.primaryId && Api.can("v2_spec_edit")) {
+                await loadSpec(state.primaryId, true);
+              }
+            }
+            await loadPipelineAndPlan();
+            statusChanged = true;
+          }
         }
       }
       if (fullReload) {
         const prevRefsRev = prev ? prev.refs_rev : undefined;
         const prevPipeRev = prev ? prev.pipeline_rev : undefined;
+        const prevCropGenRev = prev ? prev.crop_gen_rev : undefined;
         state.S = d.unchanged ? await Api.getState(state.root) : d;
-        // #C08-2 · #C30-3: 모델·레퍼런스 판이 바뀌면 스펙 캐시를 무효화하고, 레퍼런스 판 변화 시 /refs 조회 실패에 대비해 표시한다
+        // #C08-2 · #C30-3 · #C19-2: 모델·레퍼런스·패치별 설정 판이 바뀌면 스펙 캐시를 무효화한다
         if (prevRefsRev !== undefined && state.S.refs_rev !== prevRefsRev) {
           refsDirtyAfterWrite = true;
         }
         if ((prevRefsRev !== undefined && state.S.refs_rev !== prevRefsRev)
-            || (prevPipeRev !== undefined && state.S.pipeline_rev !== prevPipeRev)) {
+            || (prevPipeRev !== undefined && state.S.pipeline_rev !== prevPipeRev)
+            || (prevCropGenRev !== undefined && state.S.crop_gen_rev !== prevCropGenRev)) {
           invalidateAllSpecs();
         }
-        await Promise.all([loadLayout(), loadRefs(true), loadPipelineAndPlan()]);
+        await Promise.all([
+          loadLayout(),
+          loadRefs(true),
+          loadPipelineAndPlan(),
+          Api.can("v2_crop_model") ? loadCropGen() : Promise.resolve(),
+        ]);
         await loadSeams();
         const patches = getPatches();
         const validIds = new Set(patches.map((p) => p.id));
@@ -1959,6 +2444,7 @@ window.DPV2Store = (() => {
     selectPatch, selectAllPatches, getCommonOrMixed,
     pushHistory, undoHistory, redoHistory, jumpHistory,
     loadLayout, loadRefs, refreshAfterRefWrite, ensureFreshRefsAfterWrite, loadPipelineAndPlan, loadSeams, refreshAll,
+    applyCropGenResponse, loadCropGen, buildCropGenModelPatch, genEntryToPatch, buildGroupedChanges, updateCropGen, countCropGenOverrides, countCustomModelOverrides,
     startPolling, stopPolling,
     addCrop, updateCrop, deleteCrop,
     openMaskSession, closeMaskSession, saveMaskSession,

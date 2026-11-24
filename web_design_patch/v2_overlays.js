@@ -746,7 +746,17 @@ window.DPV2Overlays = (() => {
     blinkOrig: false,
     zoom: 1,
     dragging: false,
+    loading: false,
   };
+  let cmpRenderSeq = 0;
+
+  function syncComparePickBtn() {
+    const coPick = $("co-pick");
+    if (!coPick) return;
+    const p = Store.primaryPatch();
+    const busy = !!(p && p.target && cmpState.candKey && Store.isPickBusy(p.id, p.target.tid, cmpState.candKey));
+    coPick.disabled = !!(cmpState.loading || busy);
+  }
 
   async function openCompareOverlay(candKey = "") {
     const patch = Store.primaryPatch();
@@ -765,7 +775,9 @@ window.DPV2Overlays = (() => {
   }
 
   function closeCompareOverlay() {
+    cmpRenderSeq += 1;
     cmpState.open = false;
+    cmpState.loading = false;
     $("compare-overlay").classList.add("hidden");
   }
 
@@ -786,10 +798,44 @@ window.DPV2Overlays = (() => {
     const cand = patch.candidates.find((c) => c.key === cmpState.candKey) || patch.candidates[0];
     if (!cand) return;
     cmpState.candKey = cand.key;
+    const targetKey = cand.key;
+    const seq = ++cmpRenderSeq;
+    cmpState.loading = true;
+    syncComparePickBtn();
 
+    const candTag = Data.formatCandidateModelTag(cand);
     $("co-title").textContent = `${patch.name} — 후보 #${cand.n || 1} 정밀 비교`;
-    $("co-label-after").textContent = `후보 #${cand.n || 1} (${cand.variant || "V1"})`;
+    $("co-label-after").textContent = `후보 #${cand.n || 1} (${cand.variant || "V1"})`
+      + (candTag ? ` · ${candTag}` : "")
+      + (cand.old_cell ? " · 옛 조건" : "");
     $("co-zoom-reset").textContent = `${Math.round(cmpState.zoom * 100)}%`;
+
+    // R2-5: 우측 후보 레일을 이미지 로드 전에 즉시 갱신해 선택 강조가 늦은 이미지 응답에 되돌려지지 않게 한다
+    const rail = $("co-rail");
+    if (rail) {
+      rail.innerHTML = "";
+      patch.candidates.forEach((c, idx) => {
+        const picked = Array.isArray(patch.pickedKeys)
+          ? patch.pickedKeys.includes(c.key)
+          : !!(patch.pickedCand && patch.pickedCand.key === c.key);
+        const thumb = Api.apiUrl(c.thumb_url || c.big_url || "");
+        const cTag = Data.formatCandidateModelTag(c);
+        const subChildren = [];
+        if (cTag) subChildren.push(cTag);
+        if (c.old_cell) subChildren.push(Data.el("span", { className: "co-rail-old", text: "옛 조건" }));
+        rail.append(Data.el("button", {
+          type: "button",
+          className: "co-rail-item" + (c.key === cand.key ? " on" : ""),
+          onClick: () => { cmpState.candKey = c.key; renderCompareOverlay(); },
+        },
+          thumb ? Data.el("img", { src: thumb, alt: "" }) : null,
+          Data.el("span", {},
+            `${idx + 1}. ${picked ? "★ " : ""}${c.variant || `후보 ${idx + 1}`}`,
+            subChildren.length ? Data.el("small", { className: "co-rail-sub" }, ...subChildren) : null,
+          ),
+        ));
+      });
+    }
 
     const beforeRel = (patch.target && patch.target.before_url) || (Store.state.S && Store.state.S.canvas && Store.state.S.canvas.base_url);
     const afterRel = cand.big_url || cand.pick_url || cand.thumb_url;
@@ -800,6 +846,8 @@ window.DPV2Overlays = (() => {
         loadImage(Api.apiUrl(beforeRel)),
         loadImage(Api.apiUrl(afterRel)),
       ]);
+      // R2-5: 더 최신 후보 전환·닫기가 일어났으면 늦게 도착한 앞 후보 이미지를 캔버스에 그리지 않는다
+      if (!cmpState.open || seq !== cmpRenderSeq || cmpState.candKey !== targetKey) return;
       const aspect = (aImg.naturalWidth || 1) / Math.max(1, aImg.naturalHeight || 1);
       const cw = aspect >= 1 ? boxSize : Math.round(boxSize * aspect);
       const ch = aspect >= 1 ? Math.round(boxSize / aspect) : boxSize;
@@ -815,24 +863,13 @@ window.DPV2Overlays = (() => {
       cbox.style.height = `${ch}px`;
       cbox.style.transform = `scale(${cmpState.zoom})`;
       updateCompareDivider();
-    } catch (_) {}
-
-    // 우측 후보 썸네일 레일
-    const rail = $("co-rail");
-    if (rail) {
-      rail.innerHTML = "";
-      patch.candidates.forEach((c, idx) => {
-        const picked = !!(patch.pickedCand && patch.pickedCand.key === c.key);
-        const thumb = Api.apiUrl(c.thumb_url || c.big_url || "");
-        rail.append(Data.el("button", {
-          type: "button",
-          className: "co-rail-item" + (c.key === cand.key ? " on" : ""),
-          onClick: () => { cmpState.candKey = c.key; renderCompareOverlay(); },
-        },
-          thumb ? Data.el("img", { src: thumb, alt: "" }) : null,
-          Data.el("span", { text: `${idx + 1}. ${picked ? "★ " : ""}${c.variant || `후보 ${idx + 1}`}` }),
-        ));
-      });
+    } catch (_) {
+      // 이미지 로드 실패 시에도 최신 요청이면 잠금 해제
+    } finally {
+      if (seq === cmpRenderSeq) {
+        cmpState.loading = false;
+        syncComparePickBtn();
+      }
     }
   }
 
@@ -933,6 +970,220 @@ window.DPV2Overlays = (() => {
       applyHistoryPanelLayout();
       renderHistoryDrawer();
     }
+  }
+
+  // ==================== 4.5 프로젝트 기본 생성 설정 모달 (V2-B D564 · R2-2 · R2-7) ====================
+  function openProjectDefaultsModal() {
+    const prep = Store.projectPrepare();
+    const openedPipeRev = Store.state.P ? Store.state.P.rev : 0;
+    const catalog = Data.modelCatalog();
+    const curState = {
+      model: prep.model,
+      quality: prep.quality,
+      n: Number(prep.n) || 4,
+      complexity: prep.complexity || "high",
+      image_size: (prep.opts && prep.opts.image_size) || "2K",
+      thinking_level: (prep.opts && prep.opts.thinking_level) || "medium",
+    };
+    const ov = typeof Store.countCropGenOverrides === "function"
+      ? Store.countCropGenOverrides()
+      : { customModel: typeof Store.countCustomModelOverrides === "function" ? Store.countCustomModelOverrides() : 0, customN: 0, customModelInheritN: 0 };
+    const customCount = ov.customModel;
+
+    const wrap = Data.el("div", { className: "proj-def-grid" });
+    const selModel = Data.el("select", { className: "select-input", id: "pd-model" });
+    for (const m of catalog) {
+      const label = m.available === false ? `${m.label} (사용 불가)` : `${m.label} · 최대 참조 ${m.max_refs}장`;
+      const opt = Data.el("option", { value: m.name, text: label, disabled: m.available === false });
+      if (m.name === curState.model) opt.selected = true;
+      selModel.append(opt);
+    }
+
+    const rowQual = Data.el("div", { className: "proj-def-row" });
+    const rowComp = Data.el("div", { className: "proj-def-row" });
+    const rowOpts = Data.el("div", { className: "proj-def-row" });
+    const rowCount = Data.el("div", { className: "proj-def-row" });
+
+    const renderDynamic = () => {
+      const m = Data.findModelExact(curState.model) || Data.findModel(curState.model);
+      rowQual.innerHTML = "";
+      if (m && m.supports_quality && m.qualities.length) {
+        if (!m.qualities.includes(curState.quality)) curState.quality = m.default_quality || m.qualities[0];
+        const selQ = Data.el("select", {
+          className: "select-input",
+          id: "pd-quality",
+          onChange: (e) => { curState.quality = e.target.value; },
+        });
+        for (const q of m.qualities) {
+          const o = Data.el("option", { value: q, text: q });
+          if (q === curState.quality) o.selected = true;
+          selQ.append(o);
+        }
+        rowQual.append(Data.el("label", { text: "기본 생성 품질" }), selQ);
+        rowQual.classList.remove("hidden");
+      } else {
+        rowQual.classList.add("hidden");
+      }
+
+      rowComp.innerHTML = "";
+      if (m && Array.isArray(m.complexities) && m.complexities.length) {
+        if (!m.complexities.includes(curState.complexity)) curState.complexity = "high";
+        const selC = Data.el("select", {
+          className: "select-input",
+          id: "pd-complexity",
+          onChange: (e) => { curState.complexity = e.target.value; },
+        });
+        for (const c of m.complexities) {
+          const o = Data.el("option", { value: c, text: (Data.COMPLEXITY_LABELS && Data.COMPLEXITY_LABELS[c]) || c });
+          if (c === curState.complexity) o.selected = true;
+          selC.append(o);
+        }
+        rowComp.append(Data.el("label", { text: "기본 지시 복잡도" }), selC);
+        rowComp.classList.remove("hidden");
+      } else {
+        rowComp.classList.add("hidden");
+      }
+
+      rowOpts.innerHTML = "";
+      const optEntries = m && m.opts ? Object.entries(m.opts).filter(([k, ch]) => k !== "aspect_ratio" && Array.isArray(ch) && ch.length) : [];
+      if (optEntries.length) {
+        for (const [k, choices] of optEntries) {
+          if (!choices.includes(curState[k])) curState[k] = (m.opt_defaults && m.opt_defaults[k]) || choices[0];
+          const label = k === "image_size" ? "기본 출력 해상도" : k === "thinking_level" ? "기본 추론 깊이" : k;
+          const selO = Data.el("select", {
+            className: "select-input",
+            id: `pd-opt-${k}`,
+            onChange: (e) => { curState[k] = e.target.value; },
+          });
+          for (const ch of choices) {
+            const o = Data.el("option", { value: ch, text: k === "thinking_level" ? (Data.THINKING_LABELS[ch] || ch) : ch });
+            if (ch === curState[k]) o.selected = true;
+            selO.append(o);
+          }
+          rowOpts.append(Data.el("label", { text: label }), selO);
+        }
+        rowOpts.classList.remove("hidden");
+      } else {
+        rowOpts.classList.add("hidden");
+      }
+
+      rowCount.innerHTML = "";
+      const maxN = (m && m.max_n) || 8;
+      if (curState.n > maxN) curState.n = maxN;
+      const selN = Data.el("select", {
+        className: "select-input",
+        id: "pd-count",
+        onChange: (e) => { curState.n = Number(e.target.value); },
+      });
+      for (let i = 1; i <= maxN; i++) {
+        const o = Data.el("option", { value: String(i), text: `${i}장` });
+        if (i === curState.n) o.selected = true;
+        selN.append(o);
+      }
+      rowCount.append(Data.el("label", { text: `기본 후보 장수 (최대 ${maxN}장)` }), selN);
+    };
+
+    selModel.addEventListener("change", (e) => {
+      curState.model = e.target.value;
+      renderDynamic();
+    });
+    renderDynamic();
+
+    const noteLines = [
+      "프로젝트 기본값은 「프로젝트 기본 모델」을 따르는 모든 영역에 적용됩니다.",
+      customCount > 0 ? `따로 모델을 정한 영역 ${customCount}개는 기존 모델을 유지합니다.` : "현재 따로 모델을 정한 영역은 없습니다.",
+      ...(ov.customModelInheritN > 0 ? [`단, 모델만 따로 정하고 장수는 기본값을 따르는 영역 ${ov.customModelInheritN}개는 기본 장수 변경 시 각 모델 상한 내에서 함께 바뀝니다.`] : []),
+      ...(ov.customN > 0 ? [`장수를 따로 정한 영역 ${ov.customN}개는 기존 장수를 유지합니다.`] : []),
+      "변경 후 다음 생성에서 반영 확인이 표시됩니다.",
+    ];
+    wrap.append(
+      Data.el("div", { className: "proj-def-row" }, Data.el("label", { text: "프로젝트 기본 모델" }), selModel),
+      rowQual,
+      rowComp,
+      rowOpts,
+      rowCount,
+      Data.el("div", { className: "proj-def-note", text: noteLines.join(" ") }),
+    );
+
+    let saving = false;
+    openModal({
+      title: "프로젝트 기본 모델 · 옵션 변경",
+      bodyNodes: [wrap],
+      canClose: () => !saving,
+      actions: [
+        { label: "취소", cls: "btn-secondary", onClick: () => closeModal() },
+        {
+          id: "btn-pd-save",
+          label: "프로젝트 기본값으로 저장",
+          cls: "btn-primary",
+          onClick: async () => {
+            if (saving) return;
+            // R2-2: 모달을 열어 둔 사이 다른 창이 프로젝트 설정을 바꿨으면 옛 값으로 덮어쓰지 않고 최신 값으로 다시 연다
+            if ((Store.state.P ? Store.state.P.rev : 0) !== openedPipeRev) {
+              Store.toast("다른 창에서 프로젝트 기본 설정이 변경되어 최신 값으로 다시 열었습니다 — 확인 후 저장해 주세요.", "err");
+              openProjectDefaultsModal();
+              return;
+            }
+            const m = Data.findModelExact(curState.model);
+            if (m && m.available === false) {
+              Store.toast(m.why || "이 모델은 현재 서버에서 사용할 수 없습니다.", "err");
+              return;
+            }
+            const mSafe = m || Data.findModel(curState.model);
+            const patch = { model: curState.model, n: curState.n };
+            if (mSafe && mSafe.supports_quality) patch.quality = curState.quality;
+            if (mSafe && mSafe.complexities && mSafe.complexities.length) patch.complexity = curState.complexity;
+            if (mSafe && mSafe.opts && mSafe.opts.image_size) patch.image_size = curState.image_size;
+            if (mSafe && mSafe.opts && mSafe.opts.thinking_level) patch.thinking_level = curState.thinking_level;
+            const summary = Data.formatModelSummary({
+              model: curState.model,
+              quality: patch.quality,
+              complexity: patch.complexity,
+              opts: { image_size: patch.image_size, thinking_level: patch.thinking_level },
+              n: curState.n,
+            });
+            const countChanged = Number(curState.n) !== Number(prep.n);
+            const curOv = typeof Store.countCropGenOverrides === "function" ? Store.countCropGenOverrides() : ov;
+            const msgLines = [
+              `프로젝트 기본 설정을 "${summary}"(으)로 변경합니다.`,
+              "기본값을 따르는 모든 영역에 적용되며, 다음 생성에서 반영 확인이 표시됩니다.",
+              ...(curOv.customModel > 0 ? [`따로 모델을 정한 영역 ${curOv.customModel}개는 기존 모델을 유지합니다.`] : []),
+              ...(countChanged && curOv.customModelInheritN > 0 ? [`단, 모델만 따로 정하고 장수는 기본값을 따르는 영역 ${curOv.customModelInheritN}개의 후보 장수는 ${curState.n}장(각 모델 상한 내)으로 함께 바뀝니다.`] : []),
+              ...(countChanged && curOv.customN > 0 ? [`장수를 따로 정한 영역 ${curOv.customN}개는 기존 장수를 유지합니다.`] : []),
+              "계속할까요?",
+            ];
+            const ok = await Data.askDialogConfirm(msgLines.join("\n"), { ok: "프로젝트 기본값 변경", cancel: "취소" });
+            if (!ok) return;
+            // R2-2: 확인 창을 열어 둔 사이 다른 창이 저장했는지 다시 대조한다
+            if ((Store.state.P ? Store.state.P.rev : 0) !== openedPipeRev) {
+              Store.toast("확인 창을 열어 둔 사이 다른 창에서 프로젝트 기본 설정이 변경되었습니다 — 최신 값으로 다시 열었습니다.", "err");
+              openProjectDefaultsModal();
+              return;
+            }
+            saving = true;
+            const btn = $("btn-pd-save");
+            if (btn) btn.disabled = true;
+            try {
+              const nextVals = Store.buildPreparePayload(patch);
+              await Api.savePipelineSettings(Store.state.root, openedPipeRev, "prepare", nextVals);
+              Store.invalidateAllSpecs();
+              Store.toast(`프로젝트 기본 설정을 ${summary}(으)로 저장했습니다.`, "ok");
+              saving = false;
+              closeModal(true);
+              await Store.refreshAll(true);
+            } catch (err) {
+              saving = false;
+              if (btn) btn.disabled = false;
+              Store.toast(`프로젝트 기본 설정 저장 실패: ${err.message}`, "err");
+              if (err && err.status === 409) {
+                await Store.refreshAll(true);
+                openProjectDefaultsModal();
+              }
+            }
+          },
+        },
+      ],
+    });
   }
 
   // ==================== 4. 환경설정 모달 (6테마 × 7포인트컬러 + UI 크기 + 4배치 + 바깥어둡게) ====================
@@ -2588,12 +2839,13 @@ window.DPV2Overlays = (() => {
     if (coZoomReset) coZoomReset.addEventListener("click", () => { cmpState.zoom = 1; renderCompareOverlay(); });
     const coPick = $("co-pick");
     if (coPick) coPick.addEventListener("click", async () => {
+      if (cmpState.loading) return;
       const p = Store.primaryPatch();
       if (!p || !p.target || !cmpState.candKey) return;
       if (Store.isPickBusy(p.id, p.target.tid, cmpState.candKey)) return;
       coPick.disabled = true;
       try {
-        // #C07-4 · #C21-6: 다중 채택 보존 + 연속 클릭 중복 잠금
+        // #C07-4 · #C21-6 · R2-5: 다중 채택 보존 + 연속 클릭 중복 잠금 + 후보 이미지 로드 완료 후 채택
         const r = await Store.pickCandidateGuarded({
           crop_id: p.id,
           tid: p.target.tid,
@@ -2603,7 +2855,7 @@ window.DPV2Overlays = (() => {
         });
         if (r && r.ok) closeCompareOverlay();
       } finally {
-        coPick.disabled = false;
+        syncComparePickBtn();
       }
     });
     const coToRt = $("co-to-retouch");
@@ -2784,6 +3036,7 @@ window.DPV2Overlays = (() => {
     setHistoryPanelMode,
     applyHistoryPanelLayout,
     openSettingsModal,
+    openProjectDefaultsModal,
     openExportModal,
     openPresetsModal,
     openShortcutsModal,

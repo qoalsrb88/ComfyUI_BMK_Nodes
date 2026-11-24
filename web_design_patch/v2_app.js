@@ -89,8 +89,8 @@
       if (syncTxt.textContent !== nextMsg) syncTxt.textContent = nextMsg;
     }
 
-    // #C18-3: 생성 흐름·AI 프롬프트 작성 진행 중에는 상단 실행 취소/다시 실행 버튼도 잠근다
-    const histLocked = !!(Store.state.runFlowBusy || Store.state.assistBusy);
+    // #C18-3 · R2-4: 생성 흐름·AI 프롬프트 작성·모델 설정 저장 진행 중에는 상단 실행 취소/다시 실행 버튼도 잠근다
+    const histLocked = !!(Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy);
     const btnUndo = $("btn-undo"), btnRedo = $("btn-redo");
     if (btnUndo) btnUndo.disabled = histLocked || Store.state.histIndex < 0;
     if (btnRedo) btnRedo.disabled = histLocked || Store.state.histIndex >= Store.state.history.length - 1;

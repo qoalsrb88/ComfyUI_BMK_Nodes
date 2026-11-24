@@ -196,17 +196,38 @@ window.DPV2Inspector = (() => {
       const statusTxt = p.anyPicked
         ? `★ ${p.candidates.length}장`
         : hasCands ? `${p.candidates.length}장` : "대기";
-      const rawModelShort = p.modelInfo ? p.modelInfo.shortName : p.effectiveModel;
+      const rawModelShort = p.cropGenBroken ? "설정 오류" : (p.modelInfo ? p.modelInfo.shortName : p.effectiveModel);
       const compactModel = rawModelShort
         .replace(/^GPT\s+2\.6.*$/i, "GPT 2.6")
         .replace(/^GPT\s+2\.5.*$/i, "GPT 2.5")
         .replace(/^Nano Banana\s*/i, "NB ")
         .replace(/^Seedream\s*/i, "SR ")
         .replace(/^Ideogram\s*/i, "IG ");
+      const canCropModel = Api.can("v2_crop_model");
+      const isCustomModel = !!(canCropModel && p.effectiveInherit && p.effectiveInherit.model === false);
+      const isCustomN = !!(canCropModel && p.effectiveInherit && p.effectiveInherit.n === false);
+      const miniTags = [];
+      if (canCropModel) {
+        if (p.cropGenBroken || p.cropGenAvailable === false) {
+          miniTags.push(Data.el("span", { className: "patch-tag-mini err", text: "주의", title: p.cropGenError || p.cropGenWhy || "모델 확인 필요" }));
+        } else if (p.cropGenRatio && p.cropGenRatio.ok === false) {
+          miniTags.push(Data.el("span", { className: "patch-tag-mini warn", text: "비율", title: `비율 안 맞음 (권장 ${p.cropGenRatio.nearest || "자동"})` }));
+        } else if (!p.cropGenApplied) {
+          miniTags.push(Data.el("span", { className: "patch-tag-mini info", text: "미반영", title: "변경된 모델·설정이 아직 서버 작업에 반영되지 않았습니다" }));
+        }
+      }
+      const metaTitleParts = [statusTxt, rawModelShort];
+      if (isCustomModel) metaTitleParts.push("개별 모델");
+      if (isCustomN) metaTitleParts.push(`개별 ${p.effectiveCount}장`);
 
-      const metaEl = Data.el("div", { className: "patch-meta", title: `${statusTxt} · ${rawModelShort}` },
+      const metaEl = Data.el("div", { className: "patch-meta", title: metaTitleParts.join(" · ") },
         Data.el("span", { className: `status-dot ${statusCls}` }),
-        Data.el("span", { className: "patch-meta-text", text: `${statusTxt} · ${compactModel}` }),
+        Data.el("span", { className: "patch-meta-text" },
+          `${statusTxt} · `,
+          Data.el("span", { className: isCustomModel ? "patch-model-custom" : "", text: compactModel }),
+          isCustomN ? `(${p.effectiveCount})` : "",
+        ),
+        miniTags.length ? Data.el("span", { className: "patch-meta-tags" }, ...miniTags) : null,
       );
 
       const ctrls = Data.el("div", { className: "patch-row-ctrls", onClick: (e) => e.stopPropagation() });
@@ -378,7 +399,11 @@ window.DPV2Inspector = (() => {
     const cont1 = $("instruct-content");
     if (empty1) empty1.classList.toggle("hidden", !!patch);
     if (cont1) cont1.classList.toggle("hidden", !patch);
-    if (!patch) lastAutoOpenRawKey = "";
+    if (!patch) {
+      lastAutoOpenRawKey = "";
+      const pop = $("model-popover");
+      if (pop) pop.classList.add("hidden");
+    }
 
     if (patch) {
       // #C13-3: 생성 흐름 또는 AI 프롬프트 작성이 도는 동안 지시문·목적·AI 자동·원문·저장·프리셋 입력을 잠근다
@@ -453,13 +478,14 @@ window.DPV2Inspector = (() => {
       const recBanner = $("purpose-model-rec");
       if (recBanner) {
         const recModelObj = Data.modelCatalog().find((m) => m.name === curPurp.recModel);
-        if (recModelObj && (commonModel.mixed || commonModel.value !== recModelObj.name)) {
+        if (recModelObj && recModelObj.available !== false && (commonModel.mixed || commonModel.value !== recModelObj.name)) {
           recBanner.classList.remove("hidden");
           recBanner.innerHTML = "";
           recBanner.append(
             Data.el("span", {}, Data.el("b", { text: curPurp.short }), " 추천: ", Data.el("b", { text: recModelObj.shortName })),
             Data.el("button", {
               type: "button", className: "mini-btn accent-outline",
+              disabled: specLocked || !!Store.state.cropGenBusy,
               text: isMulti ? `${selList.length}개 적용` : "이 영역에 적용",
               onClick: () => applyModelSelection(recModelObj.name),
             }),
@@ -544,7 +570,7 @@ window.DPV2Inspector = (() => {
             ? "AI 프롬프트 작성 중…"
             : (patch.meta.body_en ? "AI 프롬프트 다시 작성" : "AI 프롬프트 미리 작성"),
         );
-        aiDraftBtn.disabled = specLocked;
+        aiDraftBtn.disabled = specLocked || !!Store.state.cropGenBusy;
       }
 
       // D503 · #C18-5 차단 상태 · 미저장 충돌 원문 확인 · 미반영 새 크롭 배너
@@ -628,75 +654,132 @@ window.DPV2Inspector = (() => {
         fullEl.textContent = patch.meta.prompt_en || "";
       }
 
-      // 모델 & 생성 옵션
+      // 모델 & 생성 옵션 (#C19 V2-B 굳은 계약 §10.3)
       const chkInherit = $("chk-inherit-model");
       const canPerCropModel = Api.can("v2_crop_model");
+      const modelLocked = specLocked || !!Store.state.cropGenBusy;
+      const allInheritModel = selList.every((p) => !p.cropGenBroken && p.effectiveInherit && p.effectiveInherit.model === true);
+      const noneInheritModel = selList.every((p) => p.cropGenBroken || !p.effectiveInherit || p.effectiveInherit.model === false);
+      const mixedInheritModel = canPerCropModel && !allInheritModel && !noneInheritModel;
+
       if (chkInherit) {
-        chkInherit.disabled = !canPerCropModel;
-        chkInherit.checked = canPerCropModel ? selList.every((p) => !p.meta.modelOverride) : true;
+        chkInherit.disabled = !canPerCropModel || modelLocked;
+        chkInherit.checked = canPerCropModel ? allInheritModel : true;
+        chkInherit.indeterminate = mixedInheritModel;
         chkInherit.title = canPerCropModel
-          ? ""
+          ? "체크 시 프로젝트 기본 모델을 따르고, 해제 시 이 영역만의 모델을 개별 고정합니다."
           : "영역별 개별 모델 지정은 다음 단계(V2-B)에서 지원됩니다 — 현재는 프로젝트 기본 모델로 저장됩니다.";
       }
 
-      const mName = $("mdt-name"), mSub = $("mdt-sub");
-      if (mName && mSub) {
-        if (commonModel.mixed) {
-          mName.textContent = `혼합됨 (${new Set(selList.map((p) => p.effectiveModel)).size}종 모델)`;
-          mSub.textContent = "클릭해 선택된 모든 영역의 모델을 한 번에 통일할 수 있습니다";
+      const ovBadge = $("model-override-badge");
+      if (ovBadge) {
+        if (!canPerCropModel || allInheritModel) {
+          ovBadge.classList.add("hidden");
+          ovBadge.classList.remove("mixed");
+          ovBadge.textContent = "";
+        } else if (mixedInheritModel) {
+          ovBadge.classList.remove("hidden");
+          ovBadge.classList.add("mixed");
+          ovBadge.textContent = "혼합됨";
         } else {
-          const mi = patch.modelInfo || Data.findModel(patch.effectiveModel);
-          mName.textContent = mi ? mi.label : patch.effectiveModel;
-          mSub.textContent = mi ? `${mi.badge} · 최대 참조 ${mi.max_inputs}장` : "";
+          ovBadge.classList.remove("hidden");
+          ovBadge.classList.remove("mixed");
+          ovBadge.textContent = isMulti ? "개별 모델" : "이 패치에 고정";
         }
       }
 
-      // 후보 장수 세그먼트
-      const commonCount = Store.getCommonOrMixed(selList, (p) => p.effectiveCount);
-      document.querySelectorAll("#seg-count button").forEach((b) => {
-        b.classList.toggle("on", !commonCount.mixed && Number(b.dataset.val) === commonCount.value);
-      });
+      const btnModelDrop = $("btn-model-dropdown");
+      if (btnModelDrop) btnModelDrop.disabled = modelLocked;
 
-      // 생성 품질 세그먼트 (라이브 모델 카탈로그 기준 동적)
+      const mName = $("mdt-name"), mSub = $("mdt-sub");
+      const commonMi = commonModel.mixed ? null : (patch.modelInfo || (patch.effectiveModel ? Data.findModelExact(patch.effectiveModel) : null));
+      if (mName && mSub) {
+        if (commonModel.mixed) {
+          mName.textContent = `혼합됨 (${new Set(selList.map((p) => p.effectiveModel || "__broken__")).size}종 모델)`;
+          mSub.textContent = "클릭해 선택된 모든 영역의 모델을 한 번에 통일할 수 있습니다";
+        } else if (selList.every((p) => p.cropGenBroken)) {
+          mName.textContent = "설정 오류 — 다시 선택 필요";
+          mSub.textContent = patch.cropGenError || "패치의 생성 설정을 읽지 못했습니다";
+        } else {
+          const mi = commonMi;
+          mName.textContent = mi ? mi.label : patch.effectiveModel;
+          const availTag = (patch.cropGenAvailable === false || (mi && mi.available === false)) ? " · 사용 불가" : "";
+          mSub.textContent = mi ? `${mi.badge} · 최대 참조 ${mi.max_refs}장${availTag}` : availTag.replace(/^ · /, "");
+        }
+      }
+
+      // 후보 장수 세그먼트 (서버 효과 값 + 모델 상한 + 개별 장수 해제)
+      const commonCount = Store.getCommonOrMixed(selList, (p) => p.effectiveCount);
+      const minMaxN = selList.reduce((acc, p) => {
+        const mi = p.modelInfo || Data.findModelExact(p.effectiveModel);
+        const cap = (mi && Number.isInteger(mi.max_n) && mi.max_n > 0) ? mi.max_n : 8;
+        return Math.min(acc, cap);
+      }, 10);
+      const allBroken = canPerCropModel && selList.length > 0 && selList.every((p) => p.cropGenBroken);
+      document.querySelectorAll("#seg-count button").forEach((b) => {
+        const v = Number(b.dataset.val);
+        b.classList.toggle("on", !commonCount.mixed && v === commonCount.value);
+        b.disabled = modelLocked || v > minMaxN || allBroken;
+      });
+      const countOvWrap = $("count-override-wrap");
+      const countOvTag = $("count-override-tag");
+      const btnCountInherit = $("btn-count-inherit");
+      if (countOvWrap) {
+        const customCountList = canPerCropModel
+          ? selList.filter((p) => p.effectiveInherit && p.effectiveInherit.n === false)
+          : [];
+        countOvWrap.classList.toggle("hidden", customCountList.length === 0);
+        if (countOvTag) {
+          countOvTag.textContent = customCountList.length === selList.length ? "개별" : `개별 ${customCountList.length}/${selList.length}`;
+        }
+        if (btnCountInherit) btnCountInherit.disabled = modelLocked;
+      }
+
+      // 생성 품질 세그먼트 (caps.models[].supports_quality 기준 동적 — 전체 선택지 표시)
       const qualHost = $("seg-quality");
       if (qualHost) {
         qualHost.innerHTML = "";
-        const mi = commonModel.mixed ? null : patch.modelInfo;
-        const quals = (mi && mi.qualities && mi.qualities.length) ? mi.qualities : [];
-        if (!quals.length) {
+        const supportsQual = !!(commonMi && commonMi.supports_quality && Array.isArray(commonMi.qualities) && commonMi.qualities.length);
+        qualHost.classList.toggle("dense", supportsQual && commonMi.qualities.length >= 5);
+        if (commonModel.mixed) {
+          qualHost.append(Data.el("button", { type: "button", disabled: true, text: "모델 혼합" }));
+        } else if (!supportsQual) {
           qualHost.append(Data.el("button", { type: "button", disabled: true, text: "자동" }));
         } else {
           const commonQ = Store.getCommonOrMixed(selList, (p) => p.effectiveQuality);
-          const pickList = quals.slice(0, 4);
-          for (const q of pickList) {
+          for (const q of commonMi.qualities) {
             qualHost.append(Data.el("button", {
               type: "button",
               className: !commonQ.mixed && commonQ.value === q ? "on" : "",
               text: q,
+              disabled: modelLocked,
               onClick: () => applyQualitySelection(q),
             }));
           }
         }
       }
 
-      // 모델 고유 동적 옵션 (Nano Banana image_size / thinking_level 등)
+      // 모델 고유 동적 옵션 (Nano Banana image_size / thinking_level 등 — 서버 effective.opts 정본)
       const extraHost = $("model-extra-opts");
       if (extraHost) {
         extraHost.innerHTML = "";
-        const mi = commonModel.mixed ? null : patch.modelInfo;
-        const optEntries = mi && mi.opts ? Object.entries(mi.opts) : [];
+        const optEntries = commonMi && commonMi.opts
+          ? Object.entries(commonMi.opts).filter(([k, ch]) => k !== "aspect_ratio" && Array.isArray(ch) && ch.length)
+          : [];
         extraHost.classList.toggle("hidden", optEntries.length === 0);
         for (const [optKey, choices] of optEntries) {
-          if (!Array.isArray(choices) || !choices.length) continue;
           const label = optKey === "image_size" ? "출력 해상도" : optKey === "thinking_level" ? "추론 깊이" : optKey;
-          const prep = Store.projectPrepare();
-          const curVal = (patch.meta.opts && patch.meta.opts[optKey]) || prep.opts[optKey] || (mi.opt_defaults && mi.opt_defaults[optKey]) || choices[0];
+          const commonOpt = Store.getCommonOrMixed(
+            selList,
+            (p) => (p.effectiveOpts && p.effectiveOpts[optKey]) || (commonMi.opt_defaults && commonMi.opt_defaults[optKey]) || choices[0]
+          );
           const seg = Data.el("div", { className: "seg-group" });
           for (const ch of choices) {
             seg.append(Data.el("button", {
               type: "button",
-              className: curVal === ch ? "on" : "",
+              className: !commonOpt.mixed && commonOpt.value === ch ? "on" : "",
               text: optKey === "thinking_level" ? (Data.THINKING_LABELS[ch] || ch) : ch,
+              disabled: modelLocked,
               onClick: () => applyExtraOpt(optKey, ch),
             }));
           }
@@ -704,12 +787,138 @@ window.DPV2Inspector = (() => {
         }
       }
 
-      // 전문가 설정 상태
+      // V2-B 서버 상태 배너 리스트 (반영 필요 · 비율 안 맞음 · 못 쓰는 모델 · 상한 낮춤 · AI 작성본 재작성 · 파일/항목 오류)
+      const cgStatusEl = $("crop-gen-status-list");
+      if (cgStatusEl) {
+        cgStatusEl.innerHTML = "";
+        const banners = [];
+        if (canPerCropModel) {
+          if (Store.state.cropGenError) {
+            banners.push(Data.el("div", { className: "cg-banner err" },
+              Data.el("span", { text: `생성 설정 파일 오류: ${Store.state.cropGenError}` }),
+            ));
+          }
+          const brokenList = selList.filter((p) => p.cropGenBroken);
+          if (brokenList.length) {
+            const firstErr = brokenList[0].cropGenError || "패치의 생성 설정을 읽지 못했습니다";
+            banners.push(Data.el("div", { className: "cg-banner err" },
+              Data.el("span", { text: brokenList.length > 1 ? `설정 오류 ${brokenList.length}개: ${firstErr}` : `설정 오류: ${firstErr}` }),
+              Data.el("button", {
+                type: "button",
+                className: "mini-btn",
+                text: "기본값 복구",
+                disabled: modelLocked,
+                onClick: () => Store.updateCropGen(
+                  [{ crop_ids: brokenList.map((p) => p.id), patch: { inherit_model: true, count: null } }],
+                  { historyLabel: "패치 생성 설정 복구" }
+                ),
+              }),
+            ));
+          }
+          const unavailList = selList.filter((p) => !p.cropGenBroken && p.cropGenAvailable === false);
+          if (unavailList.length) {
+            const why = unavailList[0].cropGenWhy || "현재 서버에서 사용할 수 없는 모델입니다.";
+            banners.push(Data.el("div", { className: "cg-banner err" },
+              Data.el("span", { text: unavailList.length > 1 ? `사용 불가 모델 ${unavailList.length}개: ${why}` : why }),
+            ));
+          }
+          const ratioBadList = selList.filter((p) => p.cropGenRatio && p.cropGenRatio.ok === false);
+          if (ratioBadList.length) {
+            const nearest = ratioBadList.length === 1 && ratioBadList[0].cropGenRatio.nearest
+              ? ` (권장 ${ratioBadList[0].cropGenRatio.nearest})` : "";
+            const allLocked = ratioBadList.every((p) => p.locked);
+            banners.push(Data.el("div", { className: "cg-banner warn" },
+              Data.el("span", { text: ratioBadList.length > 1 ? `비율 안 맞음 (${ratioBadList.length}개 영역)` : `비율 안 맞음${nearest} — 생성 전 넓히기가 필요합니다` }),
+              Data.el("button", {
+                type: "button",
+                id: "btn-model-ratio-fit",
+                className: "mini-btn accent-outline",
+                text: "모델 비율로 넓히기",
+                disabled: allLocked || modelLocked,
+                title: allLocked ? "영역 잠금을 해제한 뒤 넓힐 수 있습니다" : "해당 패치 효과 모델의 허용 비율에 맞게 영역 넓히기",
+                onClick: async () => {
+                  for (const rp of ratioBadList) {
+                    if (!rp.locked) await Canvas.fitPatchToModelRatio(rp);
+                  }
+                },
+              }),
+            ));
+          }
+          const clampedList = selList.filter((p) => p.effectiveClamped != null);
+          if (clampedList.length) {
+            const first = clampedList[0];
+            banners.push(Data.el("div", { className: "cg-banner warn" },
+              Data.el("span", {
+                text: clampedList.length > 1
+                  ? `모델 장 수 상한 적용됨 (${clampedList.length}개 영역)`
+                  : `장 수 상한 적용: ${first.effectiveClamped}장 → ${first.effectiveCount}장 (모델 상한)`,
+              }),
+            ));
+          }
+          const staleList = selList.filter((p) => p.cropGenPromptStale);
+          if (staleList.length) {
+            banners.push(Data.el("div", { className: "cg-banner info" },
+              Data.el("span", { text: `AI 작성본 ${staleList.length}개가 다음 생성 시 다시 작성됩니다(경량 LLM 호출)` }),
+            ));
+          }
+          const unappliedList = selList.filter((p) => !p.cropGenApplied && !p.cropGenBroken);
+          if (unappliedList.length) {
+            banners.push(Data.el("div", { className: "cg-banner info" },
+              Data.el("span", {
+                text: unappliedList.length > 1
+                  ? `반영 필요 (${unappliedList.length}개 영역) — [합성 적용] 또는 생성 시작 시 반영됩니다`
+                  : "반영 필요 — [합성 적용] 또는 생성 시작 시 서버 작업에 반영됩니다",
+              }),
+            ));
+          }
+        }
+        for (const b of banners) cgStatusEl.append(b);
+        cgStatusEl.classList.toggle("hidden", banners.length === 0);
+      }
+
+      // 프로젝트 기본값 요약 & 변경 버튼
+      const scopeNote = $("model-scope-note");
+      const btnProjDef = $("btn-project-defaults");
+      if (scopeNote) {
+        if (canPerCropModel) {
+          const projSummary = Data.formatModelSummary(Store.projectPrepare());
+          scopeNote.textContent = projSummary ? `프로젝트 기본: ${projSummary}` : "프로젝트 기본값 적용 중";
+        } else {
+          scopeNote.textContent = "모델·장수·품질·복잡도는 프로젝트 전체에 적용되며, 변경 시 다음 생성에서 반영 확인이 표시됩니다.";
+        }
+      }
+      if (btnProjDef) {
+        btnProjDef.classList.toggle("hidden", !canPerCropModel);
+        btnProjDef.disabled = modelLocked;
+      }
+
+      // 전문가 설정 상태 (caps.models[].complexities 기준 표시·선택지 구성)
       const chkAutoCrop = $("adv-show-autocrop");
       if (chkAutoCrop) chkAutoCrop.checked = !!Store.state.prefs.showAutoCrop;
+      const advCompRow = $("adv-complexity-row");
       const advComp = $("adv-complexity");
-      if (advComp) advComp.value = Store.projectPrepare().complexity || "high";
-      const advChanged = !!Store.state.prefs.showAutoCrop || (Store.projectPrepare().complexity !== "high");
+      const compChoices = (commonMi && Array.isArray(commonMi.complexities)) ? commonMi.complexities : [];
+      const hasComplexity = compChoices.length > 0;
+      if (advCompRow) advCompRow.classList.toggle("hidden", !hasComplexity);
+      const commonComp = hasComplexity
+        ? Store.getCommonOrMixed(selList, (p) => p.effectiveComplexity || "high")
+        : { mixed: false, value: "high" };
+      if (advComp && hasComplexity) {
+        advComp.innerHTML = "";
+        if (commonComp.mixed) {
+          advComp.append(Data.el("option", { value: "", text: "혼합됨", disabled: true, selected: true }));
+        }
+        for (const c of compChoices) {
+          const opt = Data.el("option", {
+            value: c,
+            text: (Data.COMPLEXITY_LABELS && Data.COMPLEXITY_LABELS[c]) || c,
+          });
+          if (!commonComp.mixed && commonComp.value === c) opt.selected = true;
+          advComp.append(opt);
+        }
+        advComp.disabled = modelLocked;
+      }
+      const advChanged = !!Store.state.prefs.showAutoCrop || (hasComplexity && (commonComp.mixed || commonComp.value !== "high"));
       const advDot = $("adv-changed-dot");
       if (advDot) advDot.classList.toggle("hidden", !advChanged);
       const advTxt = $("adv-summary-text");
@@ -762,6 +971,17 @@ window.DPV2Inspector = (() => {
           const thumbUrl = Api.apiUrl(cand.thumb_url || cand.big_url || cand.pick_url || "");
           const cTl = Data.trafficLight(cand, patch.seam);
 
+          const candModelTag = Data.formatCandidateModelTag(cand);
+          const modelRow = (candModelTag || cand.old_cell)
+            ? Data.el("div", {
+              className: "cand-model-row",
+              title: `${candModelTag || "모델 기록 없음"}${cand.old_cell ? " · 현재 설정과 다른 옛 조건" : ""}`,
+            },
+              candModelTag ? Data.el("span", { className: "cand-model-pill", text: candModelTag }) : null,
+              cand.old_cell ? Data.el("span", { className: "cand-old-badge", text: "옛 조건" }) : null,
+            )
+            : null;
+
           const card = Data.el("div", {
             className: "cand-card" + (isPicked ? " picked" : "") + (isActive ? " active" : "") + (cand.rejected ? " rejected" : ""),
             onClick: () => {
@@ -779,6 +999,7 @@ window.DPV2Inspector = (() => {
                 Data.el("span", { text: `${cTl.icon} ${cand.variant || `V${idx + 1}`}` }),
                 Data.el("span", { text: cand.took ? Data.formatElapsed(cand.took) : "" }),
               ),
+              modelRow,
               Data.el("div", { className: "cand-foot-btns" },
                 Data.el("button", {
                   type: "button",
@@ -825,9 +1046,15 @@ window.DPV2Inspector = (() => {
         sj.innerHTML = "";
         const purp = Data.purposeInfo(patch.meta.purpose);
         const files = (patch.refCrop && Array.isArray(patch.refCrop.files)) ? patch.refCrop.files : [];
+        const activeCandModelTag = activeCand ? Data.formatCandidateModelTag(activeCand) : "";
         const items = [
           { label: "작업 목적", val: purp.label, target: "#purpose-card" },
-          { label: "사용 모델", val: patch.modelInfo ? patch.modelInfo.shortName : patch.effectiveModel, target: "#model-card" },
+          {
+            label: "사용 모델",
+            val: (activeCandModelTag || (patch.modelInfo ? patch.modelInfo.shortName : patch.effectiveModel))
+              + (activeCand && activeCand.old_cell ? " (옛 조건)" : ""),
+            target: "#model-card",
+          },
           { label: "참고 레퍼런스", val: `${files.length}장 연결`, target: "#ref-drop-slot" },
           { label: "수정 지시", val: patch.meta.user_instruction_ko || "(기본 템플릿)", target: "#prompt-card" },
         ];
@@ -879,8 +1106,8 @@ window.DPV2Inspector = (() => {
       const upBtn = $("btn-tool-upscale"), bgBtn = $("btn-tool-bgremove");
       if (upBtn) upBtn.disabled = !canPost;
       if (bgBtn) bgBtn.disabled = !canPost;
-      setTxt("upscale-desc", canPost ? "Magnific Precision V2 업스케일 실행" : "Phase V2-B 연결 대기 중");
-      setTxt("bgremove-desc", canPost ? "배경 제거(RMBG) 누끼 실행" : "Phase V2-B 연결 대기 중");
+      setTxt("upscale-desc", canPost ? "Magnific Precision V2 업스케일 실행" : "Phase V2-C 연결 대기 중");
+      setTxt("bgremove-desc", canPost ? "배경 제거(RMBG) 누끼 실행" : "Phase V2-C 연결 대기 중");
     }
   }
 
@@ -902,8 +1129,8 @@ window.DPV2Inspector = (() => {
   function renderRunDock() {
     const patches = Store.getPatches();
     const targets = patches.filter((p) => p.selectedForRun);
-    const totalImgs = targets.reduce((s, p) => s + (p.effectiveCount || 4), 0);
-    const models = [...new Set(targets.map((p) => p.modelInfo ? p.modelInfo.shortName : p.effectiveModel))];
+    const totalImgs = targets.reduce((s, p) => s + (p.cropGenBroken ? 0 : (p.effectiveCount || 4)), 0);
+    const models = [...new Set(targets.map((p) => p.cropGenBroken ? "설정 오류" : (p.modelInfo ? p.modelInfo.shortName : p.effectiveModel)))];
     const running = !!(Store.state.S && Store.state.S.running);
 
     const leftEl = $("dock-summary-left"), rightEl = $("dock-summary-right");
@@ -914,18 +1141,20 @@ window.DPV2Inspector = (() => {
     }
     if (rightEl) rightEl.textContent = models.length ? models.join(", ") : "-";
 
-    const flowBusy = !!(Store.state.runFlowBusy || Store.state.assistBusy);
+    const flowBusy = !!(Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy);
     const btnRun = $("btn-run-selected");
     if (btnRun) {
-      // #C15-2: AI 프롬프트 작성(assistBusy) 중에도 생성 단추를 비활성화해 이전 글로 승인 상자가 뜨지 않게 막는다
+      // #C15-2 · R2-4: AI 프롬프트 작성(assistBusy)·모델 저장(cropGenBusy) 중에도 생성 단추를 비활성화해 옛 조건 승인 상자를 막는다
       btnRun.disabled = targets.length === 0 || running || flowBusy;
       btnRun.textContent = running
         ? "서버에서 생성 중…"
-        : Store.state.assistBusy
-          ? "AI 프롬프트 작성 중…"
-          : Store.state.runFlowBusy
-            ? "생성 준비 중…"
-            : targets.length ? `선택 영역 ${targets.length}개 생성 시작` : "생성할 영역을 체크하세요";
+        : Store.state.cropGenBusy
+          ? "모델 설정 저장 중…"
+          : Store.state.assistBusy
+            ? "AI 프롬프트 작성 중…"
+            : Store.state.runFlowBusy
+              ? "생성 준비 중…"
+              : targets.length ? `선택 영역 ${targets.length}개 생성 시작` : "생성할 영역을 체크하세요";
     }
     const btnApply = $("btn-apply-free");
     if (btnApply) {
@@ -1112,9 +1341,11 @@ window.DPV2Inspector = (() => {
 
     listEl.innerHTML = "";
     for (const m of filtered) {
+      const unavailable = m.available === false;
       const btn = Data.el("button", {
         type: "button",
-        className: "mp-item" + (m.name === curName ? " selected" : ""),
+        className: "mp-item" + (m.name === curName ? " selected" : "") + (unavailable ? " unavailable" : ""),
+        title: unavailable ? (m.why || "현재 서버에서 사용할 수 없는 모델입니다") : "",
         onMouseenter: () => renderModelGuide(m),
         onClick: async () => {
           $("model-popover").classList.add("hidden");
@@ -1123,9 +1354,14 @@ window.DPV2Inspector = (() => {
       },
         Data.el("div", {},
           Data.el("span", { className: "mp-item-title", text: m.label }),
-          Data.el("span", { className: "mp-item-sub", text: `${m.family} · 최대 참조 ${m.max_inputs}장` }),
+          Data.el("span", {
+            className: "mp-item-sub",
+            text: unavailable
+              ? `사용 불가 · ${m.why || "서버 모델 목록에 없음"}`
+              : `${m.family} · 최대 참조 ${m.max_refs}장`,
+          }),
         ),
-        Data.el("span", { className: "mp-badge", text: m.badge }),
+        Data.el("span", { className: "mp-badge", text: unavailable ? "사용 불가" : m.badge }),
       );
       listEl.append(btn);
     }
@@ -1140,10 +1376,13 @@ window.DPV2Inspector = (() => {
     box.innerHTML = "";
     box.append(
       Data.el("h3", { text: m.label }),
+      m.available === false
+        ? Data.el("div", { className: "mp-guide-warn", text: m.why || "이 모델은 현재 서버에서 사용할 수 없습니다." })
+        : null,
       Data.el("div", { className: "mp-guide-tags" },
         Data.el("span", { className: "mp-guide-tag", text: m.family || m.kind }),
         Data.el("span", { className: "mp-guide-tag", text: m.badge }),
-        Data.el("span", { className: "mp-guide-tag", text: `최대 참조 ${m.max_inputs}장` }),
+        Data.el("span", { className: "mp-guide-tag", text: `최대 참조 ${m.max_refs}장` }),
         Data.el("span", { className: "mp-guide-tag", text: `최대 ${m.max_n}장/회` }),
       ),
       Data.el("div", { className: "mp-guide-sec" },
@@ -1165,66 +1404,237 @@ window.DPV2Inspector = (() => {
     );
   }
 
-  async function applyModelSelection(modelName) {
-    const selList = Store.selectedPatches();
-    const m = Data.findModel(modelName);
-    const canPerCrop = Api.can("v2_crop_model");
-    const useProjectDefault = !canPerCrop || (selList.length <= 1 && (!selList[0] || !selList[0].meta.modelOverride));
-
-    if (useProjectDefault) {
-      try {
-        const nextVals = Store.buildPreparePayload({
-          model: modelName,
-          quality: (m && m.default_quality) || Store.projectPrepare().quality,
-        });
-        await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? 0, "prepare", nextVals);
-        Store.invalidateAllSpecs();
-        for (const p of selList) {
-          p.meta.modelOverride = "";
-          p.meta.quality = "";
-          p.meta.opts = {};
-        }
-        Store.toast(`프로젝트 기본 모델을 ${m ? m.shortName : modelName}(으)로 변경했습니다.`, "ok");
-        await Store.refreshAll(true);
-      } catch (err) {
-        Store.toast(`모델 변경 실패: ${err.message}`, "err");
-      }
-    } else {
-      for (const p of selList) p.meta.modelOverride = modelName;
-      try {
-        await Api.batchUpdateCrops(Store.state.root, Store.state.L?.rev ?? null, {
-          ids: selList.map((p) => p.id), model: modelName,
-        });
-      } catch (_) {}
-      Store.emit("selection");
-      Store.toast(`${selList.length}개 영역의 모델을 ${m ? m.shortName : modelName}(으)로 설정했습니다.`, "ok");
+  // #C19-3·4 (D564) · R2-1 · R2-2: 플래그 켜짐 시 「프로젝트 기본값」 vs 「이 패치만」을 명확히 분리하고,
+  // 빈 선택이 프로젝트 전체 변경으로 새지 않게 차단하며, 확인 상자 대기 중 다른 창의 변경을 판 번호로 감지한다.
+  async function resolveModelChangeScope(selList, changeLabel) {
+    if (!Api.can("v2_crop_model")) return "project";
+    if (!selList.length) {
+      Store.toast("선택된 수정 영역이 없습니다 — 영역을 먼저 선택해 주세요.");
+      return "cancel";
     }
-    pulseCard("#model-card");
+    const allInherit = selList.every((p) => !p.cropGenBroken && p.effectiveInherit && p.effectiveInherit.model === true);
+    if (!allInherit) return "patch";
+    const customCount = typeof Store.countCustomModelOverrides === "function" ? Store.countCustomModelOverrides() : 0;
+    const lines = [
+      selList.length > 1
+        ? `선택한 ${selList.length}개 영역은 현재 「프로젝트 기본 모델」을 따르고 있습니다.`
+        : `"${selList[0].name}" 영역은 현재 「프로젝트 기본 모델」을 따르고 있습니다.`,
+      `"${changeLabel}"을 프로젝트 기본값으로 저장하면 기본값을 따르는 모든 영역에 적용됩니다.`,
+      ...(customCount > 0 ? [`따로 모델을 정한 영역 ${customCount}개는 기존 모델을 유지합니다.`] : []),
+      "어떻게 적용할까요?",
+    ];
+    return Data.askDialogChoice(
+      lines,
+      [
+        { id: "patch", label: selList.length > 1 ? `선택 ${selList.length}개 영역만 지정` : "이 영역만 따로 지정", primary: true },
+        { id: "project", label: "프로젝트 기본값 변경" },
+        { id: "cancel", label: "취소" },
+      ],
+      { title: "적용 범위 확인", cancelId: "cancel", focusId: "patch" }
+    );
+  }
+
+  async function saveProjectPreparePatch(patchObj, successMsg, expectedPipeRev = null) {
+    const curPipeRev = Store.state.P?.rev ?? 0;
+    if (Number.isInteger(expectedPipeRev) && curPipeRev !== expectedPipeRev) {
+      Store.toast("다른 창에서 프로젝트 기본 설정이 변경되어 저장을 중단했습니다 — 최신 값을 확인한 뒤 다시 시도해 주세요.", "err");
+      Store.emit("selection");
+      return false;
+    }
+    try {
+      const nextVals = Store.buildPreparePayload(patchObj);
+      await Api.savePipelineSettings(Store.state.root, Number.isInteger(expectedPipeRev) ? expectedPipeRev : curPipeRev, "prepare", nextVals);
+      Store.invalidateAllSpecs();
+      if (successMsg) Store.toast(successMsg, "ok");
+      await Store.refreshAll(true);
+      return true;
+    } catch (err) {
+      Store.toast(`프로젝트 기본 설정 저장 실패: ${err.message}`, "err");
+      Store.emit("selection");
+      return false;
+    }
+  }
+
+  function validateScopeAfterConfirm(scope, selIds, baseCropGenSeen, basePipeRev) {
+    if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) {
+      Store.toast("다른 작업이 진행 중이어서 모델 변경을 중단했습니다.");
+      Store.emit("selection");
+      return null;
+    }
+    if (scope === "project") {
+      if (Number.isInteger(basePipeRev) && (Store.state.P?.rev ?? 0) !== basePipeRev) {
+        Store.toast("확인 창을 열어 둔 사이 다른 창에서 프로젝트 기본 설정이 바뀌어 저장을 중단했습니다 — 최신 값을 확인한 뒤 다시 시도해 주세요.", "err");
+        Store.emit("selection");
+        return null;
+      }
+      return [];
+    }
+    if (Number.isInteger(baseCropGenSeen) && Store.state.cropGenSeen !== baseCropGenSeen) {
+      Store.toast("확인 창을 열어 둔 사이 다른 창에서 패치별 모델 설정이 바뀌어 저장을 중단했습니다 — 최신 값을 확인한 뒤 다시 시도해 주세요.", "err");
+      Store.emit("selection");
+      return null;
+    }
+    const live = selIds.map((id) => Store.getPatch(id)).filter(Boolean);
+    if (!live.length) {
+      Store.toast("대상 수정 영역이 사라져 모델 변경을 취소했습니다.");
+      Store.emit("selection");
+      return null;
+    }
+    return live;
+  }
+
+  async function applyModelSelection(modelName) {
+    if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+    const selList = Store.selectedPatches();
+    const selIds = selList.map((p) => p.id);
+    const baseCropGenSeen = Store.state.cropGenSeen;
+    const basePipeRev = Store.state.P ? Store.state.P.rev : 0;
+    const m = Data.findModelExact(modelName);
+    if (m && m.available === false) {
+      Store.toast(m.why || "이 모델은 현재 서버에서 사용할 수 없습니다.", "err");
+      Store.emit("selection");
+      return;
+    }
+    const label = m ? m.shortName : modelName;
+    const scope = await resolveModelChangeScope(selList, `모델 ${label}`);
+    if (scope === "cancel") {
+      Store.emit("selection");
+      return;
+    }
+    const liveSel = validateScopeAfterConfirm(scope, selIds, baseCropGenSeen, basePipeRev);
+    if (liveSel === null) return;
+
+    if (scope === "project") {
+      const projPatch = { model: modelName };
+      if (m && m.supports_quality) projPatch.quality = m.default_quality || Store.projectPrepare().quality;
+      const ok = await saveProjectPreparePatch(projPatch, `프로젝트 기본 모델을 ${label}(으)로 변경했습니다.`, basePipeRev);
+      if (ok) pulseCard("#model-card");
+      return;
+    }
+
+    const pairs = liveSel.map((p) => {
+      const baseEff = (p.cropGen && p.cropGen.effective) || null;
+      return [p.id, Store.buildCropGenModelPatch(modelName, {}, baseEff)];
+    });
+    const changes = Store.buildGroupedChanges(pairs);
+    const r = await Store.updateCropGen(changes, {
+      historyLabel: liveSel.length > 1 ? `모델 일괄 변경 (${liveSel.length}개 → ${label})` : `모델 변경 (${liveSel[0].name} → ${label})`,
+      expectedSeen: baseCropGenSeen,
+    });
+    if (r && r.ok) {
+      if (r.changed) {
+        Store.toast(
+          liveSel.length > 1
+            ? `${liveSel.length}개 영역의 모델을 ${label}(으)로 설정했습니다.`
+            : `"${liveSel[0].name}" 영역의 모델을 ${label}(으)로 고정했습니다.`,
+          "ok"
+        );
+      }
+      pulseCard("#model-card");
+    }
   }
 
   async function applyQualitySelection(q) {
+    if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
     const selList = Store.selectedPatches();
-    for (const p of selList) p.meta.quality = q;
-    try {
-      const nextVals = Store.buildPreparePayload({ quality: q });
-      await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? 0, "prepare", nextVals);
-      await Store.refreshAll(true);
-    } catch (err) {
-      Store.toast(`품질 설정 저장 실패: ${err.message}`, "err");
+    const selIds = selList.map((p) => p.id);
+    const baseCropGenSeen = Store.state.cropGenSeen;
+    const basePipeRev = Store.state.P ? Store.state.P.rev : 0;
+    const scope = await resolveModelChangeScope(selList, `품질 ${q}`);
+    if (scope === "cancel") {
       Store.emit("selection");
+      return;
+    }
+    const liveSel = validateScopeAfterConfirm(scope, selIds, baseCropGenSeen, basePipeRev);
+    if (liveSel === null) return;
+
+    if (scope === "project") {
+      await saveProjectPreparePatch({ quality: q }, "", basePipeRev);
+      return;
+    }
+
+    // #C19-3: 품질만 바꿀 때도 지금 효과 모델을 model_id 로 함께 보낸다(그 패치는 그 모델에 고정)
+    const pairs = liveSel.map((p) => {
+      const baseEff = (p.cropGen && p.cropGen.effective) || { model: p.effectiveModel, quality: p.effectiveQuality, opts: p.effectiveOpts, complexity: p.effectiveComplexity };
+      return [p.id, Store.buildCropGenModelPatch(p.effectiveModel, { quality: q }, baseEff)];
+    });
+    const changes = Store.buildGroupedChanges(pairs);
+    const r = await Store.updateCropGen(changes, {
+      historyLabel: liveSel.length > 1 ? `품질 일괄 변경 (${liveSel.length}개 → ${q})` : `품질 변경 (${liveSel[0].name} → ${q})`,
+      expectedSeen: baseCropGenSeen,
+    });
+    if (r && r.ok && r.changed) {
+      Store.toast(liveSel.length > 1 ? `${liveSel.length}개 영역의 품질을 ${q}(으)로 설정했습니다.` : `품질을 ${q}(으)로 설정했습니다.`, "ok");
     }
   }
 
   async function applyExtraOpt(key, val) {
+    if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
     const selList = Store.selectedPatches();
-    for (const p of selList) p.meta.opts[key] = val;
-    try {
-      const nextVals = Store.buildPreparePayload({ [key]: val });
-      await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? 0, "prepare", nextVals);
-      await Store.refreshAll(true);
-    } catch (err) {
-      Store.toast(`옵션 저장 실패: ${err.message}`, "err");
+    const selIds = selList.map((p) => p.id);
+    const baseCropGenSeen = Store.state.cropGenSeen;
+    const basePipeRev = Store.state.P ? Store.state.P.rev : 0;
+    const valLabel = key === "thinking_level" ? (Data.THINKING_LABELS[val] || val) : val;
+    const keyLabel = key === "image_size" ? "해상도" : key === "thinking_level" ? "추론 깊이" : key;
+    const scope = await resolveModelChangeScope(selList, `${keyLabel} ${valLabel}`);
+    if (scope === "cancel") {
       Store.emit("selection");
+      return;
+    }
+    const liveSel = validateScopeAfterConfirm(scope, selIds, baseCropGenSeen, basePipeRev);
+    if (liveSel === null) return;
+
+    if (scope === "project") {
+      await saveProjectPreparePatch({ [key]: val }, "", basePipeRev);
+      return;
+    }
+
+    // #C19-3: 옵션만 바꿀 때도 지금 효과 모델을 model_id 로 함께 보낸다(다른 옵션 칸은 기존 값 유지)
+    const pairs = liveSel.map((p) => {
+      const baseEff = (p.cropGen && p.cropGen.effective) || { model: p.effectiveModel, quality: p.effectiveQuality, opts: p.effectiveOpts, complexity: p.effectiveComplexity };
+      return [p.id, Store.buildCropGenModelPatch(p.effectiveModel, { opts: { [key]: val } }, baseEff)];
+    });
+    const changes = Store.buildGroupedChanges(pairs);
+    const r = await Store.updateCropGen(changes, {
+      historyLabel: liveSel.length > 1 ? `${keyLabel} 일괄 변경 (${valLabel})` : `${keyLabel} 변경 (${liveSel[0].name} → ${valLabel})`,
+      expectedSeen: baseCropGenSeen,
+    });
+    if (r && r.ok && r.changed) {
+      Store.toast(`${keyLabel}를 ${valLabel}(으)로 설정했습니다.`, "ok");
+    }
+  }
+
+  async function applyComplexitySelection(compVal) {
+    if (!compVal || Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+    const selList = Store.selectedPatches();
+    const selIds = selList.map((p) => p.id);
+    const baseCropGenSeen = Store.state.cropGenSeen;
+    const basePipeRev = Store.state.P ? Store.state.P.rev : 0;
+    const compLabel = (Data.COMPLEXITY_LABELS && Data.COMPLEXITY_LABELS[compVal]) || compVal;
+    const scope = await resolveModelChangeScope(selList, `지시 복잡도 ${compLabel}`);
+    if (scope === "cancel") {
+      Store.emit("selection");
+      return;
+    }
+    const liveSel = validateScopeAfterConfirm(scope, selIds, baseCropGenSeen, basePipeRev);
+    if (liveSel === null) return;
+
+    if (scope === "project") {
+      await saveProjectPreparePatch({ complexity: compVal }, "", basePipeRev);
+      return;
+    }
+
+    const pairs = liveSel.map((p) => {
+      const baseEff = (p.cropGen && p.cropGen.effective) || { model: p.effectiveModel, quality: p.effectiveQuality, opts: p.effectiveOpts, complexity: p.effectiveComplexity };
+      return [p.id, Store.buildCropGenModelPatch(p.effectiveModel, { complexity: compVal }, baseEff)];
+    });
+    const changes = Store.buildGroupedChanges(pairs);
+    const r = await Store.updateCropGen(changes, {
+      historyLabel: liveSel.length > 1 ? `복잡도 일괄 변경 (${compLabel})` : `복잡도 변경 (${liveSel[0].name} → ${compLabel})`,
+      expectedSeen: baseCropGenSeen,
+    });
+    if (r && r.ok && r.changed) {
+      Store.toast(`지시 복잡도를 ${compLabel}(으)로 설정했습니다.`, "ok");
     }
   }
 
@@ -1241,9 +1651,9 @@ window.DPV2Inspector = (() => {
 
   // ── 6. AI 스마트 프롬프트 작성 (계약 §3.4 · 최대 8패치 직렬 · 확인 창 없이 즉시 호출 D521 · 429/5xx/timeout/401/전송오류 즉시 중단 D520) ──
   async function runAssistForPatches(patches, force = true, opts = {}) {
-    // #C08-1①: 이미 작성이 진행 중이면 재진입을 막아 잠금 조기 해제를 방지한다
-    if (Store.state.assistBusy) {
-      Store.toast("AI 프롬프트 작성이 이미 진행 중입니다.");
+    // #C08-1① · R2-4: 이미 작성이 진행 중이거나 패치별 모델 저장 중이면 재진입/옛 모델 작성을 막는다
+    if (Store.state.assistBusy || Store.state.cropGenBusy) {
+      Store.toast(Store.state.cropGenBusy ? "패치별 모델 설정 저장이 끝난 뒤 AI 프롬프트를 작성해 주세요." : "AI 프롬프트 작성이 이미 진행 중입니다.");
       return { ok: false, count: 0, attempted: 0, calledIds: [], aborted: true, didApply: false };
     }
     const list = (patches || []).slice(0, 8);
@@ -1486,8 +1896,12 @@ window.DPV2Inspector = (() => {
 
   // ── 7. 선택 영역 생성 실행 (#C06·#C09·#C10·#C11-1·#C13-3·#C15-2·#C21-1·#C23-1·#C23-2·#C26-1~3 선행 반영·미저장 스펙 저장 → D519 자동 assist → DPSubmit.submitPaid §3.6) ──
   async function runSelectedGeneration(useSelectedOnly = false) {
-    if (Store.state.runFlowBusy || Store.state.assistBusy) {
-      Store.toast(Store.state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 생성해 주세요." : "앞선 제출을 처리하는 중입니다");
+    if (Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy) {
+      Store.toast(
+        Store.state.cropGenBusy
+          ? "패치별 모델 설정 저장이 끝난 뒤 생성해 주세요."
+          : Store.state.assistBusy ? "AI 프롬프트 작성이 끝난 뒤 생성해 주세요." : "앞선 제출을 처리하는 중입니다"
+      );
       return;
     }
     const patches = Store.getPatches();
@@ -2103,34 +2517,129 @@ window.DPV2Inspector = (() => {
     });
 
     const chkInherit = $("chk-inherit-model");
-    if (chkInherit) chkInherit.addEventListener("change", (e) => {
+    if (chkInherit) chkInherit.addEventListener("change", async (e) => {
       if (!Api.can("v2_crop_model")) {
         e.target.checked = true;
         Store.toast("영역별 개별 모델 지정은 다음 단계(V2-B)에서 지원됩니다 — 현재는 프로젝트 기본 모델로 적용됩니다.");
         return;
       }
-      for (const p of Store.selectedPatches()) {
-        p.meta.modelOverride = e.target.checked ? "" : p.effectiveModel;
+      if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) {
+        Store.emit("selection");
+        return;
       }
-      Store.emit("selection");
+      const selList = Store.selectedPatches();
+      if (!selList.length) {
+        Store.emit("selection");
+        return;
+      }
+      const wantInherit = !!e.target.checked;
+      // 낙관적 갱신 금지(#C19-3): 응답 전 화면 값은 서버 기준으로 유지하고 요청 성공 뒤 반영
+      if (wantInherit) {
+        const targets = selList.filter((p) => p.cropGenBroken || !p.effectiveInherit || p.effectiveInherit.model === false);
+        if (!targets.length) { Store.emit("selection"); return; }
+        const r = await Store.updateCropGen(
+          [{ crop_ids: targets.map((p) => p.id), patch: { inherit_model: true } }],
+          { historyLabel: targets.length > 1 ? `프로젝트 기본 모델 따르기 (${targets.length}개)` : `프로젝트 기본 모델 따르기 (${targets[0].name})` }
+        );
+        if (r && r.ok && r.changed) {
+          const keptN = targets.some((p) => p.effectiveInherit && p.effectiveInherit.n === false);
+          Store.toast(
+            keptN
+              ? "프로젝트 기본 모델을 따르도록 되돌렸습니다 (개별 장 수 설정은 유지)."
+              : "프로젝트 기본 모델을 따르도록 되돌렸습니다.",
+            "ok"
+          );
+        }
+      } else {
+        const targets = selList.filter((p) => !p.cropGenBroken && p.effectiveInherit && p.effectiveInherit.model === true);
+        if (!targets.length) { Store.emit("selection"); return; }
+        const pairs = targets.map((p) => {
+          const baseEff = (p.cropGen && p.cropGen.effective) || { model: p.effectiveModel, quality: p.effectiveQuality, opts: p.effectiveOpts, complexity: p.effectiveComplexity };
+          return [p.id, Store.buildCropGenModelPatch(p.effectiveModel, {}, baseEff)];
+        });
+        const changes = Store.buildGroupedChanges(pairs);
+        const r = await Store.updateCropGen(changes, {
+          historyLabel: targets.length > 1 ? `개별 모델 고정 (${targets.length}개)` : `개별 모델 고정 (${targets[0].name})`,
+        });
+        if (r && r.ok && r.changed) {
+          Store.toast(
+            targets.length > 1
+              ? `${targets.length}개 영역에 개별 모델을 고정했습니다.`
+              : `"${targets[0].name}" 영역에 개별 모델을 고정했습니다.`,
+            "ok"
+          );
+        }
+      }
     });
 
     const btnModel = $("btn-model-dropdown");
-    if (btnModel) btnModel.addEventListener("click", (e) => openModelPopover(e.currentTarget));
+    if (btnModel) btnModel.addEventListener("click", (e) => {
+      if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+      openModelPopover(e.currentTarget);
+    });
     const mpSearch = $("mp-search");
     if (mpSearch) mpSearch.addEventListener("input", (e) => renderModelPopoverList(e.target.value));
 
+    const btnProjDef = $("btn-project-defaults");
+    if (btnProjDef) btnProjDef.addEventListener("click", () => {
+      if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+      if (window.DPV2Overlays && typeof window.DPV2Overlays.openProjectDefaultsModal === "function") {
+        window.DPV2Overlays.openProjectDefaultsModal();
+      }
+    });
+
+    const btnCountInherit = $("btn-count-inherit");
+    if (btnCountInherit) btnCountInherit.addEventListener("click", async () => {
+      if (!Api.can("v2_crop_model") || Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
+      const customIds = Store.selectedPatches()
+        .filter((p) => p.effectiveInherit && p.effectiveInherit.n === false)
+        .map((p) => p.id);
+      if (!customIds.length) return;
+      const r = await Store.updateCropGen(
+        [{ crop_ids: customIds, patch: { count: null } }],
+        { historyLabel: customIds.length > 1 ? `후보 장수 기본값 복원 (${customIds.length}개)` : "후보 장수 기본값 복원" }
+      );
+      if (r && r.ok && r.changed) {
+        Store.toast("프로젝트 기본 후보 장수를 따르도록 되돌렸습니다.", "ok");
+      }
+    });
+
     document.querySelectorAll("#seg-count button").forEach((b) => {
       b.addEventListener("click", async () => {
+        if (Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy) return;
         const val = Number(b.dataset.val);
-        for (const p of Store.selectedPatches()) p.meta.count = val;
-        try {
-          const nextVals = Store.buildPreparePayload({ n: val });
-          await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? 0, "prepare", nextVals);
-          await Store.refreshAll(true);
-        } catch (err) {
-          Store.toast(`후보 장수 저장 실패: ${err.message}`, "err");
+        const selList = Store.selectedPatches();
+        if (!Api.can("v2_crop_model")) {
+          // 플래그 꺼짐: 기존처럼 프로젝트 기본 장수(POST /pipeline/settings) 저장
+          try {
+            const nextVals = Store.buildPreparePayload({ n: val });
+            await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? 0, "prepare", nextVals);
+            await Store.refreshAll(true);
+          } catch (err) {
+            Store.toast(`후보 장수 저장 실패: ${err.message}`, "err");
+            Store.emit("selection");
+          }
+          return;
+        }
+        // #C19-4 · R2-3: 플래그 켜짐 시 선택 패치의 개별 count(POST /crop_gen)로 저장
+        // 손상된 패치(cropGenBroken)가 포함되면 서버가 손상 항목을 빈 객체로 재구성해 모델 설정이 사라지므로 먼저 복구·재선택을 안내한다
+        if (!selList.length) return;
+        if (selList.some((p) => p.cropGenBroken)) {
+          Store.toast("설정 오류가 있는 영역이 포함되어 장수를 변경할 수 없습니다 — 먼저 모델을 다시 고르거나 [기본값 복구]를 눌러 주세요.", "err");
           Store.emit("selection");
+          return;
+        }
+        const r = await Store.updateCropGen(
+          [{ crop_ids: selList.map((p) => p.id), patch: { count: val } }],
+          { historyLabel: selList.length > 1 ? `후보 장수 일괄 변경 (${selList.length}개 → ${val}장)` : `후보 장수 변경 (${selList[0].name} → ${val}장)` }
+        );
+        if (r && r.ok && r.changed) {
+          Store.toast(
+            selList.length > 1
+              ? `${selList.length}개 영역의 후보 장수를 ${val}장으로 설정했습니다.`
+              : `"${selList[0].name}" 영역의 후보 장수를 ${val}장으로 설정했습니다.`,
+            "ok"
+          );
         }
       });
     });
@@ -2139,13 +2648,7 @@ window.DPV2Inspector = (() => {
     if (chkAutoCrop) chkAutoCrop.addEventListener("change", (e) => Store.savePrefs({ showAutoCrop: e.target.checked }));
     const advComp = $("adv-complexity");
     if (advComp) advComp.addEventListener("change", async (e) => {
-      try {
-        const nextVals = Store.buildPreparePayload({ complexity: e.target.value });
-        await Api.savePipelineSettings(Store.state.root, Store.state.P?.rev ?? 0, "prepare", nextVals);
-        await Store.refreshAll(true);
-      } catch (err) {
-        Store.toast(`복잡도 저장 실패: ${err.message}`, "err");
-      }
+      await applyComplexitySelection(e.target.value);
     });
 
     // TAB 2 비교 버튼
@@ -2173,7 +2676,7 @@ window.DPV2Inspector = (() => {
         else if (res && res.ok) { Store.toast("추가 후보 생성을 시작했습니다.", "ok"); await Store.refreshAll(true); }
         else if (res) {
           const msg = res.reason === "unsupported"
-            ? "후보 다시 뽑기는 다음 단계(V2-B)에서 지원됩니다 — 지금은 기존 화면(v1)을 이용해 주세요."
+            ? "후보 다시 뽑기는 아직 v2에서 지원되지 않습니다 — 지금은 기존 화면(v1)을 이용해 주세요."
             : (res.error || res.message || res.reason || "추가 후보 생성을 시작하지 못했습니다.");
           Store.toast(msg, res.reason === "unsupported" ? "accent" : "err");
         }

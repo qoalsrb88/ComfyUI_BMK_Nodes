@@ -275,21 +275,31 @@ window.DPV2Canvas = (() => {
     return [Math.round(x0), Math.round(y0), Math.round(x1), Math.round(y1)];
   }
 
+  function modelRatioParams(modelInfo) {
+    const ratios = (modelInfo && Array.isArray(modelInfo.ratios)) ? modelInfo.ratios : [];
+    const ratioSizes = (modelInfo && modelInfo.ratio_sizes && typeof modelInfo.ratio_sizes === "object" && Object.keys(modelInfo.ratio_sizes).length)
+      ? modelInfo.ratio_sizes
+      : Data.RATIO_SIZES;
+    const tolerance = (modelInfo && typeof modelInfo.ratio_tolerance === "number") ? modelInfo.ratio_tolerance : 0.01;
+    return { ratios, ratioSizes, tolerance };
+  }
+
   function applyModelRatioSnap(rect, handle, bounds, step, modelInfo) {
-    if (!modelInfo || !Array.isArray(modelInfo.ratios) || !modelInfo.ratios.length) {
+    const { ratios, ratioSizes, tolerance } = modelRatioParams(modelInfo);
+    if (!ratios.length) {
       return { rect, ratioMatched: null };
     }
     const G = window.DPLayoutGeom;
     const [x0, y0, x1, y1] = rect;
     const w = x1 - x0, h = y1 - y0;
     if (w <= 0 || h <= 0) return { rect, ratioMatched: null };
-    const already = G ? G.ratioMatch(w, h, modelInfo.ratios, 0.01, Data.RATIO_SIZES) : null;
+    const already = G ? G.ratioMatch(w, h, ratios, tolerance, ratioSizes) : null;
     if (already) return { rect, ratioMatched: already };
 
     // 가장 가까운 허용 비율 탐색
     let bestLabel = null, bestVal = 1, bestErr = Infinity;
-    for (const label of modelInfo.ratios) {
-      const sz = Data.RATIO_SIZES[label];
+    for (const label of ratios) {
+      const sz = ratioSizes[label];
       if (!sz || !sz[0] || !sz[1]) continue;
       const val = sz[0] / sz[1];
       const err = Math.abs(Math.log((w / h) / val));
@@ -331,8 +341,45 @@ window.DPV2Canvas = (() => {
     nx0 = Math.max(0, Math.min(bounds[0] - nw, nx0));
     ny0 = Math.max(0, Math.min(bounds[1] - nh, ny0));
     const cand = [Math.round(nx0), Math.round(ny0), Math.round(nx0 + nw), Math.round(ny0 + nh)];
-    const matched = G ? G.ratioMatch(cand[2] - cand[0], cand[3] - cand[1], [bestLabel], 0.01, Data.RATIO_SIZES) : bestLabel;
+    const matched = G ? G.ratioMatch(cand[2] - cand[0], cand[3] - cand[1], [bestLabel], tolerance, ratioSizes) : bestLabel;
     return matched ? { rect: cand, ratioMatched: matched } : { rect, ratioMatched: null };
+  }
+
+  async function fitPatchToModelRatio(patch) {
+    const p = patch || Store.primaryPatch();
+    if (!p || !window.DPLayoutGeom) return { ok: false, reason: "no_patch" };
+    if (p.locked) {
+      Store.toast(`"${p.name}" 영역이 잠겨 있습니다 — 잠금을 해제한 뒤 비율을 맞춰 주세요.`, "err");
+      return { ok: false, reason: "locked" };
+    }
+    const mi = p.modelInfo || Data.findModelExact(p.effectiveModel);
+    const { ratios, ratioSizes, tolerance } = modelRatioParams(mi);
+    if (!ratios.length) {
+      Store.toast("이 패치의 모델은 지정 비율 제한이 없습니다.");
+      return { ok: false, reason: "no_ratios" };
+    }
+    const layCanvas = (Store.state.L && Array.isArray(Store.state.L.canvas) && Store.state.L.canvas.length === 2)
+      ? Store.state.L.canvas
+      : ((Store.state.S && Store.state.S.canvas && Array.isArray(Store.state.S.canvas.size)) ? Store.state.S.canvas.size : [view.imgW, view.imgH]);
+    const bounds = [Math.round(layCanvas[0] || view.imgW), Math.round(layCanvas[1] || view.imgH)];
+    const curRect = p.rect.map(Math.round);
+    const best = window.DPLayoutGeom.ratioFitRect(curRect, bounds, ratios, tolerance, ratioSizes);
+    if (!best || !Array.isArray(best.rect)) {
+      Store.toast(`"${p.name}" 영역을 ${mi ? mi.label : p.effectiveModel} 지정 비율에 맞출 수 없습니다.`, "err");
+      return { ok: false, reason: "cannot_fit" };
+    }
+    if (best.rect.every((v, i) => v === curRect[i])) {
+      Store.toast(`"${p.name}" 영역은 이미 모델 비율(${best.ratio})에 맞습니다.`);
+      return { ok: true, ratio: best.ratio, unchanged: true };
+    }
+    try {
+      await Store.updateCrop(p.id, { rect: best.rect }, `비율 맞춤 (${p.name} · ${best.ratio})`);
+      Store.toast(`"${p.name}" 영역을 ${mi ? mi.shortName : p.effectiveModel} 비율(${best.ratio})에 맞춰 넓혔습니다.`, "ok");
+      return { ok: true, ratio: best.ratio, rect: best.rect };
+    } catch (err) {
+      Store.toast(`비율 맞춤 실패: ${(err && err.message) || "서버에서 거절했습니다."}`, "err");
+      return { ok: false, error: err && err.message };
+    }
   }
 
   function snapMoveRect(origRect, dx, dy, bounds, step) {
@@ -369,11 +416,12 @@ window.DPV2Canvas = (() => {
       }
       rect = placeRectWithStep(mx < 0 ? x1 : x0, my < 0 ? y1 : y0, mx, my, w, h, bounds, q);
     }
-    if (useRatioSnap && !keep && step > 1 && modelInfo && modelInfo.ratios && modelInfo.ratios.length) {
+    const rp = modelRatioParams(modelInfo);
+    if (useRatioSnap && !keep && step > 1 && rp.ratios.length) {
       return applyModelRatioSnap(rect, handle, bounds, step, modelInfo);
     }
-    const matched = G && modelInfo && modelInfo.ratios && modelInfo.ratios.length
-      ? G.ratioMatch(rect[2] - rect[0], rect[3] - rect[1], modelInfo.ratios, 0.01, Data.RATIO_SIZES)
+    const matched = G && rp.ratios.length
+      ? G.ratioMatch(rect[2] - rect[0], rect[3] - rect[1], rp.ratios, rp.tolerance, rp.ratioSizes)
       : null;
     return { rect, ratioMatched: matched };
   }
@@ -399,11 +447,12 @@ window.DPV2Canvas = (() => {
       rect = placeRectWithStep(ax, ay, mx, my, w, h, bounds, qSz);
     }
     const handle = `${dy >= 0 ? "s" : "n"}${dx >= 0 ? "e" : "w"}`;
-    if (useRatioSnap && !keep && step > 1 && modelInfo && modelInfo.ratios && modelInfo.ratios.length) {
+    const rp = modelRatioParams(modelInfo);
+    if (useRatioSnap && !keep && step > 1 && rp.ratios.length) {
       return applyModelRatioSnap(rect, handle, bounds, step, modelInfo);
     }
-    const matched = G && modelInfo && modelInfo.ratios && modelInfo.ratios.length
-      ? G.ratioMatch(rect[2] - rect[0], rect[3] - rect[1], modelInfo.ratios, 0.01, Data.RATIO_SIZES)
+    const matched = G && rp.ratios.length
+      ? G.ratioMatch(rect[2] - rect[0], rect[3] - rect[1], rp.ratios, rp.tolerance, rp.ratioSizes)
       : null;
     return { rect, ratioMatched: matched };
   }
@@ -736,7 +785,13 @@ window.DPV2Canvas = (() => {
     const ratioBtn = $("fb-ratio-btn");
     if (ratioBtn) {
       const ratios = (patch.modelInfo && patch.modelInfo.ratios) || [];
+      const ratioOff = !!(patch.cropGenRatio && patch.cropGenRatio.ok === false);
       ratioBtn.classList.toggle("hidden", isMulti || !ratios.length || patch.locked);
+      ratioBtn.classList.toggle("ratio-warn", ratioOff);
+      ratioBtn.textContent = ratioOff ? "모델 비율로 넓히기" : "비율 맞춤";
+      ratioBtn.title = ratioOff
+        ? `비율 안 맞음 — 가장 가까운 비율(${patch.cropGenRatio.nearest || "자동"})에 맞게 영역 넓히기`
+        : "선택 모델의 지정 비율에 맞게 영역 틀 조정";
     }
 
     const lockBtn = $("fb-lock-btn");
@@ -773,20 +828,27 @@ window.DPV2Canvas = (() => {
     if (aiBtn) {
       aiBtn.innerHTML = "";
       aiBtn.append(Data.icon("sparkles", 13), Store.state.assistBusy ? "작성 중…" : "AI 작성");
-      aiBtn.disabled = specLocked;
+      aiBtn.disabled = specLocked || !!Store.state.cropGenBusy;
     }
 
     const mLabel = $("fb-model-label");
+    const mBtn = $("fb-model-btn");
     if (mLabel) {
       const commonM = Store.getCommonOrMixed(selList, (p) => p.effectiveModel);
       mLabel.textContent = commonM.mixed
-        ? `혼합 (${new Set(selList.map((p) => p.effectiveModel)).size}종)`
-        : (patch.modelInfo ? patch.modelInfo.shortName : patch.effectiveModel);
+        ? `혼합 (${new Set(selList.map((p) => p.effectiveModel || "__broken__")).size}종)`
+        : (patch.cropGenBroken ? "설정 오류" : (patch.modelInfo ? patch.modelInfo.shortName : patch.effectiveModel));
+    }
+    if (mBtn) {
+      const anyCustom = Api.can("v2_crop_model") && selList.some((p) => p.effectiveInherit && p.effectiveInherit.model === false);
+      const anyUnavailable = selList.some((p) => p.cropGenAvailable === false || p.cropGenBroken);
+      mBtn.classList.toggle("is-custom", anyCustom);
+      mBtn.classList.toggle("is-unavailable", anyUnavailable);
     }
     const runBtn = $("fb-run-btn");
     if (runBtn) {
       runBtn.textContent = isMulti ? `${selList.length}개 생성` : "생성";
-      runBtn.disabled = !!(Store.state.S && Store.state.S.running) || !!Store.state.runFlowBusy || !!Store.state.assistBusy;
+      runBtn.disabled = !!(Store.state.S && Store.state.S.running) || !!Store.state.runFlowBusy || !!Store.state.assistBusy || !!Store.state.cropGenBusy;
     }
   }
 
@@ -1078,7 +1140,9 @@ window.DPV2Canvas = (() => {
         const dist = Math.hypot(pt.x - dg.x0, pt.y - dg.y0);
         if (dist >= 6 / Math.max(0.2, view.zoom)) dg.moved = true;
         if (!dg.moved) return;
-        const mi = activeModelInfo();
+        // R2-6: 새 영역은 항상 프로젝트 기본 모델을 상속하므로, 직전 선택 패치의 개별 모델이 아니라 프로젝트 기본 모델 기준으로 비율 스냅한다
+        const projModel = Store.projectPrepare().model;
+        const mi = Data.findModelExact(projModel) || Data.findModel(projModel);
         const useRatio = Store.state.prefs.snapRatio !== false;
         if (view.imgW && view.imgH) {
           const res = snapNewRect(dg.x0, dg.y0, pt.x - dg.x0, pt.y - dg.y0, [view.imgW, view.imgH], step, e.shiftKey, mi, useRatio);
@@ -1280,18 +1344,7 @@ window.DPV2Canvas = (() => {
     const fbCmp = $("fb-compare-btn");
     if (fbCmp) fbCmp.addEventListener("click", () => window.DPV2Overlays && window.DPV2Overlays.openCompareOverlay());
     const fbRatio = $("fb-ratio-btn");
-    if (fbRatio) fbRatio.addEventListener("click", async () => {
-      const p = Store.primaryPatch();
-      if (!p || !window.DPLayoutGeom || !p.modelInfo || !p.modelInfo.ratios.length) return;
-      const bounds = [Math.round(view.imgW), Math.round(view.imgH)];
-      const best = window.DPLayoutGeom.ratioFitRect(p.rect.map(Math.round), bounds, p.modelInfo.ratios, 0.01, Data.RATIO_SIZES);
-      if (best && Array.isArray(best.rect)) {
-        await Store.updateCrop(p.id, { rect: best.rect }, `비율 맞춤 (${p.name} · ${best.ratio})`);
-        Store.toast(`선택 모델 비율(${best.ratio})에 맞춰 영역 틀을 조정했습니다.`, "ok");
-      } else {
-        Store.toast("이 영역을 모델 지정 비율에 맞출 수 없습니다.", "err");
-      }
-    });
+    if (fbRatio) fbRatio.addEventListener("click", () => fitPatchToModelRatio(Store.primaryPatch()));
     const fbLock = $("fb-lock-btn");
     if (fbLock) fbLock.addEventListener("click", async () => {
       const p = Store.primaryPatch();
@@ -1512,6 +1565,7 @@ window.DPV2Canvas = (() => {
     nudgeSelectedPatch,
     snapResizeRect,
     snapNewRect,
+    fitPatchToModelRatio,
     getActiveSnapStep,
     bindEvents,
   };
