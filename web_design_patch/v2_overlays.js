@@ -12,10 +12,61 @@ window.DPV2Overlays = (() => {
   // ── 공용 모달 헬퍼 ──
   let modalOnClose = null;
   let modalCanClose = null;
+  let modalPrevFocus = null;
+  let modalInertSaved = [];
+
+  function lockModalBackground() {
+    if (modalInertSaved.length) return;
+    modalPrevFocus = document.activeElement || null;
+    for (const bgId of ["projects-view", "studio-view"]) {
+      const bg = $(bgId);
+      if (bg) {
+        modalInertSaved.push([bg, !!bg.inert]);
+        bg.inert = true;
+      }
+    }
+  }
+
+  function canFocusSafely() {
+    return !navigator.userActivation || navigator.userActivation.isActive;
+  }
+
+  function unlockModalBackground() {
+    while (modalInertSaved.length) {
+      const [node, prevInert] = modalInertSaved.pop();
+      try { node.inert = prevInert; } catch (_) {}
+    }
+    const prev = modalPrevFocus;
+    modalPrevFocus = null;
+    if (canFocusSafely() && prev && prev.isConnected !== false && typeof prev.focus === "function") {
+      try { prev.focus(); } catch (_) {}
+    }
+  }
+
+  function focusInsideModal() {
+    // Forge iframe 의 focus-without-user-activation 정책 위반 콘솔 오류를 막기 위해 사용자 활성화 시에만 포커스를 이동한다
+    if (!canFocusSafely()) return;
+    const box = $("modal-box");
+    if (!box) return;
+    const first = box.querySelector("#modal-body input:not([disabled]):not(.hidden), #modal-body textarea:not([disabled]):not(.hidden), #modal-body select:not([disabled]):not(.hidden), #modal-body button:not([disabled]):not(.hidden), #modal-foot button:not([disabled]):not(.hidden), #modal-close:not([disabled]):not(.hidden)");
+    if (first && typeof first.focus === "function") {
+      try { first.focus(); return; } catch (_) {}
+    }
+    if (!box.hasAttribute || !box.hasAttribute("tabindex")) box.setAttribute("tabindex", "-1");
+    if (typeof box.focus === "function") {
+      try { box.focus(); } catch (_) {}
+    }
+  }
 
   function openModal({ title, bodyNodes = [], actions = [], onClose = null, canClose = null }) {
     const bd = $("modal-backdrop");
-    if (!bd) return;
+    if (!bd) return false;
+    const wasOpen = !bd.classList.contains("hidden");
+    // #C40-1: 현재 열린 모달이 닫기 잠금(canClose() === false) 상태면 다른 모달로 교체하거나 onClose() 를 부르지 않는다
+    if (wasOpen && typeof modalCanClose === "function" && !modalCanClose()) {
+      Store.toast("현재 작업이 완료될 때까지 다른 창을 열 수 없습니다.");
+      return false;
+    }
     if (typeof modalOnClose === "function") {
       const prevClose = modalOnClose;
       modalOnClose = null;
@@ -43,7 +94,15 @@ window.DPV2Overlays = (() => {
       if (a.id) attrs.id = a.id;
       foot.append(Data.el("button", attrs));
     }
+    const box = $("modal-box");
+    if (box) {
+      box.setAttribute("role", "dialog");
+      box.setAttribute("aria-modal", "true");
+    }
+    if (!wasOpen) lockModalBackground();
     bd.classList.remove("hidden");
+    focusInsideModal();
+    return true;
   }
 
   function closeModal(force = false) {
@@ -52,6 +111,10 @@ window.DPV2Overlays = (() => {
     if (!isForce && typeof modalCanClose === "function" && !modalCanClose()) return;
     const bd = $("modal-backdrop");
     if (bd) bd.classList.add("hidden");
+    const box = $("modal-box");
+    if (box && typeof box.removeAttribute === "function") {
+      box.removeAttribute("aria-modal");
+    }
     const mClose = $("modal-close");
     if (mClose) mClose.disabled = false;
     modalCanClose = null;
@@ -65,6 +128,7 @@ window.DPV2Overlays = (() => {
     if (body) body.innerHTML = "";
     const foot = $("modal-foot");
     if (foot) foot.innerHTML = "";
+    unlockModalBackground();
   }
 
   function loadImage(src) {
@@ -681,6 +745,14 @@ window.DPV2Overlays = (() => {
     const rawRole = roleSel ? roleSel.value : "main";
     const role = rawRole === "aux" || rawRole === "sub" ? "aux" : "main";
 
+    if (sheetState.saving) return;
+    sheetState.saving = true;
+    const btnAttach = $("btn-sheet-attach");
+    const btnVault = $("btn-sheet-save-vault");
+    if (btnAttach) btnAttach.disabled = true;
+    if (btnVault) btnVault.disabled = true;
+
+    let saveAttempted = false;
     try {
       const cutBody = {
         sheet: sheetState.sheetPath,
@@ -688,28 +760,9 @@ window.DPV2Overlays = (() => {
         method: "rect",
       };
       if (curSheet && curSheet.v) cutBody.sheet_v = curSheet.v;
-      const cutRes = await Api.cutRef(Store.state.root, cutBody);
-      if (!cutRes || !cutRes.req) {
-        throw new Error("시트 오리기 요청 ID를 받지 못했습니다.");
-      }
-
-      const transform = {
-        rotate: 0,
-        flip_h: !!sheetState.flipX,
-        scale: 1.0,
-      };
-      if (cornerCheck.corners) transform.corners = cornerCheck.corners;
-
-      const saveBody = { req: cutRes.req, transform };
-      if (cropId) {
-        saveBody.crop_id = cropId;
-        saveBody.role = role;
-        if (role === "aux") saveBody.desc = `cut_${Date.now().toString(36).slice(-4)}`;
-      } else {
-        saveBody.desc = "";
-      }
 
       const sendSave = async (body) => {
+        saveAttempted = true;
         try {
           return await Api.saveRef(Store.state.root, Store.state.R?.rev ?? null, body);
         } catch (err) {
@@ -724,7 +777,33 @@ window.DPV2Overlays = (() => {
         }
       };
 
-      const saved = await sendSave(saveBody);
+      // #C33-2: /refs/cut 출발 전부터 /refs/save 완료까지 하나의 레퍼런스 쓰기 작업으로 추적한다
+      const runCutAndSave = async () => {
+        const cutRes = await Api.cutRef(Store.state.root, cutBody);
+        if (!cutRes || !cutRes.req) {
+          throw new Error("시트 오리기 요청 ID를 받지 못했습니다.");
+        }
+        const transform = {
+          rotate: 0,
+          flip_h: !!sheetState.flipX,
+          scale: 1.0,
+        };
+        if (cornerCheck.corners) transform.corners = cornerCheck.corners;
+
+        const saveBody = { req: cutRes.req, transform };
+        if (cropId) {
+          saveBody.crop_id = cropId;
+          saveBody.role = role;
+          if (role === "aux") saveBody.desc = `cut_${Date.now().toString(36).slice(-4)}`;
+        } else {
+          saveBody.desc = "";
+        }
+        return sendSave(saveBody);
+      };
+
+      const saved = await (typeof Store.trackRefWrite === "function"
+        ? Store.trackRefWrite(runCutAndSave())
+        : runCutAndSave());
       if (saved && saved.cancelled) return;
       Store.invalidateAllSpecs();
       const refSync = typeof Store.refreshAfterRefWrite === "function"
@@ -734,7 +813,16 @@ window.DPV2Overlays = (() => {
       Store.toast(cropId ? "시트 컷을 저장하고 선택한 영역에 연결했습니다." : "시트 컷을 레퍼런스 보관함에 저장했습니다.", "ok");
       await refSync;
     } catch (err) {
+      if (saveAttempted) {
+        Store.invalidateAllSpecs();
+        if (typeof Store.refreshAfterRefWrite === "function") Store.refreshAfterRefWrite();
+        else Store.refreshAll(true);
+      }
       Store.toast(`시트 컷 저장 실패: ${err.message}`, "err");
+    } finally {
+      sheetState.saving = false;
+      if (btnAttach) btnAttach.disabled = false;
+      if (btnVault) btnVault.disabled = false;
     }
   }
 
@@ -931,9 +1019,15 @@ window.DPV2Overlays = (() => {
   }
 
   function setHistoryPanelMode(mode, extra = {}) {
-    const cur = getHistoryPrefs();
-    const next = Object.assign({}, cur, extra, { mode });
-    Store.savePrefs({ historyPanel: next });
+    // #C40-6: 바뀐 항목(mode · extra)만 최신 저장소의 historyPanel 에 합쳐 다른 탭의 크기(w/h) 등을 덮어쓰지 않는다
+    const delta = Object.assign({}, extra, { mode });
+    const next = typeof Store.saveHistoryPanelPrefs === "function"
+      ? Store.saveHistoryPanelPrefs(delta)
+      : (() => {
+        const merged = Object.assign({}, getHistoryPrefs(), delta);
+        Store.savePrefs({ historyPanel: merged });
+        return merged;
+      })();
     applyHistoryPanelLayout(next);
   }
 
@@ -1528,6 +1622,16 @@ window.DPV2Overlays = (() => {
       const key = (r && r.key) || proj.id;
       const u = new URL(location.href);
       u.searchParams.set("root", key);
+      // #C40-5: 일부 실패 후 [닫기] 로 나갔던 새 프로젝트에 미소비 변환 알림(notes)이 남아 있으면 첫 열기에 new=1 을 붙여 배너를 보여 준다
+      let hasPendingNotes = false;
+      try {
+        const rawNotes = window.sessionStorage.getItem("bmk-dp-new:" + key);
+        if (rawNotes) {
+          const parsed = JSON.parse(rawNotes);
+          hasPendingNotes = Array.isArray(parsed) && parsed.some((n) => typeof n === "string" && n.trim());
+        }
+      } catch (_) { /* 저장소 차단 무시 */ }
+      if (hasPendingNotes) u.searchParams.set("new", "1");
       u.searchParams.set("ui", "v2");
       location.href = u.pathname + u.search;
     } catch (err) {
@@ -1901,14 +2005,60 @@ window.DPV2Overlays = (() => {
     let targetFile = initialFile || null;
     const refFiles = Array.isArray(initialRefs) ? initialRefs.slice() : [];
     const failedRefs = [];
+    const uploadedSheetPaths = new Set();
     let creating = false;
-    let createdProject = null; // { key, notes } — projects/new 또는 Forge 생성이 끝난 뒤 레퍼런스만 재시도할 때 재사용
+    let createdProject = null; // { key, name, source, assetName, notes } — 생성이 끝난 뒤 레퍼런스만 재시도할 때 재사용
     let navigating = false;
     const blobUrls = [];
     const targetAccept = Data.TARGET_ACCEPT || ".psd,.psb,.png,.jpg,.jpeg,.webp";
 
     function normalizeNotes(raw) {
       return Array.isArray(raw) ? raw.filter((n) => typeof n === "string" && n.trim()) : [];
+    }
+
+    function persistNewProjectNotes(key, notes, writeEmpty = false) {
+      if (!key) return;
+      const cleanNotes = normalizeNotes(notes);
+      if (!cleanNotes.length && !writeEmpty) return;
+      // #C36-6 · #C40-5: 생성 직후 sessionStorage("bmk-dp-new:" + key) 에 기록해 일부 실패 후 [닫기] 뒤 목록에서 열어도 변환 알림이 살아남게 한다
+      try {
+        window.sessionStorage.setItem("bmk-dp-new:" + key, JSON.stringify(cleanNotes));
+      } catch (_) { /* 저장소 차단 무시 */ }
+    }
+
+    function normSheetBase(pathStr) {
+      if (typeof pathStr !== "string" || !pathStr.startsWith("sheets/")) return "";
+      return pathStr.slice("sheets/".length).normalize("NFC").trim().toLowerCase();
+    }
+
+    function normFileName(file) {
+      if (!file || typeof file.name !== "string") return "";
+      return file.name.normalize("NFC").trim().toLowerCase();
+    }
+
+    function sameByteSize(sheetEntry, file) {
+      const fSize = Number(file && file.size);
+      const sBytes = Number(sheetEntry && sheetEntry.bytes);
+      return Number.isFinite(fSize) && fSize > 0 && Number.isFinite(sBytes) && sBytes === fSize;
+    }
+
+    function sheetExactMatchesFile(sheetEntry, file) {
+      const base = normSheetBase(sheetEntry && sheetEntry.path);
+      const fname = normFileName(file);
+      return !!(base && fname && base === fname && sameByteSize(sheetEntry, file));
+    }
+
+    function sheetSuffixMatchesFile(sheetEntry, file) {
+      const base = normSheetBase(sheetEntry && sheetEntry.path);
+      const fname = normFileName(file);
+      if (!base || !fname || !sameByteSize(sheetEntry, file)) return false;
+      const dot = fname.lastIndexOf(".");
+      if (dot <= 0) return false;
+      const stem = fname.slice(0, dot);
+      const ext = fname.slice(dot);
+      if (!base.startsWith(stem + "_") || !base.endsWith(ext)) return false;
+      const suffix = base.slice(stem.length + 1, base.length - ext.length);
+      return /^[2-9]\d*$|^1\d+$/.test(suffix);
     }
 
     function revokeBlobUrls() {
@@ -1928,6 +2078,10 @@ window.DPV2Overlays = (() => {
     const errEl = Data.el("small", { id: "np-error", className: "np-error-text" });
     const refFailBox = Data.el("div", { id: "np-ref-failures", className: "np-ref-failures hidden", role: "alert" });
     const pickedBox = Data.el("div", { id: "np-picked-box", className: "np-picked-box" });
+    const dropLabel = Data.el("span", {
+      id: "np-drop-label",
+      text: "원화 이미지를 여기에 끌어다 놓거나 파일을 선택하세요",
+    });
 
     // #C36-5: projects/new 서버 허용 확장자(.psd,.psb,.png,.jpg,.jpeg,.webp)와 일치시킨다
     const fileInput = Data.el("input", {
@@ -2012,6 +2166,10 @@ window.DPV2Overlays = (() => {
       btnPickTarget.disabled = lockTarget;
       if (btnForgeImport) btnForgeImport.disabled = lockTarget;
       btnPickRefs.disabled = creating;
+      // #C40-3: 프로젝트 생성 완료 후에는 드롭존 안내 문구도 레퍼런스 추가 동작에 맞춰 바꾼다
+      dropLabel.textContent = createdProject
+        ? "이 프로젝트에 추가할 레퍼런스를 여기에 끌어다 놓거나 선택하세요"
+        : "원화 이미지를 여기에 끌어다 놓거나 파일을 선택하세요";
       const mClose = $("modal-close");
       if (mClose) mClose.disabled = creating;
       const cancelBtn = $("np-cancel-btn");
@@ -2043,11 +2201,8 @@ window.DPV2Overlays = (() => {
 
     function navigateToNewProject(key, notes) {
       navigating = true;
-      // #C36-6: v1(board.js)과 동일한 sessionStorage 키("bmk-dp-new:" + key) + new=1 로 변환 알림 전달
-      const cleanNotes = normalizeNotes(notes);
-      try {
-        window.sessionStorage.setItem("bmk-dp-new:" + key, JSON.stringify(cleanNotes));
-      } catch (_) { /* 저장소 차단 무시 */ }
+      // #C36-6 · #C40-5: v1(board.js)과 동일한 sessionStorage 키("bmk-dp-new:" + key) + new=1 로 변환 알림 전달
+      persistNewProjectNotes(key, notes, true);
       closeModal(true);
       const u = new URL(location.href);
       u.searchParams.set("root", key);
@@ -2081,8 +2236,11 @@ window.DPV2Overlays = (() => {
           }),
         ));
       } else if (createdProject) {
+        const forgeLabel = createdProject.assetName
+          ? `생성됨 · Forge 원화: ${createdProject.assetName}`
+          : "생성됨 · Forge 원화";
         pickedBox.append(Data.el("span", { className: "np-picked-chip" },
-          Data.el("span", { text: "생성됨 · Forge 원화" }),
+          Data.el("span", { text: forgeLabel }),
         ));
       }
       refFiles.forEach((rf, i) => {
@@ -2111,16 +2269,69 @@ window.DPV2Overlays = (() => {
       });
     }
 
-    // #C36-1: 로컬 원화 생성 및 Forge 원화 생성 공통 — 레퍼런스 업로드 실패를 삼키지 않고 실패 파일명·서버 error 표시 + 실패 건만 재시도
-    async function finishAfterProjectCreated() {
+    // #C36-1 · #C40-4: 로컬 원화 생성 및 Forge 원화 생성 공통 — 레퍼런스 업로드 실패를 삼키지 않고 실패 파일명·서버 error 표시 + 재시도 전 이미 올라간 시트 대조
+    async function finishAfterProjectCreated({ checkExisting = false } = {}) {
       if (!createdProject) return;
       const key = createdProject.key;
       const pending = refFiles.slice();
+      const previouslyFailedFiles = new Set(failedRefs.map((f) => f.file));
+      const matchedAlreadyUploaded = new Set();
+      let listSheetsFailed = false;
+      if (checkExisting && pending.length && previouslyFailedFiles.size && typeof Api.listSheets === "function") {
+        try {
+          const shRes = await Api.listSheets(key);
+          const list = Array.isArray(shRes) ? shRes : (shRes && Array.isArray(shRes.sheets) ? shRes.sheets : []);
+          const serverSheets = list.filter((s) => s && typeof s.path === "string" && s.path.startsWith("sheets/"));
+          const allSheetNames = new Set(serverSheets.map((s) => normSheetBase(s.path)).filter(Boolean));
+          const unaccountedSheets = serverSheets.filter((s) => !uploadedSheetPaths.has(s.path));
+          const pendingExactNames = new Set(pending.map((rf) => normFileName(rf)).filter(Boolean));
+
+          // 1단계: 정확한 파일명(NFC·소문자·바이트 일치) 우선 1:1 소비 (a.png 가 a_2.png 를 가로채지 않도록 보호)
+          for (const rf of pending) {
+            if (!previouslyFailedFiles.has(rf) || !unaccountedSheets.length) continue;
+            const exactIdx = unaccountedSheets.findIndex((s) => sheetExactMatchesFile(s, rf));
+            if (exactIdx >= 0) {
+              const matched = unaccountedSheets.splice(exactIdx, 1)[0];
+              uploadedSheetPaths.add(matched.path);
+              matchedAlreadyUploaded.add(rf);
+            }
+          }
+          // 2단계: 서버에 동일 기본 파일명(sheets/<fname>)이 이미 존재하고 다른 대기 파일의 정확명과 겹치지 않는 경우에 한해 _2/_3 접미사 매칭
+          for (const rf of pending) {
+            if (!previouslyFailedFiles.has(rf) || matchedAlreadyUploaded.has(rf) || !unaccountedSheets.length) continue;
+            const fname = normFileName(rf);
+            if (!fname || !allSheetNames.has(fname)) continue;
+            const sufIdx = unaccountedSheets.findIndex((s) => {
+              const base = normSheetBase(s.path);
+              return !pendingExactNames.has(base) && sheetSuffixMatchesFile(s, rf);
+            });
+            if (sufIdx >= 0) {
+              const matched = unaccountedSheets.splice(sufIdx, 1)[0];
+              uploadedSheetPaths.add(matched.path);
+              matchedAlreadyUploaded.add(rf);
+            }
+          }
+        } catch (_) {
+          // 목록 조회 자체에 실패하면 이미 저장됐을 수 있는 실패 건을 맹목 재전송하지 않고 보류한다
+          listSheetsFailed = true;
+        }
+      }
       const stillFailed = [];
       const failures = [];
       for (const rf of pending) {
+        if (matchedAlreadyUploaded.has(rf)) continue;
+        if (listSheetsFailed && previouslyFailedFiles.has(rf)) {
+          stillFailed.push(rf);
+          failures.push({
+            file: rf,
+            name: (rf && rf.name) || "레퍼런스 파일",
+            error: "이미 올라간 시트 목록을 확인하지 못해 중복 방지를 위해 재전송을 보류했습니다 — 잠시 후 다시 시도해 주세요.",
+          });
+          continue;
+        }
         try {
-          await Api.uploadSheet(key, rf, null);
+          const upRes = await Api.uploadSheet(key, rf, null);
+          if (upRes && typeof upRes.sheet === "string") uploadedSheetPaths.add(upRes.sheet);
         } catch (err) {
           stillFailed.push(rf);
           failures.push({
@@ -2154,7 +2365,7 @@ window.DPV2Overlays = (() => {
       }
       setCreating(true, failedRefs.length ? "레퍼런스 다시 올리는 중…" : "레퍼런스 올리는 중…");
       setErr("");
-      await finishAfterProjectCreated();
+      await finishAfterProjectCreated({ checkExisting: true });
     }
 
     async function submitNewProject() {
@@ -2181,7 +2392,15 @@ window.DPV2Overlays = (() => {
       setErr("");
       try {
         const res = await Api.createProjectFile(name, targetFile);
-        createdProject = { key: res.key, notes: normalizeNotes(res.notes) };
+        const projNotes = normalizeNotes(res.notes);
+        createdProject = {
+          key: res.key,
+          name: (res && (res.title || res.name)) || name,
+          source: "file",
+          assetName: "",
+          notes: projNotes,
+        };
+        persistNewProjectNotes(createdProject.key, projNotes);
         if (refFiles.length) syncModalControls("레퍼런스 올리는 중…");
         await finishAfterProjectCreated();
       } catch (err) {
@@ -2226,9 +2445,19 @@ window.DPV2Overlays = (() => {
                   Store.toast((result && result.error) || "Forge에서 프로젝트를 만들지 못했습니다.", "err");
                   return;
                 }
-                // #C36-1 · #C36-6 · #C36-7: Forge 원화 경로도 레퍼런스 업로드 동안 모달을 잠그고 실패 알림·재시도·notes 를 공통 처리한다
-                createdProject = { key: result.key, notes: normalizeNotes(result.notes) };
+                // #C36-1 · #C36-6 · #C36-7 · #C40-5 · #C40-6a: Forge 원화 경로는 앞서 골랐던 PC targetFile 을 비우고 notes 를 즉시 보관한다
+                const projNotes = normalizeNotes(result.notes);
+                targetFile = null;
+                createdProject = {
+                  key: result.key,
+                  name: (result && (result.title || result.name)) || name,
+                  source: "forge",
+                  assetName: (result && (result.asset_name || result.filename)) || "",
+                  notes: projNotes,
+                };
+                persistNewProjectNotes(createdProject.key, projNotes);
                 setErr("");
+                refreshPicked();
                 setCreating(true, refFiles.length ? "레퍼런스 올리는 중…" : "프로젝트 여는 중…");
                 await finishAfterProjectCreated();
               },
@@ -2242,7 +2471,7 @@ window.DPV2Overlays = (() => {
     }
 
     const dropBox = Data.el("div", { className: "np-drop", id: "np-drop-zone" },
-      Data.el("span", { text: "원화 이미지를 여기에 끌어다 놓거나 파일을 선택하세요" }),
+      dropLabel,
       Data.el("div", { style: "display:flex;gap:6px;flex-wrap:wrap;justify-content:center;" },
         btnPickTarget,
         btnForgeImport,
@@ -2306,6 +2535,8 @@ window.DPV2Overlays = (() => {
         },
       ],
       onClose: () => {
+        // #C40-1: 생성/업로드 진행 중에는 비정상 경로로 onClose 가 호출되어도 대기 중 레퍼런스 목록을 비우지 않는다
+        if (creating) return;
         // #C36-7: 모달을 닫을 때 Blob URL 및 선택한 File 참조를 전부 비운다
         revokeBlobUrls();
         targetFile = null;
@@ -2314,7 +2545,9 @@ window.DPV2Overlays = (() => {
         fileInput.value = "";
         refInput.value = "";
         if (createdProject && !navigating) {
-          renderProjectsHome();
+          // #C40-5: 이미 생성된 프로젝트를 열지 않고 닫았을 때 안내 토스트를 남기고 홈 목록을 갱신한다
+          Store.toast(`"${createdProject.name || createdProject.key}" 프로젝트가 생성되었습니다 — 프로젝트 목록에서 열어 작업을 이어갈 수 있습니다.`);
+          if (!Store.state.root) renderProjectsHome();
         }
       },
       canClose: () => !creating,
@@ -2454,10 +2687,11 @@ window.DPV2Overlays = (() => {
         if (dockPreview) dockPreview.classList.add("hidden", "left", "right");
         if (!d.detached) return;
         if (d.snapZone) {
-          setHistoryPanelMode(d.snapZone, { w: d.w, h: d.h });
+          // #C40-6b: 도킹/이동 시 다른 탭이 갱신한 w/h 를 옛 드래그 값으로 덮어쓰지 않고 변경된 축만 저장한다
+          setHistoryPanelMode(d.snapZone);
           Store.toast(d.snapZone === "dock-left" ? "작업 히스토리를 좌측에 부착했습니다." : "작업 히스토리를 우측에 부착했습니다.");
         } else {
-          setHistoryPanelMode("floating", { x: d.curX, y: d.curY, w: d.w, h: d.h });
+          setHistoryPanelMode("floating", { x: d.curX, y: d.curY });
         }
       };
       histHead.addEventListener("pointerup", finishHistDrag);
