@@ -21,6 +21,7 @@ window.DPV2Store = (() => {
     snapRatio: true,
     historyPanel: { mode: "floating", x: null, y: null, w: 300, h: 420 },
     modelPopoverSize: { w: 640, h: 490 },
+    home: { pinnedIds: [], viewMode: "grid", sortBy: "recent" },
   };
 
   const listeners = new Set();
@@ -54,7 +55,11 @@ window.DPV2Store = (() => {
       guidesOn: true,
       seamsOn: false,
     },
-    prefs: Object.assign({}, DEFAULT_PREFS),
+    prefs: Object.assign({}, DEFAULT_PREFS, {
+      historyPanel: Object.assign({}, DEFAULT_PREFS.historyPanel),
+      modelPopoverSize: Object.assign({}, DEFAULT_PREFS.modelPopoverSize),
+      home: { pinnedIds: [], viewMode: "grid", sortBy: "recent" },
+    }),
     patchMeta: new Map(),
     history: [],
     histIndex: -1,
@@ -122,8 +127,54 @@ window.DPV2Store = (() => {
         }
         state.prefs.historyPanel = Object.assign({}, DEFAULT_PREFS.historyPanel, (parsed && parsed.historyPanel) || {});
         state.prefs.modelPopoverSize = Object.assign({}, DEFAULT_PREFS.modelPopoverSize, (parsed && parsed.modelPopoverSize) || {});
+        const rawHome = (parsed && parsed.home && typeof parsed.home === "object") ? parsed.home : {};
+        state.prefs.home = {
+          pinnedIds: Array.isArray(rawHome.pinnedIds)
+            ? rawHome.pinnedIds.filter((id) => typeof id === "string" && id).slice(0, 100)
+            : [],
+          viewMode: rawHome.viewMode === "list" ? "list" : "grid",
+          sortBy: ["recent", "name", "stars", "crops"].includes(rawHome.sortBy) ? rawHome.sortBy : "recent",
+        };
+      } else {
+        state.prefs.home = { pinnedIds: [], viewMode: "grid", sortBy: "recent" };
       }
     } catch (_) { /* 손상된 설정은 기본값 사용 */ }
+  }
+
+  function getHomePrefs() {
+    if (!state.prefs.home || typeof state.prefs.home !== "object") {
+      state.prefs.home = { pinnedIds: [], viewMode: "grid", sortBy: "recent" };
+    }
+    return state.prefs.home;
+  }
+
+  function saveHomePrefs(patch) {
+    const cur = getHomePrefs();
+    const next = {
+      pinnedIds: Array.isArray(patch && patch.pinnedIds)
+        ? patch.pinnedIds.filter((id) => typeof id === "string" && id).slice(0, 100)
+        : cur.pinnedIds.slice(),
+      viewMode: (patch && patch.viewMode !== undefined)
+        ? (patch.viewMode === "list" ? "list" : "grid")
+        : cur.viewMode,
+      sortBy: (patch && patch.sortBy !== undefined && ["recent", "name", "stars", "crops"].includes(patch.sortBy))
+        ? patch.sortBy
+        : cur.sortBy,
+    };
+    savePrefs({ home: next });
+    return next;
+  }
+
+  function togglePinnedProject(projectId) {
+    const id = String(projectId || "");
+    if (!id) return false;
+    const cur = getHomePrefs();
+    const exists = cur.pinnedIds.includes(id);
+    const nextIds = exists
+      ? cur.pinnedIds.filter((x) => x !== id)
+      : [id, ...cur.pinnedIds].slice(0, 100);
+    saveHomePrefs({ pinnedIds: nextIds });
+    return !exists;
   }
 
   function savePrefs(patch) {
@@ -1467,9 +1518,11 @@ window.DPV2Store = (() => {
       let fullReload = !d.unchanged;
       let statusChanged = false;
       if (d.unchanged && prev) {
+        const prevTitle = prev.title;
         prev.running = d.running;
         prev.drain = d.drain;
         prev.drafting = d.drafting;
+        if ("title" in d) prev.title = d.title;
         if ("export_state" in d) {
           prev.export_state = d.export_state;
           prev.export_last = d.export_last;
@@ -1477,7 +1530,8 @@ window.DPV2Store = (() => {
         statusChanged = (!!prev.running !== prevRunning)
           || (!!prev.drain !== prevDrain)
           || (!!prev.drafting !== prevDrafting)
-          || (prev.export_state !== prevExport);
+          || (prev.export_state !== prevExport)
+          || (prev.title !== prevTitle);
         if (d.layout_rev !== prev.layout_rev || d.refs_rev !== prev.refs_rev
             || d.refs_files_v !== prev.refs_files_v || d.pipeline_rev !== prev.pipeline_rev
             || d.plan_v !== prev.plan_v) {
@@ -1867,6 +1921,7 @@ window.DPV2Store = (() => {
   return {
     state, subscribe, emit, toast,
     loadPrefs, savePrefs, applyPrefsToDom, activeTheme, activeAccentHex, initForgeThemeListener,
+    getHomePrefs, saveHomePrefs, togglePinnedProject,
     ensurePatchMeta, getCandidateFilters, syncCandidateFiltersFromAdjust, markFieldDirty, loadSpec, savePatchSpec, applyQuickSpecChange, awaitPendingQuickSpecs, applySpecResponse, invalidateAllSpecs, projectPrepareRaw, projectPrepare, buildPreparePayload,
     isPatchCheckedForRun, setPatchCheckedForRun, setAllCheckedForRun,
     getPatches, getPatch, primaryPatch, selectedPatches, clearSelection,

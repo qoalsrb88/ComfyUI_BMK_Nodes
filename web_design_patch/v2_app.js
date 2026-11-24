@@ -17,6 +17,20 @@
     return t === "INPUT" || t === "TEXTAREA" || t === "SELECT" || el.isContentEditable;
   }
 
+  function isDefaultUiV2() {
+    // #C27-3: ui_default 는 불리언이 아닌 문자열("v1" | "v2")이므로 DPEnv.can() 이 아니라 값으로 읽는다
+    return !!(window.DPEnv && window.DPEnv.caps && window.DPEnv.caps.ui_default === "v2");
+  }
+
+  function syncDefaultUiState() {
+    const defV2 = isDefaultUiV2();
+    const betaPill = $("home-beta-pill");
+    if (betaPill) betaPill.classList.toggle("hidden", defV2);
+    if (!Store.state.root) {
+      document.title = defV2 ? "Design Patch Studio" : "Design Patch Studio (v2 시험판)";
+    }
+  }
+
   function hydrateTopbarIcons() {
     const map = [
       ["btn-undo", "undo", 15],
@@ -25,6 +39,11 @@
       ["btn-layout-cycle", "layout", 15],
       ["btn-settings", "settings", 15],
       ["btn-shortcuts", "help", 15],
+      ["btn-home-refresh", "refresh", 15],
+      ["home-drop-icon", "upload", 20],
+      ["home-search-ico", "search", 14],
+      ["home-view-grid", "gridView", 14],
+      ["home-view-list", "listView", 14],
     ];
     for (const [id, ico, sz] of map) {
       const btn = $(id);
@@ -39,8 +58,16 @@
     const S = Store.state.S;
     const nameEl = $("project-name-label");
     if (nameEl && S) {
-      const nextName = S.project || Store.state.root;
+      // #C31-14: 서버가 title 을 주면 표시 이름 우선(플래그 무관), 없으면 폴더명(project)
+      const nextName = S.title || S.project || Store.state.root;
       if (nameEl.textContent !== nextName) nameEl.textContent = nextName;
+      nameEl.title = (S.title && S.project && S.title !== S.project)
+        ? `${S.title} (폴더: ${S.project})`
+        : nextName;
+      if (Store.state.root) {
+        const nextDocTitle = `${nextName} — Design Patch Studio`;
+        if (document.title !== nextDocTitle) document.title = nextDocTitle;
+      }
     }
 
     const pill = $("status-pill");
@@ -90,7 +117,7 @@
     const list = Array.from(files || []);
     if (!list.length) return;
     if (role === "target" || !Store.state.root) {
-      Overlays.openNewProjectModal(list[0]);
+      Overlays.openNewProjectModal(list[0], list.slice(1));
       return;
     }
     for (const f of list) {
@@ -116,11 +143,12 @@
     const btnHomeV1 = $("btn-home-switch-v1");
     if (btnHomeV1) btnHomeV1.addEventListener("click", () => { location.href = Data.buildSwitchUrl(false); });
 
-    // 톱바 버튼
+    // 톱바 버튼 (#C27-2: v2 내부 목록 이동 시 ui=v2 유지)
     const btnProj = $("btn-projects");
     if (btnProj) btnProj.addEventListener("click", () => {
       const u = new URL(location.href);
       u.searchParams.delete("root");
+      u.searchParams.set("ui", "v2");
       location.href = u.pathname + u.search;
     });
     const btnUndo = $("btn-undo");
@@ -177,14 +205,23 @@
     const fSheet = $("hidden-file-sheet");
     if (fSheet) fSheet.addEventListener("change", (e) => { handleUploadFiles(e.target.files, "ref"); e.target.value = ""; });
 
-    // 페이지 전역 파일 드롭 가드
+    // 페이지 전역 파일 드롭 가드 (모달·홈 빠른 드롭존 안에서는 각 드롭존이 직접 처리)
     let dragCounter = 0;
     const dropOv = $("global-drop-overlay");
+    const isModalOpen = () => {
+      const bd = $("modal-backdrop");
+      return !!(bd && !bd.classList.contains("hidden"));
+    };
     window.addEventListener("dragenter", (e) => {
       if (e.dataTransfer?.types?.includes("Files")) {
         e.preventDefault();
+        if (isModalOpen()) return;
+        if (!Store.state.root && e.target && e.target.closest && e.target.closest("#home-quick-drop")) return;
         dragCounter += 1;
-        if (dropOv) dropOv.classList.remove("hidden");
+        if (dropOv) {
+          dropOv.classList.toggle("home-mode", !Store.state.root);
+          dropOv.classList.remove("hidden");
+        }
       }
     });
     window.addEventListener("dragover", (e) => {
@@ -201,8 +238,10 @@
         e.preventDefault();
         dragCounter = 0;
         if (dropOv) dropOv.classList.add("hidden");
+        if (isModalOpen() && e.target.closest("#modal-backdrop")) return;
+        if (!Store.state.root && e.target.closest("#home-quick-drop")) return;
         const zone = e.target.closest(".drop-zone");
-        const role = zone ? zone.dataset.dropRole : "ref";
+        const role = !Store.state.root ? "target" : (zone ? zone.dataset.dropRole : "ref");
         handleUploadFiles(e.dataTransfer.files, role);
       }
     });
@@ -212,14 +251,14 @@
       z.addEventListener("drop", () => z.classList.remove("over"));
     });
 
-    // 클립보드 붙여넣기 (이미지 → 레퍼런스 시트 추가)
+    // 클립보드 붙여넣기 (홈: 새 프로젝트 타깃 · 작업 화면: 레퍼런스 시트 추가)
     window.addEventListener("paste", (e) => {
-      if (isTyping(document.activeElement)) return;
+      if (isTyping(document.activeElement) || isModalOpen()) return;
       const items = Array.from(e.clipboardData?.items || []);
       const imgItem = items.find((it) => it.type && it.type.startsWith("image/"));
       if (imgItem) {
         const f = imgItem.getAsFile();
-        if (f) handleUploadFiles([f], "ref");
+        if (f) handleUploadFiles([f], Store.state.root ? "ref" : "target");
       }
     });
 
@@ -243,7 +282,7 @@
       }
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
-        if (!isTyping(document.activeElement)) {
+        if (Store.state.root && !isTyping(document.activeElement)) {
           e.preventDefault();
           if (e.shiftKey) Store.redoHistory();
           else Store.undoHistory();
@@ -252,6 +291,19 @@
       }
 
       if (isTyping(document.activeElement)) return;
+
+      // 프로젝트 홈 전용 단축키: '/' 로 검색창 포커스 (작업 화면 단축키는 홈에서 비활성)
+      if (!Store.state.root) {
+        if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          const inp = $("home-search-input");
+          if (inp && !isModalOpen()) {
+            e.preventDefault();
+            inp.focus();
+            inp.select();
+          }
+        }
+        return;
+      }
 
       // 레퍼런스 시트 오리기 오버레이 열림 시: 방향키 미세 이동 + Space 팬
       if (Overlays.sheetState.open) {
@@ -351,64 +403,75 @@
   }
 
   async function boot() {
-    if (window.DPEnv && window.DPEnv.ready) {
-      try { await window.DPEnv.ready; } catch (_) {}
-    }
-
-    Store.loadPrefs();
-    Store.applyPrefsToDom();
-    Store.initForgeThemeListener();
-
-    hydrateTopbarIcons();
-    Canvas.bindEvents();
-    Inspector.bindEvents();
-    Overlays.bindEvents();
-    bindGlobalEvents();
-
-    const params = new URLSearchParams(location.search);
-    const root = params.get("root") || "";
-    Store.state.root = root;
-
-    if (!root) {
-      $("projects-view").classList.remove("hidden");
-      $("studio-view").classList.add("hidden");
-      await Overlays.renderProjectsHome();
-    } else {
-      $("projects-view").classList.add("hidden");
-      $("studio-view").classList.remove("hidden");
-      await Store.refreshAll(true);
-      // #C26-5 · #C30-5: 새 프로젝트 첫 진입(가져오기 전 — S.canvas 없음) 초기 반영도 공용 모듈 Api.applyChecked 로 통일하고,
-      // 계획 잠금 경합(busy)으로 끝나며 캔버스가 여전히 없으면 딱 1회 더 재시도한다
-      if (Store.state.S && !Store.state.S.canvas && !Store.state.S.running && Api.submitAdapter()) {
-        Store.toast("새 프로젝트 원화를 불러오는 중입니다 (무료 초기 반영)…");
-        try {
-          let applied = await Api.applyChecked(root);
-          await Store.refreshAll(true);
-          if (applied && !applied.ok && applied.reason === "busy"
-              && Store.state.S && !Store.state.S.canvas && !Store.state.S.running) {
-            Store.toast("서버가 바빠 초기 반영을 한 번 더 시도합니다…");
-            await new Promise((r) => setTimeout(r, 500));
-            if (Store.state.S && !Store.state.S.canvas && !Store.state.S.running) {
-              applied = await Api.applyChecked(root);
-              await Store.refreshAll(true);
-            }
-          }
-          if (applied && !applied.ok && !(Store.state.S && Store.state.S.canvas)) {
-            if (applied.reason === "cancelled") {
-              Store.toast(applied.error || "초기 반영을 취소했습니다.");
-            } else {
-              Store.toast(
-                applied.error || applied.message || "초기 반영 작업을 완료하지 못했습니다 — [합성 적용]으로 다시 확인해 주세요.",
-                "err"
-              );
-            }
-          }
-        } catch (err) {
-          Store.toast(`초기 반영 실패: ${(err && err.message) || "알 수 없는 오류"}`, "err");
-        }
+    const bootFb = $("v2-boot-fallback");
+    const bootMsg = $("v2-boot-fallback-msg");
+    try {
+      if (window.DPEnv && window.DPEnv.ready) {
+        try { await window.DPEnv.ready; } catch (_) {}
       }
-      Store.startPolling();
-      updateTopbarState();
+
+      Store.loadPrefs();
+      Store.applyPrefsToDom();
+      Store.initForgeThemeListener();
+
+      hydrateTopbarIcons();
+      Canvas.bindEvents();
+      Inspector.bindEvents();
+      Overlays.bindEvents();
+      bindGlobalEvents();
+
+      const params = new URLSearchParams(location.search);
+      const root = params.get("root") || "";
+      Store.state.root = root;
+      syncDefaultUiState();
+
+      if (!root) {
+        $("projects-view").classList.remove("hidden");
+        $("studio-view").classList.add("hidden");
+        if (bootFb) bootFb.classList.add("hidden");
+        await Overlays.renderProjectsHome();
+      } else {
+        $("projects-view").classList.add("hidden");
+        $("studio-view").classList.remove("hidden");
+        if (bootFb) bootFb.classList.add("hidden");
+        await Store.refreshAll(true);
+        // #C26-5 · #C30-5: 새 프로젝트 첫 진입(가져오기 전 — S.canvas 없음) 초기 반영도 공용 모듈 Api.applyChecked 로 통일하고,
+        // 계획 잠금 경합(busy)으로 끝나며 캔버스가 여전히 없으면 딱 1회 더 재시도한다
+        if (Store.state.S && !Store.state.S.canvas && !Store.state.S.running && Api.submitAdapter()) {
+          Store.toast("새 프로젝트 원화를 불러오는 중입니다 (무료 초기 반영)…");
+          try {
+            let applied = await Api.applyChecked(root);
+            await Store.refreshAll(true);
+            if (applied && !applied.ok && applied.reason === "busy"
+                && Store.state.S && !Store.state.S.canvas && !Store.state.S.running) {
+              Store.toast("서버가 바빠 초기 반영을 한 번 더 시도합니다…");
+              await new Promise((r) => setTimeout(r, 500));
+              if (Store.state.S && !Store.state.S.canvas && !Store.state.S.running) {
+                applied = await Api.applyChecked(root);
+                await Store.refreshAll(true);
+              }
+            }
+            if (applied && !applied.ok && !(Store.state.S && Store.state.S.canvas)) {
+              if (applied.reason === "cancelled") {
+                Store.toast(applied.error || "초기 반영을 취소했습니다.");
+              } else {
+                Store.toast(
+                  applied.error || applied.message || "초기 반영 작업을 완료하지 못했습니다 — [합성 적용]으로 다시 확인해 주세요.",
+                  "err"
+                );
+              }
+            }
+          } catch (err) {
+            Store.toast(`초기 반영 실패: ${(err && err.message) || "알 수 없는 오류"}`, "err");
+          }
+        }
+        Store.startPolling();
+        updateTopbarState();
+      }
+    } catch (err) {
+      console.error("v2 boot error:", err);
+      if (bootMsg) bootMsg.textContent = "화면을 여는 중 오류가 발생했습니다.";
+      if (bootFb) bootFb.classList.remove("hidden");
     }
   }
 

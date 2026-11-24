@@ -10,9 +10,19 @@ window.DPV2Overlays = (() => {
   const $ = (id) => document.getElementById(id);
 
   // ── 공용 모달 헬퍼 ──
-  function openModal({ title, bodyNodes = [], actions = [] }) {
+  let modalOnClose = null;
+  let modalCanClose = null;
+
+  function openModal({ title, bodyNodes = [], actions = [], onClose = null, canClose = null }) {
     const bd = $("modal-backdrop");
     if (!bd) return;
+    if (typeof modalOnClose === "function") {
+      const prevClose = modalOnClose;
+      modalOnClose = null;
+      try { prevClose(); } catch (_) {}
+    }
+    modalOnClose = typeof onClose === "function" ? onClose : null;
+    modalCanClose = typeof canClose === "function" ? canClose : null;
     $("modal-title").textContent = title || "";
     const body = $("modal-body");
     body.innerHTML = "";
@@ -20,21 +30,30 @@ window.DPV2Overlays = (() => {
     const foot = $("modal-foot");
     foot.innerHTML = "";
     for (const a of actions) {
-      foot.append(Data.el("button", {
+      const attrs = {
         type: "button",
         className: a.cls || "btn-secondary",
         text: a.label,
         disabled: !!a.disabled,
         title: a.title || "",
         onClick: a.onClick,
-      }));
+      };
+      if (a.id) attrs.id = a.id;
+      foot.append(Data.el("button", attrs));
     }
     bd.classList.remove("hidden");
   }
 
-  function closeModal() {
+  function closeModal(force = false) {
+    if (!force && typeof modalCanClose === "function" && !modalCanClose()) return;
     const bd = $("modal-backdrop");
     if (bd) bd.classList.add("hidden");
+    modalCanClose = null;
+    if (typeof modalOnClose === "function") {
+      const fn = modalOnClose;
+      modalOnClose = null;
+      try { fn(); } catch (_) {}
+    }
   }
 
   function loadImage(src) {
@@ -531,7 +550,7 @@ window.DPV2Overlays = (() => {
     $("sheet-split-body").classList.remove("maximized");
     $("btn-sheet-max").textContent = "⤢ 최대화";
     const bc = $("sheet-breadcrumb-proj");
-    if (bc) bc.textContent = (Store.state.S && Store.state.S.project) || Store.state.root || "프로젝트";
+    if (bc) bc.textContent = (Store.state.S && (Store.state.S.title || Store.state.S.project)) || Store.state.root || "프로젝트";
     drawSheetSource();
     drawSheetWarp();
     ov.classList.remove("hidden");
@@ -1184,120 +1203,610 @@ window.DPV2Overlays = (() => {
   }
 
   // ==================== 6. 프로젝트 홈 & 새 프로젝트 모달 + Forge 가져오기 ====================
-  async function renderProjectsHome() {
-    const grid = $("projects-grid");
-    if (!grid) return;
-    grid.innerHTML = "";
+  const homeState = {
+    query: "",
+    filter: "all", // all | pinned | working | exported
+    loading: false,
+    openingKey: "",
+    loadError: "",
+  };
+
+  function classifyProjectStatus(proj) {
+    if (!proj || proj.openable === false) return { id: "err", label: "열 수 없음", tone: "err" };
+    if (proj.before_import) return { id: "before", label: "가져오기 전", tone: "warn" };
+    if (proj.export_state === "same") return { id: "exported", label: "Export 완료", tone: "ok" };
+    if (proj.export_state === "changed") return { id: "changed", label: "수정 있음", tone: "accent" };
+    if ((proj.crops || 0) > 0 || (proj.candidates || 0) > 0 || (proj.stars || 0) > 0) {
+      return { id: "working", label: "작업 중", tone: "info" };
+    }
+    return { id: "ready", label: "준비됨", tone: "muted" };
+  }
+
+  function formatExportMeta(proj) {
+    if (!proj || proj.openable === false) return "";
+    const ex = proj.export_last;
+    if (ex && ex.rev !== undefined && ex.rev !== null) {
+      const suffix = proj.export_state === "same" ? "최신" : proj.export_state === "changed" ? "변경됨" : "";
+      return suffix ? `Export r${ex.rev} · ${suffix}` : `Export r${ex.rev}`;
+    }
+    return proj.before_import ? "첫 열기 시 원화 반영" : "Export 전";
+  }
+
+  function buildThumbNode(proj, displayName) {
+    const openable = proj.openable !== false;
+    const thumbUrl = openable && proj.thumb_url ? Api.apiUrl(proj.thumb_url) : "";
+    const wrap = Data.el("div", { className: "proj-card-thumb" });
+    const makeEmpty = () => Data.el("div", { className: "proj-thumb-empty" },
+      Data.icon("image", 22),
+      Data.el("span", { text: !openable ? "열 수 없음" : proj.before_import ? "첫 열기 시 원화 반영" : "미리보기 없음" }),
+    );
+    if (thumbUrl) {
+      const img = Data.el("img", { src: thumbUrl, alt: `${displayName} 미리보기`, loading: "lazy", draggable: "false" });
+      img.addEventListener("error", () => {
+        if (img.parentNode) img.replaceWith(makeEmpty());
+      });
+      wrap.append(img);
+    } else {
+      wrap.append(makeEmpty());
+    }
+    return wrap;
+  }
+
+  async function openProjectByKey(proj) {
+    if (!proj || !proj.id) return;
+    if (proj.openable === false) {
+      Store.toast(proj.error || "이 프로젝트는 열 수 없습니다.", "err");
+      return;
+    }
+    if (homeState.openingKey) return;
+    homeState.openingKey = proj.id;
+    drawProjectsHome();
     try {
-      const res = await Api.listProjects();
-      const list = Array.isArray(res.projects) ? res.projects : [];
-      Store.state.projects = list;
-      if (!list.length) {
-        grid.append(Data.el("div", { className: "empty-card", style: "grid-column:1/-1;" },
-          Data.el("p", { text: "아직 만들어진 프로젝트가 없습니다" }),
-          Data.el("small", { text: "우측 상단 [+ 새 프로젝트]를 눌러 원화 이미지를 올려 시작하세요." }),
-        ));
-        return;
-      }
-      for (const proj of list) {
-        const openable = proj.openable !== false;
-        const thumb = openable ? Api.apiUrl(proj.thumb_url || "") : "";
-        grid.append(Data.el("div", {
-          className: "proj-card" + (openable ? "" : " disabled"),
-          onClick: async () => {
-            if (!openable) {
-              Store.toast(proj.error || "이 프로젝트는 열 수 없습니다.", "err");
-              return;
-            }
-            try {
-              const r = await Api.openProject(proj.id);
-              const key = (r && r.key) || proj.id;
-              const u = new URL(location.href);
-              u.searchParams.set("root", key);
-              u.searchParams.set("ui", "v2");
-              location.href = u.pathname + u.search;
-            } catch (err) {
-              Store.toast(`프로젝트를 열 수 없습니다: ${err.message}`, "err");
-            }
-          },
-        },
-          Data.el("div", { className: "proj-card-thumb" }, thumb ? Data.el("img", { src: thumb, alt: proj.name }) : null),
-          Data.el("div", { className: "proj-card-body" },
-            Data.el("strong", { text: proj.name || proj.id }),
-            openable
-              ? Data.el("div", { className: "proj-card-meta" },
-                Data.el("span", { text: `영역 ${proj.crops || 0}개` }),
-                Data.el("span", { text: `후보 ${proj.candidates || 0}장` }),
-                Data.el("span", { text: `확정 ★ ${proj.stars || 0}` }),
-              )
-              : Data.el("span", { className: "proj-card-err", text: proj.error || "열 수 없음" }),
-            Data.el("span", { className: "proj-card-time", text: proj.modified || "" }),
-          ),
-        ));
-      }
+      const r = await Api.openProject(proj.id);
+      const key = (r && r.key) || proj.id;
+      const u = new URL(location.href);
+      u.searchParams.set("root", key);
+      u.searchParams.set("ui", "v2");
+      location.href = u.pathname + u.search;
     } catch (err) {
-      grid.append(Data.el("div", { className: "empty-card", text: `프로젝트 목록을 불러오지 못했습니다: ${err.message}` }));
+      homeState.openingKey = "";
+      drawProjectsHome();
+      Store.toast(`프로젝트를 열 수 없습니다: ${(err && err.message) || "알 수 없는 오류"}`, "err");
     }
   }
 
-  function openNewProjectModal(initialFile = null) {
-    let targetFile = initialFile;
-    const refFiles = [];
+  function renderHomeHero(list, pinnedSet) {
+    const hero = $("home-hero");
+    const resume = $("home-resume-card");
+    const forgeBtn = $("btn-home-drop-forge");
+    if (forgeBtn) forgeBtn.classList.toggle("hidden", !Api.can("forge_import"));
+    if (!hero || !resume) return;
+
+    // GET /projects 는 서버가 modified 내림차순으로 내려준다 — 가장 최근 수정된 열 수 있는 프로젝트를 스포트라이트
+    const recent = list.find((p) => p.openable !== false) || null;
+    if (!recent) {
+      hero.classList.add("empty-only");
+      resume.classList.add("hidden");
+      resume.innerHTML = "";
+      return;
+    }
+
+    hero.classList.remove("empty-only");
+    resume.classList.remove("hidden");
+    resume.innerHTML = "";
+
+    const dispName = Data.projectDisplayName(recent);
+    const hasCustomTitle = !!(recent.title && recent.name && recent.title !== recent.name);
+    const st = classifyProjectStatus(recent);
+    const isPinned = pinnedSet.has(recent.id);
+    const isOpening = homeState.openingKey === recent.id;
+
+    const thumbWrap = buildThumbNode(recent, dispName);
+    thumbWrap.classList.add("home-resume-thumb");
+
+    const pinBtn = Data.el("button", {
+      type: "button",
+      className: "proj-pin-btn home-resume-pin" + (isPinned ? " pinned" : ""),
+      title: isPinned ? "상단 고정 해제" : "프로젝트 상단 고정",
+      "aria-label": isPinned ? `${dispName} 상단 고정 해제` : `${dispName} 상단 고정`,
+      onClick: (e) => {
+        e.stopPropagation();
+        const pinned = Store.togglePinnedProject(recent.id);
+        Store.toast(pinned ? `"${dispName}" 프로젝트를 상단에 고정했습니다.` : `"${dispName}" 고정을 해제했습니다.`);
+        drawProjectsHome();
+      },
+    }, Data.icon("pin", 14));
+
+    const openBtn = Data.el("button", {
+      type: "button",
+      id: "btn-home-resume",
+      className: "btn-primary-sm home-resume-cta",
+      disabled: !!homeState.openingKey,
+      onClick: (e) => {
+        e.stopPropagation();
+        openProjectByKey(recent);
+      },
+    },
+      Data.el("span", { text: isOpening ? "여는 중…" : "작업 이어하기" }),
+      Data.icon("arrowRight", 14),
+    );
+
+    const body = Data.el("div", { className: "home-resume-body" },
+      Data.el("div", { className: "home-resume-kicker-row" },
+        Data.el("span", { className: "home-resume-kicker", text: "최근 작업 이어하기" }),
+        Data.el("span", { className: `proj-status-badge tone-${st.tone}`, text: st.label }),
+        isPinned ? Data.el("span", { className: "proj-status-badge tone-pin", text: "고정됨" }) : null,
+      ),
+      Data.el("div", { className: "home-resume-title-row" },
+        Data.el("h2", { text: dispName, title: dispName }),
+        hasCustomTitle ? Data.el("span", { className: "proj-folder-sub", text: recent.name, title: `폴더 이름: ${recent.name}` }) : null,
+      ),
+      Data.el("div", { className: "home-resume-stats" },
+        Data.el("span", { className: "proj-stat-pill", text: `영역 ${recent.crops || 0}개` }),
+        Data.el("span", { className: "proj-stat-pill", text: `후보 ${recent.candidates || 0}장` }),
+        Data.el("span", { className: "proj-stat-pill star", text: `확정 ★ ${recent.stars || 0}` }),
+      ),
+      Data.el("div", { className: "home-resume-foot" },
+        Data.el("div", { className: "home-resume-meta" },
+          Data.el("span", { text: formatExportMeta(recent) }),
+          recent.modified ? Data.el("span", { className: "proj-card-time", text: Data.formatRelativeTime(recent.modified), title: `마지막 수정: ${recent.modified}` }) : null,
+        ),
+        Data.el("div", { className: "home-resume-actions" }, pinBtn, openBtn),
+      ),
+    );
+
+    resume.onclick = () => openProjectByKey(recent);
+    resume.append(thumbWrap, body);
+  }
+
+  function drawProjectsHome() {
+    const grid = $("projects-grid");
+    if (!grid) return;
+    const list = Array.isArray(Store.state.projects) ? Store.state.projects : [];
+    const hp = Store.getHomePrefs();
+    const pinnedSet = new Set(hp.pinnedIds || []);
+
+    // 히어로(최근 작업 이어하기 + 빠른 드롭존) 갱신
+    renderHomeHero(list, pinnedSet);
+
+    // 툴바 상태 동기화
+    const searchInp = $("home-search-input");
+    const clearBtn = $("btn-home-search-clear");
+    if (searchInp && searchInp.value !== homeState.query) searchInp.value = homeState.query;
+    if (clearBtn) clearBtn.classList.toggle("hidden", !homeState.query);
+
+    const sortSel = $("home-sort-select");
+    if (sortSel && sortSel.value !== hp.sortBy) sortSel.value = hp.sortBy;
+    const btnGrid = $("home-view-grid");
+    const btnList = $("home-view-list");
+    if (btnGrid) btnGrid.classList.toggle("on", hp.viewMode !== "list");
+    if (btnList) btnList.classList.toggle("on", hp.viewMode === "list");
+
+    const pinnedCount = list.filter((p) => pinnedSet.has(p.id)).length;
+    const workingCount = list.filter((p) => p.openable !== false && p.export_state !== "same").length;
+    const exportedCount = list.filter((p) => p.openable !== false && p.export_state === "same").length;
+
+    const filterBar = $("home-filter-bar");
+    if (filterBar) {
+      filterBar.innerHTML = "";
+      const filters = [
+        { id: "all", label: "전체", count: list.length },
+        { id: "pinned", label: "고정됨", count: pinnedCount },
+        { id: "working", label: "작업 중", count: workingCount },
+        { id: "exported", label: "Export 완료", count: exportedCount },
+      ];
+      for (const f of filters) {
+        const active = homeState.filter === f.id;
+        filterBar.append(Data.el("button", {
+          type: "button",
+          className: "home-filter-chip" + (active ? " on" : ""),
+          role: "tab",
+          "aria-selected": active ? "true" : "false",
+          dataset: { filter: f.id },
+          onClick: () => {
+            homeState.filter = f.id;
+            drawProjectsHome();
+          },
+        },
+          Data.el("span", { text: f.label }),
+          Data.el("span", { className: "home-filter-count", text: String(f.count) }),
+        ));
+      }
+    }
+
+    // 검색 · 필터 · 정렬(고정 프로젝트 상단 우선)
+    const q = homeState.query.trim().toLocaleLowerCase();
+    let shown = list.filter((p) => {
+      if (homeState.filter === "pinned" && !pinnedSet.has(p.id)) return false;
+      if (homeState.filter === "working" && !(p.openable !== false && p.export_state !== "same")) return false;
+      if (homeState.filter === "exported" && !(p.openable !== false && p.export_state === "same")) return false;
+      if (q) {
+        const hayTitle = String(p.title || "").toLocaleLowerCase();
+        const hayName = String(p.name || "").toLocaleLowerCase();
+        if (!hayTitle.includes(q) && !hayName.includes(q)) return false;
+      }
+      return true;
+    });
+
+    shown.sort((a, b) => {
+      const pinDiff = (pinnedSet.has(b.id) ? 1 : 0) - (pinnedSet.has(a.id) ? 1 : 0);
+      if (pinDiff !== 0) return pinDiff;
+      if (hp.sortBy === "name") {
+        const cmp = Data.projectDisplayName(a).localeCompare(Data.projectDisplayName(b), "ko");
+        if (cmp !== 0) return cmp;
+      } else if (hp.sortBy === "stars") {
+        const d = (b.stars || 0) - (a.stars || 0);
+        if (d !== 0) return d;
+      } else if (hp.sortBy === "crops") {
+        const d = (b.crops || 0) - (a.crops || 0);
+        if (d !== 0) return d;
+      }
+      const modCmp = String(b.modified || "").localeCompare(String(a.modified || ""));
+      if (modCmp !== 0) return modCmp;
+      return Data.projectDisplayName(a).localeCompare(Data.projectDisplayName(b), "ko");
+    });
+
+    const countEl = $("home-result-count");
+    if (countEl) {
+      if (homeState.loading) {
+        countEl.textContent = "프로젝트 목록을 불러오는 중…";
+      } else if (homeState.loadError) {
+        countEl.textContent = "목록 조회 오류";
+      } else if (q || homeState.filter !== "all") {
+        countEl.textContent = `표시 ${shown.length}개 / 전체 ${list.length}개`;
+      } else {
+        countEl.textContent = pinnedCount > 0
+          ? `총 ${list.length}개 프로젝트 · 고정 ${pinnedCount}개`
+          : `총 ${list.length}개 프로젝트`;
+      }
+    }
+
+    const isEmptyHome = !list.length && !homeState.loading && !homeState.loadError;
+    const toolbarEl = $("home-toolbar");
+    const metaEl = $("home-section-meta");
+    if (toolbarEl) toolbarEl.classList.toggle("hidden", isEmptyHome);
+    if (metaEl) metaEl.classList.toggle("hidden", isEmptyHome);
+
+    const isList = hp.viewMode === "list";
+    grid.classList.toggle("view-list", isList && !isEmptyHome);
+    grid.innerHTML = "";
+
+    if (homeState.loadError) {
+      grid.append(Data.el("div", { className: "empty-card home-empty-card" },
+        Data.el("p", { text: `프로젝트 목록을 불러오지 못했습니다: ${homeState.loadError}` }),
+        Data.el("div", { className: "empty-actions" },
+          Data.el("button", { type: "button", className: "btn-secondary-sm", text: "다시 시도", onClick: () => renderProjectsHome() }),
+        ),
+      ));
+      return;
+    }
+
+    if (!list.length) {
+      if (homeState.loading) return;
+      const steps = [
+        ["1", "원화 이미지로 시작", "위 영역에 PNG·JPG·PSD를 끌어 놓거나 PC·Forge 자료함에서 불러오면 새 프로젝트가 열립니다."],
+        ["2", "수정 영역과 지시 작성", "원화 위에 수정할 영역을 그리고 한국어로 방향을 적으면 AI가 모델 맞춤 프롬프트를 작성합니다."],
+        ["3", "후보 비교 · PSD 내보내기", "생성된 후보를 원본과 비교·채택하고 경계를 다듬은 뒤 크롭 밖 무변형 PSD로 내려받습니다."],
+      ];
+      const strip = Data.el("div", { className: "home-onboard-steps" });
+      for (const [num, title, desc] of steps) {
+        strip.append(Data.el("div", { className: "home-onboard-step" },
+          Data.el("span", { className: "home-onboard-num", text: num }),
+          Data.el("strong", { text: title }),
+          Data.el("span", { text: desc }),
+        ));
+      }
+      grid.append(strip);
+      return;
+    }
+
+    if (!shown.length) {
+      grid.append(Data.el("div", { className: "empty-card home-empty-card" },
+        Data.el("p", { text: "조건에 맞는 프로젝트가 없습니다" }),
+        Data.el("small", { text: q ? `"${homeState.query.trim()}" 검색어 또는 선택한 상태 필터에 해당하는 프로젝트가 없습니다.` : "선택한 상태 필터에 해당하는 프로젝트가 없습니다." }),
+        Data.el("div", { className: "empty-actions" },
+          Data.el("button", {
+            type: "button",
+            className: "btn-secondary-sm",
+            text: "검색 · 필터 초기화",
+            onClick: () => {
+              homeState.query = "";
+              homeState.filter = "all";
+              drawProjectsHome();
+            },
+          }),
+        ),
+      ));
+      return;
+    }
+
+    for (const proj of shown) {
+      const openable = proj.openable !== false;
+      const dispName = Data.projectDisplayName(proj);
+      const hasCustomTitle = !!(proj.title && proj.name && proj.title !== proj.name);
+      const st = classifyProjectStatus(proj);
+      const isPinned = pinnedSet.has(proj.id);
+      const isOpening = homeState.openingKey === proj.id;
+
+      const thumbWrap = buildThumbNode(proj, dispName);
+      const pinBtn = Data.el("button", {
+        type: "button",
+        className: "proj-pin-btn" + (isPinned ? " pinned" : ""),
+        title: isPinned ? "상단 고정 해제" : "프로젝트 상단 고정",
+        "aria-label": isPinned ? `${dispName} 상단 고정 해제` : `${dispName} 상단 고정`,
+        onClick: (e) => {
+          e.stopPropagation();
+          const pinned = Store.togglePinnedProject(proj.id);
+          Store.toast(pinned ? `"${dispName}" 프로젝트를 상단에 고정했습니다.` : `"${dispName}" 고정을 해제했습니다.`);
+          drawProjectsHome();
+        },
+      }, Data.icon("pin", 13));
+
+      if (!isList) {
+        thumbWrap.append(
+          Data.el("span", { className: `proj-status-badge proj-thumb-badge tone-${st.tone}`, text: st.label }),
+          pinBtn,
+        );
+      }
+
+      const titleRow = Data.el("div", { className: "proj-title-row" },
+        Data.el("strong", { text: dispName, title: hasCustomTitle ? `${dispName} (폴더: ${proj.name})` : dispName }),
+        hasCustomTitle ? Data.el("span", { className: "proj-folder-sub", text: proj.name, title: `폴더 이름: ${proj.name}` }) : null,
+      );
+
+      const metaNode = openable
+        ? Data.el("div", { className: "proj-card-meta" },
+          Data.el("span", { text: `영역 ${proj.crops || 0}개` }),
+          Data.el("span", { text: `후보 ${proj.candidates || 0}장` }),
+          Data.el("span", { className: "proj-meta-star", text: `확정 ★ ${proj.stars || 0}` }),
+        )
+        : Data.el("span", { className: "proj-card-err", text: proj.error || "열 수 없음" });
+
+      const footNode = Data.el("div", { className: "proj-card-foot" },
+        Data.el("span", { className: "proj-card-export", text: formatExportMeta(proj) }),
+        proj.modified ? Data.el("span", { className: "proj-card-time", text: Data.formatRelativeTime(proj.modified), title: `마지막 수정: ${proj.modified}` }) : null,
+      );
+
+      const cardClasses = [
+        "proj-card",
+        openable ? "" : "disabled",
+        isPinned ? "pinned" : "",
+        isList ? "proj-row" : "",
+        isOpening ? "opening" : "",
+      ].filter(Boolean).join(" ");
+
+      const cardChildren = isList
+        ? [
+          thumbWrap,
+          Data.el("div", { className: "proj-card-body" },
+            Data.el("div", { className: "proj-row-head" },
+              titleRow,
+              Data.el("span", { className: `proj-status-badge tone-${st.tone}`, text: st.label }),
+            ),
+            metaNode,
+          ),
+          Data.el("div", { className: "proj-row-right" },
+            footNode,
+            pinBtn,
+            Data.el("button", {
+              type: "button",
+              className: "btn-secondary-sm proj-row-open",
+              disabled: !openable || !!homeState.openingKey,
+              text: isOpening ? "여는 중…" : "열기",
+              onClick: (e) => {
+                e.stopPropagation();
+                openProjectByKey(proj);
+              },
+            }),
+          ),
+        ]
+        : [
+          thumbWrap,
+          Data.el("div", { className: "proj-card-body" }, titleRow, metaNode, footNode),
+        ];
+
+      grid.append(Data.el("div", {
+        className: cardClasses,
+        dataset: { projId: proj.id },
+        onClick: () => openProjectByKey(proj),
+      }, ...cardChildren));
+    }
+  }
+
+  async function renderProjectsHome() {
+    const grid = $("projects-grid");
+    if (!grid) return;
+    homeState.loading = true;
+    homeState.loadError = "";
+    const refreshBtn = $("btn-home-refresh");
+    if (refreshBtn) refreshBtn.disabled = true;
+    const countEl = $("home-result-count");
+    if (countEl) countEl.textContent = "프로젝트 목록을 불러오는 중…";
+    try {
+      const res = await Api.listProjects();
+      const list = Array.isArray(res && res.projects) ? res.projects : [];
+      Store.state.projects = list;
+    } catch (err) {
+      homeState.loadError = (err && err.message) || "알 수 없는 오류";
+    } finally {
+      homeState.loading = false;
+      if (refreshBtn) refreshBtn.disabled = false;
+      drawProjectsHome();
+    }
+  }
+
+  function openNewProjectModal(initialFile = null, initialRefs = [], opts = {}) {
+    let targetFile = initialFile || null;
+    const refFiles = Array.isArray(initialRefs) ? initialRefs.slice() : [];
+    let creating = false;
+    const blobUrls = [];
+
+    function revokeBlobUrls() {
+      while (blobUrls.length) {
+        const u = blobUrls.pop();
+        try { URL.revokeObjectURL(u); } catch (_) {}
+      }
+    }
 
     const nameInput = Data.el("input", {
-      type: "text", className: "np-text-input",
+      id: "np-name-input",
+      type: "text",
+      className: "np-text-input",
       placeholder: "예: 캐릭터_의상수정_01",
-      value: initialFile ? initialFile.name.replace(/\.[^.]+$/, "").replace(/[^\p{L}\p{N}_.-]+/gu, "_") : "",
+      value: targetFile ? Data.suggestProjectName(targetFile.name) : "",
     });
-    const errEl = Data.el("small", { style: "color:var(--err);min-height:16px;" });
-    const pickedBox = Data.el("div", { style: "display:flex;flex-wrap:wrap;gap:6px;" });
+    const errEl = Data.el("small", { id: "np-error", className: "np-error-text" });
+    const pickedBox = Data.el("div", { id: "np-picked-box", className: "np-picked-box" });
+
+    const fileInput = Data.el("input", {
+      id: "np-file-input",
+      type: "file",
+      accept: "image/*,.psd",
+      className: "hidden",
+    });
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files && fileInput.files[0]) {
+        targetFile = fileInput.files[0];
+        if (!nameInput.value.trim()) nameInput.value = Data.suggestProjectName(targetFile.name);
+        setErr("");
+        refreshPicked();
+      }
+      fileInput.value = "";
+    });
+
+    const refInput = Data.el("input", {
+      id: "np-ref-input",
+      type: "file",
+      accept: "image/*",
+      multiple: true,
+      className: "hidden",
+    });
+    refInput.addEventListener("change", () => {
+      for (const f of Array.from(refInput.files || [])) refFiles.push(f);
+      refreshPicked();
+      refInput.value = "";
+    });
 
     function refreshPicked() {
+      revokeBlobUrls();
       pickedBox.innerHTML = "";
       if (targetFile) {
-        const url = URL.createObjectURL(targetFile);
+        const isImg = /^image\//i.test(targetFile.type || "") || /\.(png|jpe?g|webp|gif|bmp)$/i.test(targetFile.name || "");
+        let thumbNode = null;
+        if (isImg) {
+          const url = URL.createObjectURL(targetFile);
+          blobUrls.push(url);
+          thumbNode = Data.el("img", { src: url, alt: "" });
+        }
         pickedBox.append(Data.el("span", { className: "np-picked-chip" },
-          Data.el("img", { src: url, alt: "" }),
+          thumbNode,
           Data.el("span", { text: `타깃: ${targetFile.name}` }),
-          Data.el("button", { type: "button", className: "row-icon-btn", text: "×", onClick: () => { targetFile = null; refreshPicked(); } }),
+          Data.el("button", {
+            type: "button",
+            className: "row-icon-btn",
+            text: "×",
+            title: "타깃 파일 해제",
+            onClick: () => { if (!creating) { targetFile = null; refreshPicked(); } },
+          }),
         ));
       }
       refFiles.forEach((rf, i) => {
-        pickedBox.append(Data.el("span", { className: "np-picked-chip" },
+        pickedBox.append(Data.el("span", { className: "np-picked-chip ref" },
           Data.el("span", { text: `참조: ${rf.name}` }),
-          Data.el("button", { type: "button", className: "row-icon-btn", text: "×", onClick: () => { refFiles.splice(i, 1); refreshPicked(); } }),
+          Data.el("button", {
+            type: "button",
+            className: "row-icon-btn",
+            text: "×",
+            title: "레퍼런스 해제",
+            onClick: () => { if (!creating) { refFiles.splice(i, 1); refreshPicked(); } },
+          }),
         ));
       });
     }
 
-    const dropBox = Data.el("div", { className: "np-drop" },
+    function setErr(msg, isHint = false) {
+      errEl.textContent = msg || "";
+      errEl.classList.toggle("hint", !!isHint && !!msg);
+    }
+
+    async function submitNewProject() {
+      if (creating) return;
+      const name = nameInput.value.trim();
+      const vErr = Data.validateProjectName(name);
+      if (vErr) {
+        setErr(vErr, false);
+        nameInput.focus();
+        return;
+      }
+      if (!targetFile) {
+        setErr("타깃 원화 이미지를 먼저 선택하거나 끌어 놓아 주세요.", false);
+        return;
+      }
+      creating = true;
+      setErr("");
+      const createBtn = $("np-create-btn");
+      if (createBtn) {
+        createBtn.disabled = true;
+        createBtn.textContent = "프로젝트 생성 중…";
+      }
+      try {
+        const res = await Api.createProjectFile(name, targetFile);
+        for (const rf of refFiles) {
+          try { await Api.uploadSheet(res.key, rf, null); } catch (_) {}
+        }
+        creating = false;
+        closeModal(true);
+        const u = new URL(location.href);
+        u.searchParams.set("root", res.key);
+        u.searchParams.set("ui", "v2");
+        location.href = u.pathname + u.search;
+      } catch (err) {
+        creating = false;
+        if (createBtn) {
+          createBtn.disabled = false;
+          createBtn.textContent = "프로젝트 생성 및 열기";
+        }
+        // #C31-13: 409 archived_name / name_taken / 중복 폴더 등 서버 error 문구를 삼키지 않고 그대로 표시
+        setErr((err && err.message) || "프로젝트 생성에 실패했습니다.", false);
+      }
+    }
+
+    nameInput.addEventListener("input", () => {
+      if (errEl.textContent) setErr("");
+    });
+    nameInput.addEventListener("keydown", (e) => {
+      // Forge iframe 은 allow-forms 가 없으므로 폼 제출 없이 Enter 키로 직접 fetch 생성 경로를 실행한다
+      if (e.key === "Enter") {
+        e.preventDefault();
+        submitNewProject();
+      }
+    });
+
+    const dropBox = Data.el("div", { className: "np-drop", id: "np-drop-zone" },
       Data.el("span", { text: "원화 이미지를 여기에 끌어다 놓거나 파일을 선택하세요" }),
       Data.el("div", { style: "display:flex;gap:6px;flex-wrap:wrap;justify-content:center;" },
         Data.el("button", {
-          type: "button", className: "btn-secondary-sm", text: "내 PC에서 원화 선택",
-          onClick: () => {
-            const inp = Data.el("input", { type: "file", accept: "image/*" });
-            inp.addEventListener("change", () => {
-              if (inp.files && inp.files[0]) {
-                targetFile = inp.files[0];
-                if (!nameInput.value.trim()) nameInput.value = targetFile.name.replace(/\.[^.]+$/, "").replace(/[^\p{L}\p{N}_.-]+/gu, "_");
-                refreshPicked();
-              }
-            });
-            inp.click();
-          },
+          type: "button",
+          className: "btn-secondary-sm",
+          id: "btn-np-pick-target",
+          text: "내 PC에서 원화 선택",
+          onClick: () => { if (!creating) fileInput.click(); },
         }),
         Api.can("forge_import") ? Data.el("button", {
-          type: "button", className: "btn-secondary-sm accent-outline", text: "Forge에서 불러오기",
+          type: "button",
+          className: "btn-secondary-sm accent-outline",
+          id: "btn-np-forge-import",
+          text: "Forge에서 불러오기",
           onClick: () => {
+            if (creating) return;
             const name = nameInput.value.trim();
             const vErr = Data.validateProjectName(name);
             if (vErr) {
-              errEl.textContent = vErr || "먼저 프로젝트 이름을 입력해 주세요.";
+              setErr(vErr || "먼저 프로젝트 이름을 입력해 주세요.", false);
               nameInput.focus();
               return;
             }
-            errEl.textContent = "";
+            setErr("");
             if (window.DPForgeImport && typeof window.DPForgeImport.open === "function") {
               const opened = window.DPForgeImport.open({
                 into: "target",
@@ -1324,66 +1833,61 @@ window.DPV2Overlays = (() => {
           },
         }) : null,
         Data.el("button", {
-          type: "button", className: "btn-secondary-sm", text: "+ 레퍼런스 함께 추가",
-          onClick: () => {
-            const inp = Data.el("input", { type: "file", accept: "image/*", multiple: true });
-            inp.addEventListener("change", () => {
-              for (const f of Array.from(inp.files || [])) refFiles.push(f);
-              refreshPicked();
-            });
-            inp.click();
-          },
+          type: "button",
+          className: "btn-secondary-sm",
+          id: "btn-np-pick-refs",
+          text: "+ 레퍼런스 함께 추가",
+          onClick: () => { if (!creating) refInput.click(); },
         }),
       ),
     );
-    dropBox.addEventListener("dragover", (e) => { e.preventDefault(); dropBox.classList.add("over"); });
+    dropBox.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); dropBox.classList.add("over"); });
     dropBox.addEventListener("dragleave", () => dropBox.classList.remove("over"));
     dropBox.addEventListener("drop", (e) => {
       e.preventDefault();
+      e.stopPropagation();
       dropBox.classList.remove("over");
+      if (creating) return;
       const files = Array.from(e.dataTransfer?.files || []);
       if (files[0]) {
         targetFile = files[0];
-        if (!nameInput.value.trim()) nameInput.value = targetFile.name.replace(/\.[^.]+$/, "").replace(/[^\p{L}\p{N}_.-]+/gu, "_");
+        if (!nameInput.value.trim()) nameInput.value = Data.suggestProjectName(targetFile.name);
         for (const extra of files.slice(1)) refFiles.push(extra);
+        setErr("");
         refreshPicked();
       }
     });
     refreshPicked();
 
+    if (opts && opts.hintForForge) {
+      setErr("프로젝트 이름을 입력한 뒤 [Forge에서 불러오기]를 눌러 원화를 선택하세요.", true);
+    }
+
     openModal({
       title: "새 프로젝트 만들기",
       bodyNodes: [
-        Data.el("div", { className: "np-field" }, Data.el("label", { text: "프로젝트 이름" }), nameInput, errEl),
+        Data.el("div", { className: "np-field" }, Data.el("label", { for: "np-name-input", text: "프로젝트 이름" }), nameInput, errEl),
         dropBox,
         pickedBox,
+        fileInput,
+        refInput,
       ],
       actions: [
-        { label: "취소", cls: "btn-secondary", onClick: closeModal },
+        { label: "취소", cls: "btn-secondary", onClick: () => { if (!creating) closeModal(); } },
         {
-          label: "프로젝트 생성 및 열기", cls: "btn-primary",
-          onClick: async () => {
-            const name = nameInput.value.trim();
-            const vErr = Data.validateProjectName(name);
-            if (vErr) { errEl.textContent = vErr; return; }
-            if (!targetFile) { errEl.textContent = "타깃 원화 이미지를 먼저 선택해 주세요."; return; }
-            try {
-              const res = await Api.createProjectFile(name, targetFile);
-              for (const rf of refFiles) {
-                try { await Api.uploadSheet(res.key, rf, null); } catch (_) {}
-              }
-              closeModal();
-              const u = new URL(location.href);
-              u.searchParams.set("root", res.key);
-              u.searchParams.set("ui", "v2");
-              location.href = u.pathname + u.search;
-            } catch (err) {
-              errEl.textContent = err.message;
-            }
-          },
+          id: "np-create-btn",
+          label: "프로젝트 생성 및 열기",
+          cls: "btn-primary",
+          onClick: submitNewProject,
         },
       ],
+      onClose: revokeBlobUrls,
+      canClose: () => !creating,
     });
+
+    if (!navigator.userActivation || navigator.userActivation.isActive) {
+      nameInput.focus();
+    }
   }
 
   function openForgeImportForRef() {
@@ -1963,6 +2467,119 @@ window.DPV2Overlays = (() => {
       }, { passive: false });
     }
 
+    // 프로젝트 홈 툴바 · 빠른 드롭존 이벤트 바인딩
+    const btnRefresh = $("btn-home-refresh");
+    if (btnRefresh) btnRefresh.addEventListener("click", () => renderProjectsHome());
+
+    const homeSearch = $("home-search-input");
+    if (homeSearch) {
+      homeSearch.addEventListener("input", (e) => {
+        homeState.query = e.target.value || "";
+        drawProjectsHome();
+      });
+      homeSearch.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          if (homeState.query) {
+            homeState.query = "";
+            homeSearch.value = "";
+            drawProjectsHome();
+          }
+          homeSearch.blur();
+        }
+      });
+    }
+    const btnSearchClear = $("btn-home-search-clear");
+    if (btnSearchClear) {
+      btnSearchClear.addEventListener("click", () => {
+        homeState.query = "";
+        if (homeSearch) { homeSearch.value = ""; homeSearch.focus(); }
+        drawProjectsHome();
+      });
+    }
+
+    const homeSort = $("home-sort-select");
+    if (homeSort) {
+      homeSort.addEventListener("change", (e) => {
+        Store.saveHomePrefs({ sortBy: e.target.value });
+        drawProjectsHome();
+      });
+    }
+    const btnViewGrid = $("home-view-grid");
+    if (btnViewGrid) {
+      btnViewGrid.addEventListener("click", () => {
+        Store.saveHomePrefs({ viewMode: "grid" });
+        drawProjectsHome();
+      });
+    }
+    const btnViewList = $("home-view-list");
+    if (btnViewList) {
+      btnViewList.addEventListener("click", () => {
+        Store.saveHomePrefs({ viewMode: "list" });
+        drawProjectsHome();
+      });
+    }
+
+    const quickDrop = $("home-quick-drop");
+    if (quickDrop) {
+      let qdDepth = 0;
+      quickDrop.addEventListener("dragenter", (e) => {
+        if (e.dataTransfer?.types?.includes("Files")) {
+          e.preventDefault();
+          e.stopPropagation();
+          qdDepth += 1;
+          quickDrop.classList.add("over");
+          const gOv = $("global-drop-overlay");
+          if (gOv) gOv.classList.add("hidden");
+        }
+      });
+      quickDrop.addEventListener("dragover", (e) => {
+        if (e.dataTransfer?.types?.includes("Files")) {
+          e.preventDefault();
+          e.stopPropagation();
+          quickDrop.classList.add("over");
+        }
+      });
+      quickDrop.addEventListener("dragleave", (e) => {
+        if (e.dataTransfer?.types?.includes("Files")) {
+          e.stopPropagation();
+          qdDepth = Math.max(0, qdDepth - 1);
+          if (qdDepth === 0) quickDrop.classList.remove("over");
+        }
+      });
+      quickDrop.addEventListener("drop", (e) => {
+        if (e.dataTransfer?.types?.includes("Files")) {
+          e.preventDefault();
+          e.stopPropagation();
+          qdDepth = 0;
+          quickDrop.classList.remove("over");
+          const gOv = $("global-drop-overlay");
+          if (gOv) gOv.classList.add("hidden");
+          const files = Array.from(e.dataTransfer.files || []);
+          if (files.length) openNewProjectModal(files[0], files.slice(1));
+        }
+      });
+    }
+
+    const btnDropPick = $("btn-home-drop-pick");
+    if (btnDropPick) {
+      btnDropPick.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const inp = Data.el("input", { type: "file", accept: "image/*,.psd", multiple: true });
+        inp.addEventListener("change", () => {
+          const files = Array.from(inp.files || []);
+          if (files.length) openNewProjectModal(files[0], files.slice(1));
+        });
+        inp.click();
+      });
+    }
+    const btnDropForge = $("btn-home-drop-forge");
+    if (btnDropForge) {
+      btnDropForge.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openNewProjectModal(null, [], { hintForForge: true });
+      });
+    }
+
     // 히스토리 상태 구독
     Store.subscribe((reason) => {
       if (reason === "history") renderHistoryDrawer();
@@ -1987,6 +2604,7 @@ window.DPV2Overlays = (() => {
     openPresetsModal,
     openShortcutsModal,
     renderProjectsHome,
+    drawProjectsHome,
     openNewProjectModal,
     openForgeImportForRef,
     bindEvents,
