@@ -23,6 +23,8 @@ window.DPV2Overlays = (() => {
     }
     modalOnClose = typeof onClose === "function" ? onClose : null;
     modalCanClose = typeof canClose === "function" ? canClose : null;
+    const mClose = $("modal-close");
+    if (mClose) mClose.disabled = false;
     $("modal-title").textContent = title || "";
     const body = $("modal-body");
     body.innerHTML = "";
@@ -45,15 +47,24 @@ window.DPV2Overlays = (() => {
   }
 
   function closeModal(force = false) {
-    if (!force && typeof modalCanClose === "function" && !modalCanClose()) return;
+    // #C36-2: 이벤트 객체(PointerEvent 등)가 첫 인자로 들어와도 force 로 취급하지 않는다
+    const isForce = force === true;
+    if (!isForce && typeof modalCanClose === "function" && !modalCanClose()) return;
     const bd = $("modal-backdrop");
     if (bd) bd.classList.add("hidden");
+    const mClose = $("modal-close");
+    if (mClose) mClose.disabled = false;
     modalCanClose = null;
     if (typeof modalOnClose === "function") {
       const fn = modalOnClose;
       modalOnClose = null;
       try { fn(); } catch (_) {}
     }
+    // #C36-7: 모달을 닫은 뒤 DOM 노드와 핸들러 클로저(선택한 File 참조 포함)를 즉시 해제한다
+    const body = $("modal-body");
+    if (body) body.innerHTML = "";
+    const foot = $("modal-foot");
+    if (foot) foot.innerHTML = "";
   }
 
   function loadImage(src) {
@@ -1638,8 +1649,16 @@ window.DPV2Overlays = (() => {
   function openNewProjectModal(initialFile = null, initialRefs = [], opts = {}) {
     let targetFile = initialFile || null;
     const refFiles = Array.isArray(initialRefs) ? initialRefs.slice() : [];
+    const failedRefs = [];
     let creating = false;
+    let createdProject = null; // { key, notes } — projects/new 또는 Forge 생성이 끝난 뒤 레퍼런스만 재시도할 때 재사용
+    let navigating = false;
     const blobUrls = [];
+    const targetAccept = Data.TARGET_ACCEPT || ".psd,.psb,.png,.jpg,.jpeg,.webp";
+
+    function normalizeNotes(raw) {
+      return Array.isArray(raw) ? raw.filter((n) => typeof n === "string" && n.trim()) : [];
+    }
 
     function revokeBlobUrls() {
       while (blobUrls.length) {
@@ -1656,19 +1675,23 @@ window.DPV2Overlays = (() => {
       value: targetFile ? Data.suggestProjectName(targetFile.name) : "",
     });
     const errEl = Data.el("small", { id: "np-error", className: "np-error-text" });
+    const refFailBox = Data.el("div", { id: "np-ref-failures", className: "np-ref-failures hidden", role: "alert" });
     const pickedBox = Data.el("div", { id: "np-picked-box", className: "np-picked-box" });
 
+    // #C36-5: projects/new 서버 허용 확장자(.psd,.psb,.png,.jpg,.jpeg,.webp)와 일치시킨다
     const fileInput = Data.el("input", {
       id: "np-file-input",
       type: "file",
-      accept: "image/*,.psd",
+      accept: targetAccept,
       className: "hidden",
     });
     fileInput.addEventListener("change", () => {
+      if (creating || createdProject) { fileInput.value = ""; return; }
       if (fileInput.files && fileInput.files[0]) {
         targetFile = fileInput.files[0];
         if (!nameInput.value.trim()) nameInput.value = Data.suggestProjectName(targetFile.name);
-        setErr("");
+        const fErr = typeof Data.validateTargetFile === "function" ? Data.validateTargetFile(targetFile) : "";
+        setErr(fErr, false);
         refreshPicked();
       }
       fileInput.value = "";
@@ -1682,16 +1705,112 @@ window.DPV2Overlays = (() => {
       className: "hidden",
     });
     refInput.addEventListener("change", () => {
+      if (creating) { refInput.value = ""; return; }
       for (const f of Array.from(refInput.files || [])) refFiles.push(f);
       refreshPicked();
+      syncModalControls();
       refInput.value = "";
     });
+
+    const btnPickTarget = Data.el("button", {
+      type: "button",
+      className: "btn-secondary-sm",
+      id: "btn-np-pick-target",
+      text: "내 PC에서 원화 선택",
+      onClick: () => { if (!creating && !createdProject) fileInput.click(); },
+    });
+
+    const btnPickRefs = Data.el("button", {
+      type: "button",
+      className: "btn-secondary-sm",
+      id: "btn-np-pick-refs",
+      text: "+ 레퍼런스 함께 추가",
+      onClick: () => { if (!creating) refInput.click(); },
+    });
+
+    let btnForgeImport = null;
+
+    function setErr(msg, isHint = false) {
+      errEl.textContent = msg || "";
+      errEl.classList.toggle("hint", !!isHint && !!msg);
+    }
+
+    function renderRefFailures() {
+      refFailBox.innerHTML = "";
+      if (!failedRefs.length) {
+        refFailBox.classList.add("hidden");
+        return;
+      }
+      refFailBox.classList.remove("hidden");
+      refFailBox.append(Data.el("strong", {
+        text: `레퍼런스 ${failedRefs.length}건을 올리지 못했습니다 — 실패한 파일만 다시 올리거나 이대로 프로젝트를 열 수 있습니다`,
+      }));
+      const ul = Data.el("ul");
+      for (const item of failedRefs) {
+        ul.append(Data.el("li", {},
+          Data.el("span", { className: "np-fail-name", text: item.name }),
+          Data.el("span", { text: ` — ${item.error}` }),
+        ));
+      }
+      refFailBox.append(ul);
+    }
+
+    function syncModalControls(busyText = "") {
+      const lockTarget = creating || !!createdProject;
+      nameInput.disabled = lockTarget;
+      btnPickTarget.disabled = lockTarget;
+      if (btnForgeImport) btnForgeImport.disabled = lockTarget;
+      btnPickRefs.disabled = creating;
+      const mClose = $("modal-close");
+      if (mClose) mClose.disabled = creating;
+      const cancelBtn = $("np-cancel-btn");
+      if (cancelBtn) {
+        cancelBtn.disabled = creating;
+        cancelBtn.textContent = createdProject ? "닫기" : "취소";
+      }
+      const openAnywayBtn = $("np-open-anyway-btn");
+      if (openAnywayBtn) {
+        openAnywayBtn.classList.toggle("hidden", !createdProject);
+        openAnywayBtn.disabled = creating;
+      }
+      const createBtn = $("np-create-btn");
+      if (createBtn) {
+        createBtn.disabled = creating;
+        if (creating) createBtn.textContent = busyText || "프로젝트 생성 중…";
+        else if (createdProject) {
+          if (!refFiles.length) createBtn.textContent = "프로젝트 열기";
+          else createBtn.textContent = failedRefs.length ? "실패한 레퍼런스 다시 올리기" : "레퍼런스 올리고 열기";
+        } else createBtn.textContent = "프로젝트 생성 및 열기";
+      }
+      pickedBox.querySelectorAll("button").forEach((b) => { b.disabled = creating; });
+    }
+
+    function setCreating(flag, busyText = "") {
+      creating = !!flag;
+      syncModalControls(busyText);
+    }
+
+    function navigateToNewProject(key, notes) {
+      navigating = true;
+      // #C36-6: v1(board.js)과 동일한 sessionStorage 키("bmk-dp-new:" + key) + new=1 로 변환 알림 전달
+      const cleanNotes = normalizeNotes(notes);
+      try {
+        window.sessionStorage.setItem("bmk-dp-new:" + key, JSON.stringify(cleanNotes));
+      } catch (_) { /* 저장소 차단 무시 */ }
+      closeModal(true);
+      const u = new URL(location.href);
+      u.searchParams.set("root", key);
+      u.searchParams.set("new", "1");
+      u.searchParams.set("ui", "v2");
+      location.href = u.pathname + u.search;
+    }
 
     function refreshPicked() {
       revokeBlobUrls();
       pickedBox.innerHTML = "";
       if (targetFile) {
-        const isImg = /^image\//i.test(targetFile.type || "") || /\.(png|jpe?g|webp|gif|bmp)$/i.test(targetFile.name || "");
+        const isImg = /^image\/(png|jpe?g|webp)$/i.test(targetFile.type || "")
+          || /\.(png|jpe?g|webp)$/i.test(targetFile.name || "");
         let thumbNode = null;
         if (isImg) {
           const url = URL.createObjectURL(targetFile);
@@ -1700,37 +1819,99 @@ window.DPV2Overlays = (() => {
         }
         pickedBox.append(Data.el("span", { className: "np-picked-chip" },
           thumbNode,
-          Data.el("span", { text: `타깃: ${targetFile.name}` }),
-          Data.el("button", {
+          Data.el("span", { text: createdProject ? `생성됨 · 타깃: ${targetFile.name}` : `타깃: ${targetFile.name}` }),
+          createdProject ? null : Data.el("button", {
             type: "button",
             className: "row-icon-btn",
             text: "×",
             title: "타깃 파일 해제",
-            onClick: () => { if (!creating) { targetFile = null; refreshPicked(); } },
+            disabled: creating,
+            onClick: () => { if (!creating && !createdProject) { targetFile = null; setErr(""); refreshPicked(); } },
           }),
+        ));
+      } else if (createdProject) {
+        pickedBox.append(Data.el("span", { className: "np-picked-chip" },
+          Data.el("span", { text: "생성됨 · Forge 원화" }),
         ));
       }
       refFiles.forEach((rf, i) => {
-        pickedBox.append(Data.el("span", { className: "np-picked-chip ref" },
+        const isFailed = failedRefs.some((f) => f.file === rf);
+        pickedBox.append(Data.el("span", { className: "np-picked-chip ref" + (isFailed ? " ref-failed" : "") },
           Data.el("span", { text: `참조: ${rf.name}` }),
           Data.el("button", {
             type: "button",
             className: "row-icon-btn",
             text: "×",
             title: "레퍼런스 해제",
-            onClick: () => { if (!creating) { refFiles.splice(i, 1); refreshPicked(); } },
+            disabled: creating,
+            onClick: () => {
+              if (creating) return;
+              const removed = refFiles.splice(i, 1)[0];
+              for (let k = failedRefs.length - 1; k >= 0; k -= 1) {
+                if (failedRefs[k].file === removed) failedRefs.splice(k, 1);
+              }
+              if (createdProject && !failedRefs.length) setErr("");
+              refreshPicked();
+              renderRefFailures();
+              syncModalControls();
+            },
           }),
         ));
       });
     }
 
-    function setErr(msg, isHint = false) {
-      errEl.textContent = msg || "";
-      errEl.classList.toggle("hint", !!isHint && !!msg);
+    // #C36-1: 로컬 원화 생성 및 Forge 원화 생성 공통 — 레퍼런스 업로드 실패를 삼키지 않고 실패 파일명·서버 error 표시 + 실패 건만 재시도
+    async function finishAfterProjectCreated() {
+      if (!createdProject) return;
+      const key = createdProject.key;
+      const pending = refFiles.slice();
+      const stillFailed = [];
+      const failures = [];
+      for (const rf of pending) {
+        try {
+          await Api.uploadSheet(key, rf, null);
+        } catch (err) {
+          stillFailed.push(rf);
+          failures.push({
+            file: rf,
+            name: (rf && rf.name) || "레퍼런스 파일",
+            error: (err && err.message) || "레퍼런스 업로드에 실패했습니다.",
+          });
+        }
+      }
+      refFiles.splice(0, refFiles.length, ...stillFailed);
+      failedRefs.splice(0, failedRefs.length, ...failures);
+
+      if (!failures.length) {
+        setCreating(false);
+        navigateToNewProject(key, createdProject.notes);
+        return;
+      }
+
+      setCreating(false);
+      refreshPicked();
+      renderRefFailures();
+      syncModalControls();
+      setErr(`프로젝트는 생성되었지만 레퍼런스 ${failures.length}건을 올리지 못했습니다.`, false);
+    }
+
+    async function retryFailedRefs() {
+      if (creating || !createdProject) return;
+      if (!refFiles.length) {
+        navigateToNewProject(createdProject.key, createdProject.notes);
+        return;
+      }
+      setCreating(true, failedRefs.length ? "레퍼런스 다시 올리는 중…" : "레퍼런스 올리는 중…");
+      setErr("");
+      await finishAfterProjectCreated();
     }
 
     async function submitNewProject() {
       if (creating) return;
+      if (createdProject) {
+        await retryFailedRefs();
+        return;
+      }
       const name = nameInput.value.trim();
       const vErr = Data.validateProjectName(name);
       if (vErr) {
@@ -1738,34 +1919,22 @@ window.DPV2Overlays = (() => {
         nameInput.focus();
         return;
       }
-      if (!targetFile) {
-        setErr("타깃 원화 이미지를 먼저 선택하거나 끌어 놓아 주세요.", false);
+      const fErr = typeof Data.validateTargetFile === "function"
+        ? Data.validateTargetFile(targetFile)
+        : (!targetFile ? "타깃 원화 이미지를 먼저 선택하거나 끌어 놓아 주세요." : "");
+      if (fErr) {
+        setErr(fErr, false);
         return;
       }
-      creating = true;
+      setCreating(true, "프로젝트 생성 중…");
       setErr("");
-      const createBtn = $("np-create-btn");
-      if (createBtn) {
-        createBtn.disabled = true;
-        createBtn.textContent = "프로젝트 생성 중…";
-      }
       try {
         const res = await Api.createProjectFile(name, targetFile);
-        for (const rf of refFiles) {
-          try { await Api.uploadSheet(res.key, rf, null); } catch (_) {}
-        }
-        creating = false;
-        closeModal(true);
-        const u = new URL(location.href);
-        u.searchParams.set("root", res.key);
-        u.searchParams.set("ui", "v2");
-        location.href = u.pathname + u.search;
+        createdProject = { key: res.key, notes: normalizeNotes(res.notes) };
+        if (refFiles.length) syncModalControls("레퍼런스 올리는 중…");
+        await finishAfterProjectCreated();
       } catch (err) {
-        creating = false;
-        if (createBtn) {
-          createBtn.disabled = false;
-          createBtn.textContent = "프로젝트 생성 및 열기";
-        }
+        setCreating(false);
         // #C31-13: 409 archived_name / name_taken / 중복 폴더 등 서버 error 문구를 삼키지 않고 그대로 표시
         setErr((err && err.message) || "프로젝트 생성에 실패했습니다.", false);
       }
@@ -1775,73 +1944,61 @@ window.DPV2Overlays = (() => {
       if (errEl.textContent) setErr("");
     });
     nameInput.addEventListener("keydown", (e) => {
-      // Forge iframe 은 allow-forms 가 없으므로 폼 제출 없이 Enter 키로 직접 fetch 생성 경로를 실행한다
-      if (e.key === "Enter") {
-        e.preventDefault();
-        submitNewProject();
-      }
+      // #C36-3: Forge iframe 은 allow-forms 가 없으므로 폼 제출 없이 Enter 키로 실행하되 한글 IME 조합 중 Enter 는 무시한다
+      if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      submitNewProject();
     });
+
+    if (Api.can("forge_import")) {
+      btnForgeImport = Data.el("button", {
+        type: "button",
+        className: "btn-secondary-sm accent-outline",
+        id: "btn-np-forge-import",
+        text: "Forge에서 불러오기",
+        onClick: () => {
+          if (creating || createdProject) return;
+          const name = nameInput.value.trim();
+          const vErr = Data.validateProjectName(name);
+          if (vErr) {
+            setErr(vErr || "먼저 프로젝트 이름을 입력해 주세요.", false);
+            nameInput.focus();
+            return;
+          }
+          setErr("");
+          if (window.DPForgeImport && typeof window.DPForgeImport.open === "function") {
+            const opened = window.DPForgeImport.open({
+              into: "target",
+              name,
+              onDone: async (result) => {
+                if (!result || !/^[0-9a-f]{12}$/.test(result.key || "")) {
+                  Store.toast((result && result.error) || "Forge에서 프로젝트를 만들지 못했습니다.", "err");
+                  return;
+                }
+                // #C36-1 · #C36-6 · #C36-7: Forge 원화 경로도 레퍼런스 업로드 동안 모달을 잠그고 실패 알림·재시도·notes 를 공통 처리한다
+                createdProject = { key: result.key, notes: normalizeNotes(result.notes) };
+                setErr("");
+                setCreating(true, refFiles.length ? "레퍼런스 올리는 중…" : "프로젝트 여는 중…");
+                await finishAfterProjectCreated();
+              },
+            });
+            if (!opened) Store.toast("Forge 자료함을 열 수 없습니다 — 연결 상태를 확인해 주세요.", "err");
+          } else {
+            Store.toast("Forge 가져오기 모듈이 연결되면 바로 선택할 수 있습니다.");
+          }
+        },
+      });
+    }
 
     const dropBox = Data.el("div", { className: "np-drop", id: "np-drop-zone" },
       Data.el("span", { text: "원화 이미지를 여기에 끌어다 놓거나 파일을 선택하세요" }),
       Data.el("div", { style: "display:flex;gap:6px;flex-wrap:wrap;justify-content:center;" },
-        Data.el("button", {
-          type: "button",
-          className: "btn-secondary-sm",
-          id: "btn-np-pick-target",
-          text: "내 PC에서 원화 선택",
-          onClick: () => { if (!creating) fileInput.click(); },
-        }),
-        Api.can("forge_import") ? Data.el("button", {
-          type: "button",
-          className: "btn-secondary-sm accent-outline",
-          id: "btn-np-forge-import",
-          text: "Forge에서 불러오기",
-          onClick: () => {
-            if (creating) return;
-            const name = nameInput.value.trim();
-            const vErr = Data.validateProjectName(name);
-            if (vErr) {
-              setErr(vErr || "먼저 프로젝트 이름을 입력해 주세요.", false);
-              nameInput.focus();
-              return;
-            }
-            setErr("");
-            if (window.DPForgeImport && typeof window.DPForgeImport.open === "function") {
-              const opened = window.DPForgeImport.open({
-                into: "target",
-                name,
-                onDone: async (result) => {
-                  if (!result || !/^[0-9a-f]{12}$/.test(result.key || "")) {
-                    Store.toast((result && result.error) || "Forge에서 프로젝트를 만들지 못했습니다.", "err");
-                    return;
-                  }
-                  for (const rf of refFiles) {
-                    try { await Api.uploadSheet(result.key, rf, null); } catch (_) {}
-                  }
-                  closeModal();
-                  const u = new URL(location.href);
-                  u.searchParams.set("root", result.key);
-                  u.searchParams.set("ui", "v2");
-                  location.href = u.pathname + u.search;
-                },
-              });
-              if (!opened) Store.toast("Forge 자료함을 열 수 없습니다 — 연결 상태를 확인해 주세요.", "err");
-            } else {
-              Store.toast("Forge 가져오기 모듈이 연결되면 바로 선택할 수 있습니다.");
-            }
-          },
-        }) : null,
-        Data.el("button", {
-          type: "button",
-          className: "btn-secondary-sm",
-          id: "btn-np-pick-refs",
-          text: "+ 레퍼런스 함께 추가",
-          onClick: () => { if (!creating) refInput.click(); },
-        }),
+        btnPickTarget,
+        btnForgeImport,
+        btnPickRefs,
       ),
     );
-    dropBox.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); dropBox.classList.add("over"); });
+    dropBox.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); if (!creating) dropBox.classList.add("over"); });
     dropBox.addEventListener("dragleave", () => dropBox.classList.remove("over"));
     dropBox.addEventListener("drop", (e) => {
       e.preventDefault();
@@ -1849,17 +2006,26 @@ window.DPV2Overlays = (() => {
       dropBox.classList.remove("over");
       if (creating) return;
       const files = Array.from(e.dataTransfer?.files || []);
-      if (files[0]) {
-        targetFile = files[0];
-        if (!nameInput.value.trim()) nameInput.value = Data.suggestProjectName(targetFile.name);
-        for (const extra of files.slice(1)) refFiles.push(extra);
-        setErr("");
+      if (!files.length) return;
+      if (createdProject) {
+        for (const extra of files) refFiles.push(extra);
         refreshPicked();
+        syncModalControls();
+        return;
       }
+      targetFile = files[0];
+      if (!nameInput.value.trim()) nameInput.value = Data.suggestProjectName(targetFile.name);
+      for (const extra of files.slice(1)) refFiles.push(extra);
+      const fErr = typeof Data.validateTargetFile === "function" ? Data.validateTargetFile(targetFile) : "";
+      setErr(fErr, false);
+      refreshPicked();
     });
     refreshPicked();
 
-    if (opts && opts.hintForForge) {
+    if (targetFile && typeof Data.validateTargetFile === "function") {
+      const initErr = Data.validateTargetFile(targetFile);
+      if (initErr) setErr(initErr, false);
+    } else if (opts && opts.hintForForge) {
       setErr("프로젝트 이름을 입력한 뒤 [Forge에서 불러오기]를 눌러 원화를 선택하세요.", true);
     }
 
@@ -1867,13 +2033,20 @@ window.DPV2Overlays = (() => {
       title: "새 프로젝트 만들기",
       bodyNodes: [
         Data.el("div", { className: "np-field" }, Data.el("label", { for: "np-name-input", text: "프로젝트 이름" }), nameInput, errEl),
+        refFailBox,
         dropBox,
         pickedBox,
         fileInput,
         refInput,
       ],
       actions: [
-        { label: "취소", cls: "btn-secondary", onClick: () => { if (!creating) closeModal(); } },
+        { id: "np-cancel-btn", label: "취소", cls: "btn-secondary", onClick: () => { if (!creating) closeModal(); } },
+        {
+          id: "np-open-anyway-btn",
+          label: "이대로 프로젝트 열기",
+          cls: "btn-secondary hidden",
+          onClick: () => { if (!creating && createdProject) navigateToNewProject(createdProject.key, createdProject.notes); },
+        },
         {
           id: "np-create-btn",
           label: "프로젝트 생성 및 열기",
@@ -1881,7 +2054,18 @@ window.DPV2Overlays = (() => {
           onClick: submitNewProject,
         },
       ],
-      onClose: revokeBlobUrls,
+      onClose: () => {
+        // #C36-7: 모달을 닫을 때 Blob URL 및 선택한 File 참조를 전부 비운다
+        revokeBlobUrls();
+        targetFile = null;
+        refFiles.length = 0;
+        failedRefs.length = 0;
+        fileInput.value = "";
+        refInput.value = "";
+        if (createdProject && !navigating) {
+          renderProjectsHome();
+        }
+      },
       canClose: () => !creating,
     });
 
@@ -1916,9 +2100,9 @@ window.DPV2Overlays = (() => {
 
   // ==================== 이벤트 바인딩 ====================
   function bindEvents() {
-    // 모달 닫기
+    // 모달 닫기 (#C36-2: PointerEvent 가 closeModal(force) 에 들어가지 않도록 래핑)
     const mClose = $("modal-close");
-    if (mClose) mClose.addEventListener("click", closeModal);
+    if (mClose) mClose.addEventListener("click", () => closeModal());
     const mBack = $("modal-backdrop");
     if (mBack) mBack.addEventListener("click", (e) => { if (e.target === mBack) closeModal(); });
 
@@ -2564,7 +2748,7 @@ window.DPV2Overlays = (() => {
     if (btnDropPick) {
       btnDropPick.addEventListener("click", (e) => {
         e.stopPropagation();
-        const inp = Data.el("input", { type: "file", accept: "image/*,.psd", multiple: true });
+        const inp = Data.el("input", { type: "file", accept: Data.TARGET_ACCEPT || ".psd,.psb,.png,.jpg,.jpeg,.webp", multiple: true });
         inp.addEventListener("change", () => {
           const files = Array.from(inp.files || []);
           if (files.length) openNewProjectModal(files[0], files.slice(1));

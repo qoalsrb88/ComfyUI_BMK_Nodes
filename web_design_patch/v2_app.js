@@ -402,12 +402,62 @@
     Store.subscribe(() => updateTopbarState());
   }
 
+  // #C36-6: 새 프로젝트 생성 응답의 notes(예: PSD 투명 영역 변환 알림)를 v1 과 같은 sessionStorage 키로 소비해 작업 화면에 표시
+  function consumeNewProjectNotes(root) {
+    if (!root) return [];
+    const url = new URL(location.href);
+    if (url.searchParams.get("new") !== "1") return [];
+    url.searchParams.delete("new");
+    try { window.history.replaceState(null, "", url.pathname + url.search + url.hash); } catch (_) {}
+    let notes = [];
+    try {
+      const key = "bmk-dp-new:" + root;
+      const raw = window.sessionStorage.getItem(key);
+      if (raw) {
+        notes = JSON.parse(raw);
+        window.sessionStorage.removeItem(key);
+      }
+    } catch (_) { /* 저장소 차단 시 무시 */ }
+    return Array.isArray(notes) ? notes.filter((n) => typeof n === "string" && n.trim()) : [];
+  }
+
+  function showStudioNotesBanner(notes) {
+    const banner = $("studio-notes-banner");
+    const txt = $("studio-notes-text");
+    const closeBtn = $("btn-studio-notes-close");
+    if (!banner || !txt) return;
+    const list = Array.isArray(notes) ? notes.filter((n) => typeof n === "string" && n.trim()) : [];
+    if (!list.length) {
+      banner.classList.add("hidden");
+      txt.textContent = "";
+      return;
+    }
+    txt.textContent = list.join(" · ");
+    banner.classList.remove("hidden");
+    if (closeBtn && !closeBtn.dataset.boundNotes) {
+      closeBtn.dataset.boundNotes = "1";
+      closeBtn.addEventListener("click", () => {
+        banner.classList.add("hidden");
+        txt.textContent = "";
+      });
+    }
+  }
+
   async function boot() {
     const bootFb = $("v2-boot-fallback");
     const bootMsg = $("v2-boot-fallback-msg");
     try {
-      if (window.DPEnv && window.DPEnv.ready) {
-        try { await window.DPEnv.ready; } catch (_) {}
+      // #C36-7: env.js 가 로드되지 않았거나 실행 환경 판정이 완료되지 않았으면 비상 탈출 상자를 유지하고 목록/작업 화면을 열지 않는다
+      if (!window.DPEnv || !window.DPEnv.ready) {
+        if (bootMsg) bootMsg.textContent = "환경 설정(env.js)을 불러오지 못했습니다. 새로고침하거나 기존 화면으로 이동해 주세요.";
+        if (bootFb) bootFb.classList.remove("hidden");
+        return;
+      }
+      await window.DPEnv.ready;
+      if (typeof window.DPEnv.serverMode !== "boolean") {
+        if (bootMsg) bootMsg.textContent = "실행 환경을 확인할 수 없습니다. 새로고침하거나 기존 화면으로 이동해 주세요.";
+        if (bootFb) bootFb.classList.remove("hidden");
+        return;
       }
 
       Store.loadPrefs();
@@ -434,6 +484,8 @@
         $("projects-view").classList.add("hidden");
         $("studio-view").classList.remove("hidden");
         if (bootFb) bootFb.classList.add("hidden");
+        const newNotes = consumeNewProjectNotes(root);
+        showStudioNotesBanner(newNotes);
         await Store.refreshAll(true);
         // #C26-5 · #C30-5: 새 프로젝트 첫 진입(가져오기 전 — S.canvas 없음) 초기 반영도 공용 모듈 Api.applyChecked 로 통일하고,
         // 계획 잠금 경합(busy)으로 끝나며 캔버스가 여전히 없으면 딱 1회 더 재시도한다
