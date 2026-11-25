@@ -63834,6 +63834,71 @@ for (const groups of [[gpt], [gpt, {...gpt, quality: "low", need: 1, images: 3}]
     return !result.ok && result.reason === "stale" && !s.calls.some(c => c.path === "jobs/prompt");
   });
 }
+// 선택한 것 가운데 서버가 막은 작업(run.reasons 의 blocked 줄 — 비율이 맞지 않는 크롭 등)을 승인 상자가 알린다(11/26 운영 스모크 — BL-14).
+const ratioWhy = "크롭의 가로세로비가 나노바나나 2.1 의 비율 목록에 없습니다 — ② 크롭에서 [모델 비율로 넓히기]로 맞춰 주세요.";
+const blockedRow = n => ({ reason: "blocked", n, msg: "발사 못 함 — " + ratioWhy });
+const blockedText = n => "막힌 작업 " + n + "건은 이번 요청에서 빠집니다 — " + ratioWhy;
+await scenario("막힌 작업 줄 — 승인 상자의 경고 · 승인 해시는 그대로", async () => {
+  const s = setup([gpt]); s.plan.run.reasons = [{ reason: "new", n: 2 }, blockedRow(1)];
+  const paid = s.paid(); await until(() => api.asking());
+  const rows = s.elements("P"); s.click(true); const result = await paid;
+  assert.deepEqual(rows.map(p => p.textContent), [header(2), "모델 " + gptText, "잡 2건 · 그림 5장", blockedText(1)]);
+  assert.deepEqual(rows.filter(p => p.classList.contains("warn")).map(p => p.textContent), [blockedText(1)]);
+  const sent = s.calls.at(-1).body;
+  return result.ok && sent.stage === "run" && sent.approve === "123456789abc" && sent.only === only;
+});
+await scenario("막힌 작업 줄 — 사전 승인 경고 뒤 · 같은 까닭은 한 번 · mock 에서도", async () => {
+  const s = setup([gpt]); s.plan.run.pre = 4; s.plan.run.reasons = [blockedRow(2), blockedRow(1)];
+  let paid = s.paid(); await until(() => api.asking());
+  const warns = s.elements("P").filter(p => p.classList.contains("warn")).map(p => p.textContent);
+  s.click(false); assert.equal((await paid).reason, "cancelled");
+  assert.deepEqual(warns, [warnText, blockedText(3)]);
+  assert(!s.calls.some(c => c.path === "jobs/prompt"));
+  const m = setup([gpt], { backend: "mock" }); m.plan.run.reasons = [blockedRow(1)];
+  paid = m.paid(); await until(() => api.asking());
+  const lines = m.lines(); m.click(false); await paid;
+  return lines.length === 3 && lines[0].startsWith("[MOCK]") && lines[2] === blockedText(1);
+});
+await scenario("모두 막힘 — 승인할 것 없음에 까닭 · 상자 없음", async () => {
+  const s = setup([], { need: 0 }); s.plan.run.hash = ""; s.plan.run.reasons = [blockedRow(1)];
+  const r = await s.paid();
+  assert.equal(r.reason, "blocked"); assert.equal(r.error, "승인할 것이 없습니다 — 막힌 작업 1건: " + ratioWhy);
+  assert(!api.asking()); assert(!s.calls.some(c => c.path === "jobs/prompt"));
+  const none = setup([], { need: 0 }); none.plan.run.hash = "";
+  const plain = await none.paid();
+  return plain.reason === "nothing_to_approve" && plain.error === "승인할 것이 없습니다";
+});
+// 상자가 알린 「막혀서 빠지는 작업」·「함께 실행되는 사전 승인 건수」가 승인 뒤에 달라졌으면(해시가 같아도) 내지 않는다 —
+// 막힘이 풀린 사전 승인분은 승인 해시에 들지 않은 채 실행된다.
+for (const [name, change] of [
+  ["막힘이 풀려 사전 승인으로", run => { run.reasons = []; run.pre = 1; }],
+  ["막힌 건수가 달라짐", run => { run.reasons = [blockedRow(2)]; }],
+  ["새로 막힘", run => { run.reasons = [blockedRow(1), { reason: "blocked", n: 1, msg: "발사 못 함 — 다른 까닭" }]; }],
+  ["사전 승인 건수만 달라짐", run => { run.pre = 3; }]
+]) await scenario("승인 뒤 재확인 — " + name + " → 유료 요청 없음", async () => {
+  const s = setup([gpt]); s.plan.run.reasons = [blockedRow(1)];
+  const paid = s.paid(); await until(() => api.asking());
+  change(s.plan.run); s.click(true);
+  const result = await paid;
+  return !result.ok && result.reason === "stale" && result.error === "계획이 바뀌었습니다 — 다시 눌러 주세요"
+    && !s.calls.some(c => c.path === "jobs/prompt");
+});
+await scenario("승인 뒤 재확인 — 막힘·사전 승인이 그대로면 제출", async () => {
+  const s = setup([gpt]); s.plan.run.reasons = [blockedRow(1)]; s.plan.run.pre = 2;
+  const paid = s.paid(); await until(() => api.asking());
+  s.click(true);
+  const result = await paid;
+  return result.ok && s.calls.filter(c => c.path === "jobs/prompt").length === 1 && s.calls.at(-1).body.approve === "123456789abc";
+});
+await scenario("막힌 작업 줄을 만들 수 없는 입력", () => {
+  for (const run of [null, {}, { reasons: "x" }, { reasons: [] }, { reasons: [null] }, { reasons: [{ reason: "new", n: 2 }] },
+      { reasons: [{ reason: "blocked", n: 0, msg: "x" }] }, { reasons: [{ reason: "blocked", n: "1", msg: "x" }] },
+      { reasons: [{ reason: "blocked", n: -1, msg: "x" }] }]) assert.equal(api.blockedNote(run), null);
+  assert.equal(api.blockedNote({ reasons: [{ reason: "blocked", n: 2 }] }), "막힌 작업 2건은 이번 요청에서 빠집니다");
+  assert.equal(api.blockedNote({ reasons: [{ reason: "blocked", n: 1, msg: 7 }] }), "막힌 작업 1건은 이번 요청에서 빠집니다");
+  return api.blockedNote({ reasons: [blockedRow(1), { reason: "blocked", n: 1, msg: "발사 못 함 — 다른 까닭" }] })
+    === "막힌 작업 2건은 이번 요청에서 빠집니다 — " + ratioWhy + "; 다른 까닭";
+});
 for (const [name, groups, expected] of [
   ["동일 장 수", [fixed], [header(2), "모델 " + gptText, "잡 2건 · 그림 8장"]],
   ["혼합 장 수", [gpt], [header(2), "모델 " + gptText, "잡 2건 · 그림 5장"]],

@@ -254,6 +254,22 @@ window.DPSubmit = (() => {
     return lines;
   }
 
+  // 이번 계획에서 서버가 막은 작업(run.reasons 의 blocked 줄 — 비율이 맞지 않는 크롭 등. 선택과 무관하게 실행되는 사전 승인분도
+  // 여기에 든다). 승인 건수에는 들지 않으므로 승인 상자가 「몇 건이 왜 빠지는지」를 따로 알린다. 줄이 없거나 읽지 못하면 null.
+  function blockedInfo(run) {
+    const rows = (Array.isArray(run?.reasons) ? run.reasons : [])
+      .filter((row) => row?.reason === "blocked" && Number.isSafeInteger(row.n) && row.n > 0);
+    if (!rows.length) return null;
+    const why = [...new Set(rows.map((row) => (typeof row.msg === "string" ? row.msg.replace(/^발사 못 함\s*—\s*/, "").trim() : ""))
+      .filter(Boolean))].join("; ");
+    return { n: rows.reduce((total, row) => total + row.n, 0), why };
+  }
+
+  function blockedNote(run) {
+    const info = blockedInfo(run);
+    return info && `막힌 작업 ${info.n}건은 이번 요청에서 빠집니다` + (info.why ? ` — ${info.why}` : "");
+  }
+
   function postLines(plan) {
     const { tool, model, opts, counts, items } = plan || {};
     if (plan?.ok !== true || typeof plan.expect !== "string" || !plan.expect.trim() || typeof plan.hash !== "string"
@@ -398,8 +414,13 @@ window.DPSubmit = (() => {
       if (grouped && !lines) {
         return { ...failed("plan_error", "계획의 모델별 건수를 읽지 못했습니다"), summary };
       }
-      const hash = run.hash;
-      if (typeof hash !== "string" || !hash) return { ...failed("nothing_to_approve", "승인할 것이 없습니다"), summary };
+      const hash = run.hash, skipped = blockedNote(run);
+      // 승인할 것이 없는데 막힌 작업이 있으면 그 까닭을 돌려준다(화면이 오류 글을 그대로 알린다).
+      if (typeof hash !== "string" || !hash) {
+        const info = blockedInfo(run);
+        return { ...(info ? failed("blocked", `승인할 것이 없습니다 — 막힌 작업 ${info.n}건` + (info.why ? `: ${info.why}` : ""))
+          : failed("nothing_to_approve", "승인할 것이 없습니다")), summary };
+      }
       if (run.backend && run.backend !== backend) return failed("no_backend", "생성 백엔드 설정이 바뀌었습니다 — 계획을 다시 확인해 주세요");
       if (backend === "mock") {
         lines = [`[MOCK] 과금 없음 — 생성 ${run.need}건`, "mock 백엔드 — 승인 코드가 mock 에 묶여 있어 유료 실행을 승인하지 못합니다."];
@@ -409,12 +430,16 @@ window.DPSubmit = (() => {
       }
       if (summary) lines.push(`자동 반영: 새 조건 ${summary.new_jobs}개 · 옛 조건이 되는 후보 ${summary.old_cands}장 · 작업 없음 ${summary.no_job.length}개`);
       const warnings = backend === "forge" && run.pre ? [`다시 생성(사전 승인) ${run.pre}건도 함께 실행(선택과 무관) — 사내 사용량이 잡힙니다.`] : [];
+      if (skipped) warnings.push(skipped);
       if (!await ask(lines, warnings)) return { ...failed("cancelled", "승인을 취소했습니다"), summary };
       const latest = await plan(root, only);
       bad = trouble(latest);
       if (bad) return { ...bad, summary };  // 계획을 다시 받지 못함(바쁨·실행 중·오류) — '계획이 바뀜'과 구분해 알린다
+      // 상자가 알린 「함께 실행되는 사전 승인 건수」와 「막혀서 빠지는 작업」도 그대로여야 한다 — 그 사이 막힘이 풀린 사전 승인분은
+      // 승인 해시에 들지 않은 채 실행되므로, 달라졌으면 다시 보이고 승인받는다.
       if (latest.run.hash !== hash || latest.apply_pending?.length || notes(latest).length || window.DPEnv.backend !== backend
-          || (latest.run.backend && latest.run.backend !== backend)) {
+          || (latest.run.backend && latest.run.backend !== backend)
+          || (latest.run.pre || 0) !== (run.pre || 0) || blockedNote(latest.run) !== skipped) {
         return { ...failed("stale", "계획이 바뀌었습니다 — 다시 눌러 주세요"), summary };
       }
       // 승인 상자가 보인 설정(pipe)과 같은 판일 때만 서버가 받는다 — 그 사이 모델·장 수가 바뀌었으면 409(stale_settings).
@@ -423,5 +448,5 @@ window.DPSubmit = (() => {
     finally { paying = false; }
   }
 
-  return { post, ask, asking: () => !!active, modelText, approvalLines, postLines, submitFree, wait, plan, submitPaid, applyChecked };
+  return { post, ask, asking: () => !!active, modelText, approvalLines, blockedNote, postLines, submitFree, wait, plan, submitPaid, applyChecked };
 })();
