@@ -63862,11 +63862,33 @@ await scenario("막힌 작업 줄 — 사전 승인 경고 뒤 · 같은 까닭�
 await scenario("모두 막힘 — 승인할 것 없음에 까닭 · 상자 없음", async () => {
   const s = setup([], { need: 0 }); s.plan.run.hash = ""; s.plan.run.reasons = [blockedRow(1)];
   const r = await s.paid();
-  assert.equal(r.reason, "nothing_to_approve"); assert.equal(r.error, "승인할 것이 없습니다 — " + blockedText(1));
+  assert.equal(r.reason, "blocked"); assert.equal(r.error, "승인할 것이 없습니다 — 막힌 작업 1건: " + ratioWhy);
   assert(!api.asking()); assert(!s.calls.some(c => c.path === "jobs/prompt"));
   const none = setup([], { need: 0 }); none.plan.run.hash = "";
   const plain = await none.paid();
   return plain.reason === "nothing_to_approve" && plain.error === "승인할 것이 없습니다";
+});
+// 상자가 알린 「막혀서 빠지는 작업」·「함께 실행되는 사전 승인 건수」가 승인 뒤에 달라졌으면(해시가 같아도) 내지 않는다 —
+// 막힘이 풀린 사전 승인분은 승인 해시에 들지 않은 채 실행된다.
+for (const [name, change] of [
+  ["막힘이 풀려 사전 승인으로", run => { run.reasons = []; run.pre = 1; }],
+  ["막힌 건수가 달라짐", run => { run.reasons = [blockedRow(2)]; }],
+  ["새로 막힘", run => { run.reasons = [blockedRow(1), { reason: "blocked", n: 1, msg: "발사 못 함 — 다른 까닭" }]; }],
+  ["사전 승인 건수만 달라짐", run => { run.pre = 3; }]
+]) await scenario("승인 뒤 재확인 — " + name + " → 유료 요청 없음", async () => {
+  const s = setup([gpt]); s.plan.run.reasons = [blockedRow(1)];
+  const paid = s.paid(); await until(() => api.asking());
+  change(s.plan.run); s.click(true);
+  const result = await paid;
+  return !result.ok && result.reason === "stale" && result.error === "계획이 바뀌었습니다 — 다시 눌러 주세요"
+    && !s.calls.some(c => c.path === "jobs/prompt");
+});
+await scenario("승인 뒤 재확인 — 막힘·사전 승인이 그대로면 제출", async () => {
+  const s = setup([gpt]); s.plan.run.reasons = [blockedRow(1)]; s.plan.run.pre = 2;
+  const paid = s.paid(); await until(() => api.asking());
+  s.click(true);
+  const result = await paid;
+  return result.ok && s.calls.filter(c => c.path === "jobs/prompt").length === 1 && s.calls.at(-1).body.approve === "123456789abc";
 });
 await scenario("막힌 작업 줄을 만들 수 없는 입력", () => {
   for (const run of [null, {}, { reasons: "x" }, { reasons: [] }, { reasons: [null] }, { reasons: [{ reason: "new", n: 2 }] },
