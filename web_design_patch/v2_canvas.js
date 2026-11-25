@@ -345,37 +345,68 @@ window.DPV2Canvas = (() => {
     return matched ? { rect: cand, ratioMatched: matched } : { rect, ratioMatched: null };
   }
 
-  async function fitPatchToModelRatio(patch) {
-    const p = patch || Store.primaryPatch();
-    if (!p || !window.DPLayoutGeom) return { ok: false, reason: "no_patch" };
-    if (p.locked) {
-      Store.toast(`"${p.name}" 영역이 잠겨 있습니다 — 잠금을 해제한 뒤 비율을 맞춰 주세요.`, "err");
-      return { ok: false, reason: "locked" };
+  async function fitPatchToModelRatio(patchOrId) {
+    // #C43-2 · #C43-6 보강: 패치별 모델 설정을 읽지 못한 상태에서는 잘못된 기본 모델 비율로 좌표를 바꾸지 않는다
+    if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) {
+      Store.toast("패치별 모델 설정을 읽지 못해 비율을 맞출 수 없습니다 — 먼저 [다시 읽기]로 확인해 주세요.", "err");
+      return { ok: false, reason: "crop_gen_unavailable" };
     }
-    const mi = p.modelInfo || Data.findModelExact(p.effectiveModel);
-    const { ratios, ratioSizes, tolerance } = modelRatioParams(mi);
-    if (!ratios.length) {
-      Store.toast("이 패치의 모델은 지정 비율 제한이 없습니다.");
-      return { ok: false, reason: "no_ratios" };
-    }
-    const layCanvas = (Store.state.L && Array.isArray(Store.state.L.canvas) && Store.state.L.canvas.length === 2)
-      ? Store.state.L.canvas
-      : ((Store.state.S && Store.state.S.canvas && Array.isArray(Store.state.S.canvas.size)) ? Store.state.S.canvas.size : [view.imgW, view.imgH]);
-    const bounds = [Math.round(layCanvas[0] || view.imgW), Math.round(layCanvas[1] || view.imgH)];
-    const curRect = p.rect.map(Math.round);
-    const best = window.DPLayoutGeom.ratioFitRect(curRect, bounds, ratios, tolerance, ratioSizes);
-    if (!best || !Array.isArray(best.rect)) {
-      Store.toast(`"${p.name}" 영역을 ${mi ? mi.label : p.effectiveModel} 지정 비율에 맞출 수 없습니다.`, "err");
-      return { ok: false, reason: "cannot_fit" };
-    }
-    if (best.rect.every((v, i) => v === curRect[i])) {
-      Store.toast(`"${p.name}" 영역은 이미 모델 비율(${best.ratio})에 맞습니다.`);
-      return { ok: true, ratio: best.ratio, unchanged: true };
-    }
+    // 레이아웃 조회·잠금 확인·비율 계산·저장을 같은 쓰기 큐 슬롯(updateCropFresh) 안에서 수행한다
+    const targetId = typeof patchOrId === "string"
+      ? patchOrId
+      : ((patchOrId && patchOrId.id) || (Store.primaryPatch() && Store.primaryPatch().id) || "");
+    if (!targetId || !window.DPLayoutGeom) return { ok: false, reason: "no_patch" };
     try {
-      await Store.updateCrop(p.id, { rect: best.rect }, `비율 맞춤 (${p.name} · ${best.ratio})`);
-      Store.toast(`"${p.name}" 영역을 ${mi ? mi.shortName : p.effectiveModel} 비율(${best.ratio})에 맞춰 넓혔습니다.`, "ok");
-      return { ok: true, ratio: best.ratio, rect: best.rect };
+      const res = await Store.updateCropFresh(targetId, (p, lay) => {
+        if (p.locked) {
+          return {
+            abort: true,
+            result: { ok: false, reason: "locked", toast: `"${p.name}" 영역이 잠겨 있습니다 — 잠금을 해제한 뒤 비율을 맞춰 주세요.`, toastKind: "err" },
+          };
+        }
+        const mi = p.modelInfo || Data.findModelExact(p.effectiveModel);
+        const { ratios, ratioSizes, tolerance } = modelRatioParams(mi);
+        if (!ratios.length) {
+          return {
+            abort: true,
+            result: { ok: false, reason: "no_ratios", toast: "이 패치의 모델은 지정 비율 제한이 없습니다." },
+          };
+        }
+        const layCanvas = (lay && Array.isArray(lay.canvas) && lay.canvas.length === 2)
+          ? lay.canvas
+          : ((Store.state.S && Store.state.S.canvas && Array.isArray(Store.state.S.canvas.size)) ? Store.state.S.canvas.size : [view.imgW, view.imgH]);
+        const bounds = [Math.round(layCanvas[0] || view.imgW), Math.round(layCanvas[1] || view.imgH)];
+        const curRect = p.rect.map(Math.round);
+        const best = window.DPLayoutGeom.ratioFitRect(curRect, bounds, ratios, tolerance, ratioSizes);
+        if (!best || !Array.isArray(best.rect)) {
+          return {
+            abort: true,
+            result: { ok: false, reason: "cannot_fit", toast: `"${p.name}" 영역을 ${mi ? mi.label : p.effectiveModel} 지정 비율에 맞출 수 없습니다.`, toastKind: "err" },
+          };
+        }
+        if (best.rect.every((v, i) => v === curRect[i])) {
+          return {
+            abort: true,
+            result: { ok: true, ratio: best.ratio, unchanged: true, toast: `"${p.name}" 영역은 이미 모델 비율(${best.ratio})에 맞습니다.` },
+          };
+        }
+        return {
+          changes: { rect: best.rect },
+          historyLabel: `비율 맞춤 (${p.name} · ${best.ratio})`,
+          result: {
+            ratio: best.ratio,
+            rect: best.rect,
+            toast: `"${p.name}" 영역을 ${mi ? mi.shortName : p.effectiveModel} 비율(${best.ratio})에 맞춰 넓혔습니다.`,
+            toastKind: "ok",
+          },
+        };
+      });
+      if (res && res.toast) {
+        Store.toast(res.toast, res.toastKind || undefined);
+      } else if (res && !res.ok && res.error) {
+        Store.toast(`비율 맞춤 실패: ${res.error}`, "err");
+      }
+      return res || { ok: false };
     } catch (err) {
       Store.toast(`비율 맞춤 실패: ${(err && err.message) || "서버에서 거절했습니다."}`, "err");
       return { ok: false, error: err && err.message };
@@ -782,11 +813,15 @@ window.DPV2Canvas = (() => {
     const cmpBtn = $("fb-compare-btn");
     if (cmpBtn) cmpBtn.classList.toggle("hidden", !patch.candidates.length);
 
+    const settingsBusy = !!(Store.state.pipelineSettingsBusy || Store.state.freeApplyBusy);
+    const cropGenUnavail = typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable();
     const ratioBtn = $("fb-ratio-btn");
     if (ratioBtn) {
       const ratios = (patch.modelInfo && patch.modelInfo.ratios) || [];
       const ratioOff = !!(patch.cropGenRatio && patch.cropGenRatio.ok === false);
-      ratioBtn.classList.toggle("hidden", isMulti || !ratios.length || patch.locked);
+      // #C43-2 보강: 패치별 모델 설정을 읽지 못한 상태에서는 기본 모델 기준 오작동을 막기 위해 비율 맞춤 버튼을 숨기고 잠근다
+      ratioBtn.classList.toggle("hidden", isMulti || !ratios.length || patch.locked || cropGenUnavail);
+      ratioBtn.disabled = !!(cropGenUnavail || settingsBusy || Store.state.cropGenBusy || Store.state.runFlowBusy || Store.state.assistBusy);
       ratioBtn.classList.toggle("ratio-warn", ratioOff);
       ratioBtn.textContent = ratioOff ? "모델 비율로 넓히기" : "비율 맞춤";
       ratioBtn.title = ratioOff
@@ -828,27 +863,36 @@ window.DPV2Canvas = (() => {
     if (aiBtn) {
       aiBtn.innerHTML = "";
       aiBtn.append(Data.icon("sparkles", 13), Store.state.assistBusy ? "작성 중…" : "AI 작성");
-      aiBtn.disabled = specLocked || !!Store.state.cropGenBusy;
+      aiBtn.disabled = specLocked || !!Store.state.cropGenBusy || settingsBusy;
     }
 
     const mLabel = $("fb-model-label");
     const mBtn = $("fb-model-btn");
     if (mLabel) {
-      const commonM = Store.getCommonOrMixed(selList, (p) => p.effectiveModel);
-      mLabel.textContent = commonM.mixed
-        ? `혼합 (${new Set(selList.map((p) => p.effectiveModel || "__broken__")).size}종)`
-        : (patch.cropGenBroken ? "설정 오류" : (patch.modelInfo ? patch.modelInfo.shortName : patch.effectiveModel));
+      if (Api.can("v2_crop_model") && !Store.state.CG) {
+        mLabel.textContent = "설정 확인 필요";
+      } else {
+        const commonM = Store.getCommonOrMixed(selList, (p) => p.effectiveModel);
+        mLabel.textContent = commonM.mixed
+          ? `혼합 (${new Set(selList.map((p) => p.effectiveModel || "__broken__")).size}종)`
+          : (patch.cropGenBroken ? "설정 오류" : (patch.modelInfo ? patch.modelInfo.shortName : patch.effectiveModel));
+      }
     }
     if (mBtn) {
-      const anyCustom = Api.can("v2_crop_model") && selList.some((p) => p.effectiveInherit && p.effectiveInherit.model === false);
-      const anyUnavailable = selList.some((p) => p.cropGenAvailable === false || p.cropGenBroken);
+      const anyCustom = Api.can("v2_crop_model") && !cropGenUnavail && selList.some((p) => p.effectiveInherit && p.effectiveInherit.model === false);
+      const anyUnavailable = cropGenUnavail || selList.some((p) => p.cropGenAvailable === false || p.cropGenBroken);
       mBtn.classList.toggle("is-custom", anyCustom);
       mBtn.classList.toggle("is-unavailable", anyUnavailable);
+      // #C43-2 · #C43-9: crop_gen 첫 읽기 실패 또는 설정 저장 중에는 플로팅 바 모델 버튼도 잠근다
+      mBtn.disabled = !!(cropGenUnavail || Store.state.cropGenBusy || settingsBusy || Store.state.runFlowBusy || Store.state.assistBusy);
+      mBtn.title = cropGenUnavail
+        ? "패치별 모델 설정을 읽지 못해 잠겨 있습니다 — 오른쪽 모델 카드에서 [다시 읽기]를 눌러 주세요."
+        : ((Store.state.cropGenBusy || settingsBusy) ? "모델 설정을 저장하고 있습니다…" : "모델 · 옵션 선택");
     }
     const runBtn = $("fb-run-btn");
     if (runBtn) {
       runBtn.textContent = isMulti ? `${selList.length}개 생성` : "생성";
-      runBtn.disabled = !!(Store.state.S && Store.state.S.running) || !!Store.state.runFlowBusy || !!Store.state.assistBusy || !!Store.state.cropGenBusy;
+      runBtn.disabled = !!(Store.state.S && Store.state.S.running) || !!Store.state.runFlowBusy || !!Store.state.assistBusy || !!Store.state.cropGenBusy || settingsBusy;
     }
   }
 
@@ -1331,20 +1375,28 @@ window.DPV2Canvas = (() => {
     });
     const fbAi = $("fb-ai-btn");
     if (fbAi) fbAi.addEventListener("click", () => {
-      if (Store.state.runFlowBusy || Store.state.assistBusy) return;
+      if (Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.freeApplyBusy) return;
       if (window.DPV2Inspector) window.DPV2Inspector.runAssistForSelection();
     });
     const fbModel = $("fb-model-btn");
-    if (fbModel) fbModel.addEventListener("click", (e) => window.DPV2Inspector && window.DPV2Inspector.openModelPopover(e.currentTarget));
+    if (fbModel) fbModel.addEventListener("click", (e) => {
+      if (Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.freeApplyBusy) return;
+      if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) return;
+      if (window.DPV2Inspector) window.DPV2Inspector.openModelPopover(e.currentTarget);
+    });
     const fbRun = $("fb-run-btn");
     if (fbRun) fbRun.addEventListener("click", () => {
-      if (Store.state.runFlowBusy || Store.state.assistBusy) return;
+      if (Store.state.runFlowBusy || Store.state.assistBusy || Store.state.cropGenBusy || Store.state.pipelineSettingsBusy || Store.state.freeApplyBusy) return;
       if (window.DPV2Inspector) window.DPV2Inspector.runSelectedGeneration(true);
     });
     const fbCmp = $("fb-compare-btn");
     if (fbCmp) fbCmp.addEventListener("click", () => window.DPV2Overlays && window.DPV2Overlays.openCompareOverlay());
     const fbRatio = $("fb-ratio-btn");
-    if (fbRatio) fbRatio.addEventListener("click", () => fitPatchToModelRatio(Store.primaryPatch()));
+    if (fbRatio) fbRatio.addEventListener("click", async () => {
+      const p = Store.primaryPatch();
+      if (!p) return;
+      await fitPatchToModelRatio(p.id);
+    });
     const fbLock = $("fb-lock-btn");
     if (fbLock) fbLock.addEventListener("click", async () => {
       const p = Store.primaryPatch();

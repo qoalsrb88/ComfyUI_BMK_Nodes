@@ -13,17 +13,110 @@ window.DPV2Overlays = (() => {
   let modalOnClose = null;
   let modalCanClose = null;
   let modalPrevFocus = null;
-  let modalInertSaved = [];
+  let modalBgLocked = false;
+  let inertReconcileObs = null;
+  let inertReconcileTimer = null;
+  let inertReconcileFocus = null;
 
-  function lockModalBackground() {
-    if (modalInertSaved.length) return;
-    modalPrevFocus = document.activeElement || null;
+  function isCommonModalOpen() {
+    const bd = $("modal-backdrop");
+    return !!(bd && !bd.classList.contains("hidden"));
+  }
+
+  function hasExternalInertLock() {
+    if (window.DPDialog && window.DPDialog.open) return true;
+    const kids = (document.body && document.body.children) || [];
+    for (let i = 0; i < kids.length; i++) {
+      const ch = kids[i];
+      if (ch && ch.classList && ch.classList.contains("overlay") && !ch.classList.contains("hidden")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function stopInertReconcile() {
+    if (inertReconcileObs) {
+      try { inertReconcileObs.disconnect(); } catch (_) {}
+      inertReconcileObs = null;
+    }
+    if (inertReconcileTimer) {
+      clearInterval(inertReconcileTimer);
+      inertReconcileTimer = null;
+    }
+    inertReconcileFocus = null;
+  }
+
+  function restoreModalFocus(prev) {
+    if (canFocusSafely() && prev && prev.isConnected !== false && typeof prev.focus === "function") {
+      try { prev.focus(); } catch (_) {}
+    }
+  }
+
+  function clearBackgroundViewsInert() {
     for (const bgId of ["projects-view", "studio-view"]) {
       const bg = $(bgId);
-      if (bg) {
-        modalInertSaved.push([bg, !!bg.inert]);
-        bg.inert = true;
+      if (bg && bg.inert) {
+        try { bg.inert = false; } catch (_) {}
       }
+    }
+  }
+
+  // #C46-1: 모달과 외부 잠금(DPDialog · 세션 차단막 등)이 엇갈려 닫힐 때
+  // ① 모달이 먼저 닫히고 외부 잠금이 나중에 닫히면 inert=false 로 복구하고,
+  // ② 외부 잠금이 먼저 닫히고 모달이 아직 열려 있으면 inert=true 를 다시 적용한다
+  function reconcileBackgroundInertAfterExternalUnlock() {
+    if (hasExternalInertLock()) return;
+    if (isCommonModalOpen()) {
+      stopInertReconcile();
+      for (const bgId of ["projects-view", "studio-view"]) {
+        const bg = $(bgId);
+        if (bg) bg.inert = true;
+      }
+      modalBgLocked = true;
+      return;
+    }
+    const prev = inertReconcileFocus;
+    stopInertReconcile();
+    clearBackgroundViewsInert();
+    restoreModalFocus(prev);
+  }
+
+  function scheduleInertReconcile(prevFocus) {
+    stopInertReconcile();
+    inertReconcileFocus = prevFocus || null;
+    if (typeof MutationObserver === "function" && document.body) {
+      try {
+        inertReconcileObs = new MutationObserver(() => {
+          reconcileBackgroundInertAfterExternalUnlock();
+        });
+        inertReconcileObs.observe(document.body, { childList: true });
+      } catch (_) {
+        inertReconcileObs = null;
+      }
+    }
+    inertReconcileTimer = setInterval(() => {
+      reconcileBackgroundInertAfterExternalUnlock();
+    }, 80);
+    if (inertReconcileTimer && typeof inertReconcileTimer.unref === "function") {
+      inertReconcileTimer.unref();
+    }
+  }
+
+  function lockModalBackground() {
+    stopInertReconcile();
+    if (!modalBgLocked) {
+      modalPrevFocus = document.activeElement || null;
+      modalBgLocked = true;
+    }
+    for (const bgId of ["projects-view", "studio-view"]) {
+      const bg = $(bgId);
+      if (bg) bg.inert = true;
+    }
+    // #C46-1 보강: 외부 잠금이 떠 있는 상태에서 모달이 열린 경우, 외부 잠금이 먼저 닫히면서
+    // inert=false 를 복원해도 모달 뒤 화면이 조작 가능해지지 않도록 즉시 재잠금 감시를 건다
+    if (hasExternalInertLock()) {
+      scheduleInertReconcile(null);
     }
   }
 
@@ -32,15 +125,19 @@ window.DPV2Overlays = (() => {
   }
 
   function unlockModalBackground() {
-    while (modalInertSaved.length) {
-      const [node, prevInert] = modalInertSaved.pop();
-      try { node.inert = prevInert; } catch (_) {}
-    }
     const prev = modalPrevFocus;
     modalPrevFocus = null;
-    if (canFocusSafely() && prev && prev.isConnected !== false && typeof prev.focus === "function") {
-      try { prev.focus(); } catch (_) {}
+    modalBgLocked = false;
+    // #C46-1: 외부 잠금(DPDialog · 세션 차단막)이 아직 떠 있으면 지금 inert 를 풀지 않고,
+    // 외부 잠금이 걷힌 직후 inert=false 로 재정합하도록 감시한다.
+    // 외부 잠금이 이미 걷혔으면 모달이 열릴 때의 이전 값(true)과 무관하게 즉시 false 로 풀어 고착을 막는다.
+    if (hasExternalInertLock()) {
+      scheduleInertReconcile(prev);
+      return;
     }
+    stopInertReconcile();
+    clearBackgroundViewsInert();
+    restoreModalFocus(prev);
   }
 
   function focusInsideModal() {
@@ -99,7 +196,7 @@ window.DPV2Overlays = (() => {
       box.setAttribute("role", "dialog");
       box.setAttribute("aria-modal", "true");
     }
-    if (!wasOpen) lockModalBackground();
+    lockModalBackground();
     bd.classList.remove("hidden");
     focusInsideModal();
     return true;
@@ -830,6 +927,7 @@ window.DPV2Overlays = (() => {
   const cmpState = {
     open: false,
     candKey: "",
+    loadedCandKey: "",
     split: 0.5,
     blinkOrig: false,
     zoom: 1,
@@ -843,7 +941,12 @@ window.DPV2Overlays = (() => {
     if (!coPick) return;
     const p = Store.primaryPatch();
     const busy = !!(p && p.target && cmpState.candKey && Store.isPickBusy(p.id, p.target.tid, cmpState.candKey));
-    coPick.disabled = !!(cmpState.loading || busy);
+    // #C43-10: 현재 후보 이미지가 실제로 로드 완료된 경우에만 채택 버튼을 연다
+    const imageReady = !!(cmpState.candKey && cmpState.loadedCandKey === cmpState.candKey);
+    coPick.disabled = !!(cmpState.loading || busy || !imageReady);
+    coPick.title = cmpState.loading
+      ? "후보 이미지를 불러오는 중입니다…"
+      : (!imageReady ? "후보 이미지를 불러온 뒤 채택할 수 있습니다." : "현재 보고 있는 후보를 확정 적용합니다");
   }
 
   async function openCompareOverlay(candKey = "") {
@@ -855,6 +958,7 @@ window.DPV2Overlays = (() => {
     const cur = Store.currentCandidate(patch);
     cmpState.open = true;
     cmpState.candKey = candKey || (cur && cur.key) || patch.candidates[0].key;
+    cmpState.loadedCandKey = "";
     cmpState.split = 0.5;
     cmpState.blinkOrig = false;
     cmpState.zoom = 1;
@@ -866,6 +970,7 @@ window.DPV2Overlays = (() => {
     cmpRenderSeq += 1;
     cmpState.open = false;
     cmpState.loading = false;
+    cmpState.loadedCandKey = "";
     $("compare-overlay").classList.add("hidden");
   }
 
@@ -889,6 +994,7 @@ window.DPV2Overlays = (() => {
     const targetKey = cand.key;
     const seq = ++cmpRenderSeq;
     cmpState.loading = true;
+    cmpState.loadedCandKey = "";
     syncComparePickBtn();
 
     const candTag = Data.formatCandidateModelTag(cand);
@@ -951,8 +1057,22 @@ window.DPV2Overlays = (() => {
       cbox.style.height = `${ch}px`;
       cbox.style.transform = `scale(${cmpState.zoom})`;
       updateCompareDivider();
+      cmpState.loadedCandKey = targetKey;
     } catch (_) {
-      // 이미지 로드 실패 시에도 최신 요청이면 잠금 해제
+      // #C43-10: 후보 이미지 로드 실패 시 직전 후보 캔버스를 비우고 오류를 표시하며 채택 버튼을 잠근다
+      if (seq === cmpRenderSeq) {
+        cmpState.loadedCandKey = "";
+        const cAfter = $("co-canvas-after");
+        if (cAfter && typeof cAfter.getContext === "function") {
+          const ctx = cAfter.getContext("2d");
+          if (ctx) ctx.clearRect(0, 0, cAfter.width || 0, cAfter.height || 0);
+        }
+        const lblAfter = $("co-label-after");
+        if (lblAfter) {
+          lblAfter.textContent = `후보 #${cand.n || 1} (${cand.variant || "V1"}) — 이미지를 불러오지 못했습니다`;
+        }
+        Store.toast("후보 이미지를 불러오지 못했습니다 — 이미지를 확인한 뒤 채택해 주세요.", "err");
+      }
     } finally {
       if (seq === cmpRenderSeq) {
         cmpState.loading = false;
@@ -1068,8 +1188,24 @@ window.DPV2Overlays = (() => {
 
   // ==================== 4.5 프로젝트 기본 생성 설정 모달 (V2-B D564 · R2-2 · R2-7) ====================
   function openProjectDefaultsModal() {
+    // #C43-2 · #C43-9 · #C46-1: 패치별 모델 설정 읽기 실패 상태 또는 설정 저장·합성 적용·생성/AI 작성 진행 중에는 프로젝트 기본 설정 모달을 열지 않는다
+    if (typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable()) {
+      Store.toast("패치별 모델 설정을 읽지 못해 프로젝트 기본 설정을 열 수 없습니다 — 먼저 [다시 읽기]로 확인해 주세요.", "err");
+      return;
+    }
+    if (Store.state.pipelineSettingsBusy || Store.state.cropGenBusy || Store.state.freeApplyBusy || Store.state.runFlowBusy || Store.state.assistBusy) {
+      Store.toast(
+        Store.state.freeApplyBusy
+          ? "합성 적용이 진행 중입니다 — 끝난 뒤 프로젝트 기본 설정을 변경해 주세요."
+          : (Store.state.runFlowBusy || Store.state.assistBusy)
+            ? "생성 흐름이나 AI 프롬프트 작성이 진행 중입니다 — 끝난 뒤 다시 시도해 주세요."
+            : "다른 설정 저장이 진행 중입니다 — 끝난 뒤 다시 시도해 주세요."
+      );
+      return;
+    }
     const prep = Store.projectPrepare();
     const openedPipeRev = Store.state.P ? Store.state.P.rev : 0;
+    const openedCropGenSeen = Store.state.cropGenSeen;
     const catalog = Data.modelCatalog();
     const curState = {
       model: prep.model,
@@ -1200,21 +1336,24 @@ window.DPV2Overlays = (() => {
     );
 
     let saving = false;
+    let modalClosed = false;
     openModal({
       title: "프로젝트 기본 모델 · 옵션 변경",
       bodyNodes: [wrap],
       canClose: () => !saving,
+      onClose: () => { modalClosed = true; },
       actions: [
-        { label: "취소", cls: "btn-secondary", onClick: () => closeModal() },
+        { label: "취소", cls: "btn-secondary", onClick: () => { if (!saving) closeModal(); } },
         {
           id: "btn-pd-save",
           label: "프로젝트 기본값으로 저장",
           cls: "btn-primary",
           onClick: async () => {
-            if (saving) return;
-            // R2-2: 모달을 열어 둔 사이 다른 창이 프로젝트 설정을 바꿨으면 옛 값으로 덮어쓰지 않고 최신 값으로 다시 연다
-            if ((Store.state.P ? Store.state.P.rev : 0) !== openedPipeRev) {
-              Store.toast("다른 창에서 프로젝트 기본 설정이 변경되어 최신 값으로 다시 열었습니다 — 확인 후 저장해 주세요.", "err");
+            if (saving || modalClosed) return;
+            // R2-2 · #C43-3: 모달을 열어 둔 사이 다른 창이 프로젝트/패치 설정을 바꿨으면 옛 값으로 덮어쓰지 않고 최신 값으로 다시 연다
+            if ((Store.state.P ? Store.state.P.rev : 0) !== openedPipeRev
+                || (Api.can("v2_crop_model") && Store.state.cropGenSeen !== openedCropGenSeen)) {
+              Store.toast("다른 창에서 설정이 변경되어 최신 값으로 다시 열었습니다 — 확인 후 저장해 주세요.", "err");
               openProjectDefaultsModal();
               return;
             }
@@ -1247,31 +1386,70 @@ window.DPV2Overlays = (() => {
               "계속할까요?",
             ];
             const ok = await Data.askDialogConfirm(msgLines.join("\n"), { ok: "프로젝트 기본값 변경", cancel: "취소" });
-            if (!ok) return;
-            // R2-2: 확인 창을 열어 둔 사이 다른 창이 저장했는지 다시 대조한다
-            if ((Store.state.P ? Store.state.P.rev : 0) !== openedPipeRev) {
-              Store.toast("확인 창을 열어 둔 사이 다른 창에서 프로젝트 기본 설정이 변경되었습니다 — 최신 값으로 다시 열었습니다.", "err");
+            if (!ok || modalClosed) return;
+            // #C43-9 보강: 확인 직후 재조회 구간부터 닫기·취소·모달 교체를 잠가 취소한 저장이 새 모달을 닫는 경합을 차단한다
+            const btn = $("btn-pd-save");
+            const mClose = $("modal-close");
+            const setSavingLock = (locked) => {
+              saving = locked;
+              if (btn) btn.disabled = locked;
+              if (mClose) mClose.disabled = locked;
+            };
+            setSavingLock(true);
+            // R2-2 · #C43-3: 확인 창을 열어 둔 사이 다른 창이 저장했는지 경량 재조회 후 다시 대조한다
+            if (Store.state.root && Store.state.S && Store.state.S.rev !== undefined) {
+              const okFresh = await Store.refreshAll(false, { awaitInFlight: true });
+              if (!okFresh || modalClosed) {
+                setSavingLock(false);
+                if (!okFresh) Store.toast("최신 설정 상태를 확인하지 못해 저장을 중단했습니다 — 잠시 후 다시 시도해 주세요.", "err");
+                return;
+              }
+            }
+            // #C43-3 보강: GET /state 의 crop_gen_rev·pipeline_rev 와 실제 읽은 값의 불일치·조회 실패까지 모두 차단한다
+            const stateCgRev = Store.state.S && ("crop_gen_rev" in Store.state.S) ? Store.state.S.crop_gen_rev : undefined;
+            const statePipeRev = Store.state.S && ("pipeline_rev" in Store.state.S) ? Store.state.S.pipeline_rev : undefined;
+            const curPipeRev = Store.state.P ? Store.state.P.rev : 0;
+            const cgUnavailAfter = typeof Store.isCropGenUnavailable === "function" && Store.isCropGenUnavailable();
+            const cgRevMismatch = Api.can("v2_crop_model") && stateCgRev !== undefined && (stateCgRev === null || stateCgRev !== Store.state.cropGenSeen);
+            const pipeRevMismatch = statePipeRev !== undefined && (statePipeRev === null || statePipeRev !== curPipeRev);
+            if (cgUnavailAfter || cgRevMismatch || pipeRevMismatch) {
+              setSavingLock(false);
+              Store.toast(
+                pipeRevMismatch
+                  ? "최신 프로젝트 설정을 확인하지 못해 저장을 중단했습니다 — 잠시 후 다시 시도해 주세요."
+                  : "패치별 모델 설정을 최신 상태로 확인하지 못해 저장을 중단했습니다 — [다시 읽기]로 확인해 주세요.",
+                "err"
+              );
+              Store.emit("selection");
+              return;
+            }
+            if (curPipeRev !== openedPipeRev
+                || (statePipeRev !== undefined && statePipeRev !== openedPipeRev)
+                || (Api.can("v2_crop_model") && Store.state.cropGenSeen !== openedCropGenSeen)) {
+              setSavingLock(false);
+              Store.toast("확인 창을 열어 둔 사이 다른 창에서 설정이 변경되었습니다 — 최신 값으로 다시 열었습니다.", "err");
               openProjectDefaultsModal();
               return;
             }
-            saving = true;
-            const btn = $("btn-pd-save");
-            if (btn) btn.disabled = true;
-            try {
-              const nextVals = Store.buildPreparePayload(patch);
-              await Api.savePipelineSettings(Store.state.root, openedPipeRev, "prepare", nextVals);
-              Store.invalidateAllSpecs();
-              Store.toast(`프로젝트 기본 설정을 ${summary}(으)로 저장했습니다.`, "ok");
-              saving = false;
-              closeModal(true);
-              await Store.refreshAll(true);
-            } catch (err) {
-              saving = false;
-              if (btn) btn.disabled = false;
-              Store.toast(`프로젝트 기본 설정 저장 실패: ${err.message}`, "err");
-              if (err && err.status === 409) {
+            if (Store.state.freeApplyBusy || Store.state.runFlowBusy || Store.state.assistBusy) {
+              setSavingLock(false);
+              Store.toast("합성 적용·생성 흐름이 진행 중이어서 프로젝트 기본 설정 저장을 중단했습니다.");
+              return;
+            }
+            // #C43-9: POST /pipeline/settings 응답과 후속 refreshAll(true)이 끝날 때까지 생성·AI 작성·실행 취소를 잠근다
+            const res = await Store.saveProjectPrepare(patch, {
+              expectedPipeRev: openedPipeRev,
+              successToast: `프로젝트 기본 설정을 ${summary}(으)로 저장했습니다.`,
+              onBeforeRefresh: () => {
+                setSavingLock(false);
+                if (!modalClosed) closeModal(true);
+              },
+            });
+            if (!res || !res.ok) {
+              setSavingLock(false);
+              if (res && (res.status === 409 || res.stale)) {
                 await Store.refreshAll(true);
-                openProjectDefaultsModal();
+                if (!modalClosed) openProjectDefaultsModal();
               }
             }
           },
@@ -3073,9 +3251,10 @@ window.DPV2Overlays = (() => {
     if (coZoomReset) coZoomReset.addEventListener("click", () => { cmpState.zoom = 1; renderCompareOverlay(); });
     const coPick = $("co-pick");
     if (coPick) coPick.addEventListener("click", async () => {
-      if (cmpState.loading) return;
+      // #C43-10: 이미지 로드 실패 또는 로딩 중에는 채택 요청을 보내지 않는다
+      if (cmpState.loading || !cmpState.candKey || cmpState.loadedCandKey !== cmpState.candKey) return;
       const p = Store.primaryPatch();
-      if (!p || !p.target || !cmpState.candKey) return;
+      if (!p || !p.target) return;
       if (Store.isPickBusy(p.id, p.target.tid, cmpState.candKey)) return;
       coPick.disabled = true;
       try {
