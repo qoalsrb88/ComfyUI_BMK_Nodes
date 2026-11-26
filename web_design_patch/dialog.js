@@ -12,6 +12,8 @@ window.DPDialog = (() => {
     if (e.type !== "keyup") e.stopImmediatePropagation();
     // 유료 상자의 버튼 활성화 키는 보조키가 붙어도 소유자의 승인 차단을 거친다.
     if (active.keys && ["Enter", " ", "Spacebar"].includes(e.key)) { active.keys(e); return; }
+    // 일반 상자: 길게 눌러 생긴 반복 입력은 보조키가 붙어도 초점 단추의 기본 클릭으로 이어지지 않게 막는다(새로 누른 보조키 조합은 그대로 둔다).
+    if (e.repeat && ["Enter", " ", "Spacebar"].includes(e.key)) e.preventDefault();
     if (e.ctrlKey || e.metaKey || e.altKey || /^F(?:[1-9]|1[0-2])$/.test(e.key)) return;
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Backspace"].includes(e.key)) e.preventDefault();
     // 기존 mock·Claude 상자의 키 동작은 소유자가 맡는다(키보드 승인 차단·Esc 취소).

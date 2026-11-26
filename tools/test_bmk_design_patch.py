@@ -79331,6 +79331,11 @@ await scenario("FW16b 길게 누른 키(자동 반복)로는 정하지 않는다
   if(done!=="열림"||!d.open||e.doc.activeElement!==buttons[0]||!held.every(x=>x.stopped&&x.defaultPrevented))return false;
   e.key("keydown","Tab",true,{repeat:true});if(e.doc.activeElement!==buttons[1])return false;
   e.key("keydown","Tab",true,{shiftKey:true,repeat:true});if(e.doc.activeElement!==buttons[0])return false;
+  // 길게 누른 Space 를 떼는 순간(단추는 keyup 에 눌린다)과, 누른 채 보조키를 더한 반복 입력 — 초점 단추의 기본 클릭이 막히고 정해지지 않는다
+  const edge=[e.key("keyup"," "),e.key("keydown","Enter",true,{ctrlKey:true,repeat:true}),e.key("keydown","Enter",true,{metaKey:true,repeat:true}),
+    e.key("keydown"," ",true,{altKey:true,repeat:true})];
+  await settle();
+  if(done!=="열림"||!d.open||!edge.every(x=>x.defaultPrevented))return false;
   e.key("keydown","Enter");if(await p!==true||d.open)return false;
   // 위험 표지 상자(기본 초점 = 취소)와 알림 상자, Esc 도 같다
   done="열림";p=d.confirm("지울까요?",{danger:true}).then(x=>{done=x;return x;});
