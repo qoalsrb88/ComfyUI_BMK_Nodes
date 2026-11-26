@@ -29,6 +29,8 @@ window.DPV2Store = (() => {
   const state = {
     root: "",
     projects: [],
+    archivedProjects: [],
+    archivedCount: 0,
     S: null,         // GET /state
     L: null,         // GET /layout
     R: null,         // GET /refs
@@ -109,7 +111,9 @@ window.DPV2Store = (() => {
       }));
     }
     host.append(item);
-    setTimeout(() => { if (item.parentNode) item.remove(); }, kind === "err" ? 5400 : 3400);
+    const ttl = action ? 7500 : (kind === "err" ? 5400 : 3400);
+    setTimeout(() => { if (item.parentNode) item.remove(); }, ttl);
+    return item;
   }
 
   // ── 설정 불러오기 · 저장 · DOM 적용 ──
