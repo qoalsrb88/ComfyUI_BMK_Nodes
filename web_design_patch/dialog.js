@@ -12,6 +12,8 @@ window.DPDialog = (() => {
     if (e.type !== "keyup") e.stopImmediatePropagation();
     // 유료 상자의 버튼 활성화 키는 보조키가 붙어도 소유자의 승인 차단을 거친다.
     if (active.keys && ["Enter", " ", "Spacebar"].includes(e.key)) { active.keys(e); return; }
+    // 일반 상자: 길게 눌러 생긴 반복 입력은 보조키가 붙어도 초점 단추의 기본 클릭으로 이어지지 않게 막는다(새로 누른 보조키 조합은 그대로 둔다).
+    if (e.repeat && ["Enter", " ", "Spacebar"].includes(e.key)) e.preventDefault();
     if (e.ctrlKey || e.metaKey || e.altKey || /^F(?:[1-9]|1[0-2])$/.test(e.key)) return;
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Backspace"].includes(e.key)) e.preventDefault();
     // 기존 mock·Claude 상자의 키 동작은 소유자가 맡는다(키보드 승인 차단·Esc 취소).
@@ -19,6 +21,8 @@ window.DPDialog = (() => {
     if (["Tab", "Enter", " ", "Spacebar", "Escape"].includes(e.key)) e.preventDefault();
     if (e.type !== "keydown" || !e.isTrusted || !active.finish) return;
     const buttons = active.buttons, index = buttons.indexOf(document.activeElement);
+    // 길게 눌러 생긴 반복 입력으로는 정하지 않는다 — 상자를 띄운 그 키가 떼기 전에 승인·취소로 이어지지 않게(초점 이동만 받는다).
+    if (e.repeat && e.key !== "Tab") return;
     if (e.key === "Escape") active.finish(false);
     else if (e.key === "Tab") buttons[(index + (e.shiftKey ? buttons.length - 1 : 1)) % buttons.length].focus();
     else if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
