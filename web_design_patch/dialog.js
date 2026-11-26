@@ -19,6 +19,8 @@ window.DPDialog = (() => {
     if (["Tab", "Enter", " ", "Spacebar", "Escape"].includes(e.key)) e.preventDefault();
     if (e.type !== "keydown" || !e.isTrusted || !active.finish) return;
     const buttons = active.buttons, index = buttons.indexOf(document.activeElement);
+    // 길게 눌러 생긴 반복 입력으로는 정하지 않는다 — 상자를 띄운 그 키가 떼기 전에 승인·취소로 이어지지 않게(초점 이동만 받는다).
+    if (e.repeat && e.key !== "Tab") return;
     if (e.key === "Escape") active.finish(false);
     else if (e.key === "Tab") buttons[(index + (e.shiftKey ? buttons.length - 1 : 1)) % buttons.length].focus();
     else if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {

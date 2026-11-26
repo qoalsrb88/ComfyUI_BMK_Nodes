@@ -79321,6 +79321,26 @@ await scenario("FW16 danger·Enter·Space·Esc·alert·native·lock 원복",asyn
   const b=e.doc.createElement("main");e.doc.body.append(b);const locked=d.lock()&&!d.lock()&&b.inert&&e.key("keydown","R").stopped;
   d.unlock();return locked&&!b.inert&&!d.open&&(e.events.get("keydown")||[]).length===0;
 });
+await scenario("FW16b 길게 누른 키(자동 반복)로는 정하지 않는다 — 삼키기만 · 초점 이동은 받음 · 뗐다 누르면 그대로",async()=>{
+  // 단추에 초점을 두고 Enter 를 누르고 있으면 그 입력이 상자를 띄우고, 떼기 전의 반복 keydown 이 이어서 온다(운영 전 화면 재현 — BL-16).
+  const e=context();vm.runInContext(IN.source["dialog.js"],e.ctx);const d=e.ctx.DPDialog;
+  let done="열림";let p=d.confirm("보관할까요?").then(x=>{done=x;return x;});
+  const buttons=e.doc.body.children.at(-1).all().filter(x=>x.tagName==="BUTTON");
+  const held=[e.key("keydown","Enter",true,{repeat:true}),e.key("keydown"," ",true,{repeat:true}),e.key("keydown","Escape",true,{repeat:true})];
+  await settle();
+  if(done!=="열림"||!d.open||e.doc.activeElement!==buttons[0]||!held.every(x=>x.stopped&&x.defaultPrevented))return false;
+  e.key("keydown","Tab",true,{repeat:true});if(e.doc.activeElement!==buttons[1])return false;
+  e.key("keydown","Tab",true,{shiftKey:true,repeat:true});if(e.doc.activeElement!==buttons[0])return false;
+  e.key("keydown","Enter");if(await p!==true||d.open)return false;
+  // 위험 표지 상자(기본 초점 = 취소)와 알림 상자, Esc 도 같다
+  done="열림";p=d.confirm("지울까요?",{danger:true}).then(x=>{done=x;return x;});
+  e.key("keydown","Enter",true,{repeat:true});e.key("keydown","Escape",true,{repeat:true});await settle();
+  if(done!=="열림"||!d.open)return false;
+  e.key("keydown","Escape");if(await p!==false)return false;
+  let closed=false;const a=d.alert("알림").then(()=>{closed=true;});
+  e.key("keydown","Enter",true,{repeat:true});await settle();if(closed||!d.open)return false;
+  e.key("keydown","Enter");await a;return closed&&!d.open&&(e.events.get("keydown")||[]).length===0;
+});
 await scenario("FW17 서버 무료 큐·취소·history 경로·거절",async()=>{
   const e=context();e.ctx.DPEnv={serverMode:true};vm.runInContext(IN.source["pipeline.js"],e.ctx);
   const log=[], fetch=async(u,o)=>{const b=o?.body?JSON.parse(o.body):null;log.push([String(u),b]);
