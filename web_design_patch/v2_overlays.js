@@ -1740,10 +1740,441 @@ window.DPV2Overlays = (() => {
   const homeState = {
     query: "",
     filter: "all", // all | pinned | working | exported
+    tab: "active", // active | archived (#C31 · caps.v2_project_home)
     loading: false,
+    archivedLoading: false,
+    archivedError: "",
     openingKey: "",
+    metaBusyKey: "",
     loadError: "",
   };
+  let archivedLoadSeq = 0;
+  const archiveToastByKey = new Map();
+
+  function dismissArchiveToast(projKey) {
+    if (!projKey) return;
+    const prev = archiveToastByKey.get(projKey);
+    if (prev && prev.parentNode) prev.remove();
+    archiveToastByKey.delete(projKey);
+  }
+
+  function canManageProjectHome() {
+    return Api.can("v2_project_home");
+  }
+
+  function sortProjectsByModifiedDesc(arr) {
+    return arr.slice().sort((a, b) => {
+      const modCmp = String((b && b.modified) || "").localeCompare(String((a && a.modified) || ""));
+      if (modCmp !== 0) return modCmp;
+      return Data.projectDisplayName(a).localeCompare(Data.projectDisplayName(b), "ko");
+    });
+  }
+
+  function applyProjectMetaUpdate(updatedProj, archivedCount) {
+    if (typeof archivedCount === "number" && Number.isFinite(archivedCount)) {
+      Store.state.archivedCount = Math.max(0, archivedCount);
+    }
+    if (updatedProj && updatedProj.id) {
+      dismissArchiveToast(updatedProj.id);
+      const isArchived = Boolean(updatedProj.archived_at);
+      const activeList = Array.isArray(Store.state.projects) ? Store.state.projects : [];
+      const archivedList = Array.isArray(Store.state.archivedProjects) ? Store.state.archivedProjects : [];
+      if (isArchived) {
+        Store.state.projects = activeList.filter((p) => p.id !== updatedProj.id);
+        const restArch = archivedList.filter((p) => p.id !== updatedProj.id);
+        Store.state.archivedProjects = [updatedProj, ...restArch];
+      } else {
+        Store.state.archivedProjects = archivedList.filter((p) => p.id !== updatedProj.id);
+        const idx = activeList.findIndex((p) => p.id === updatedProj.id);
+        if (idx >= 0) {
+          const next = activeList.slice();
+          next[idx] = updatedProj;
+          Store.state.projects = next;
+        } else {
+          Store.state.projects = sortProjectsByModifiedDesc([updatedProj, ...activeList]);
+        }
+      }
+    }
+    drawProjectsHome();
+  }
+
+  function handleProjectMetaError(err, fallbackMsg) {
+    const data = err && err.data && typeof err.data === "object" ? err.data : null;
+    const reason = data && data.reason ? String(data.reason) : "";
+    const msg = (data && data.error) || (err && err.message) || fallbackMsg || "요청을 처리하지 못했습니다.";
+    if (reason === "stale" && data && data.project) {
+      applyProjectMetaUpdate(data.project, data.archived_count);
+      Store.toast(msg, "err");
+      return { reason, msg };
+    }
+    if (reason === "not_found") {
+      Store.toast(msg, "err");
+      if (homeState.tab === "archived") loadArchivedProjects();
+      else renderProjectsHome();
+      return { reason, msg };
+    }
+    Store.toast(msg, "err");
+    return { reason, msg };
+  }
+
+  async function loadArchivedProjects() {
+    if (!canManageProjectHome()) return;
+    const seq = ++archivedLoadSeq;
+    homeState.archivedLoading = true;
+    homeState.archivedError = "";
+    const refreshBtn = $("btn-home-refresh");
+    if (refreshBtn) refreshBtn.disabled = true;
+    drawProjectsHome();
+    try {
+      const res = await Api.listArchivedProjects();
+      if (seq !== archivedLoadSeq) return;
+      const list = Array.isArray(res && res.projects) ? res.projects : [];
+      Store.state.archivedProjects = list;
+      if (typeof (res && res.archived_count) === "number" && Number.isFinite(res.archived_count)) {
+        Store.state.archivedCount = Math.max(0, res.archived_count);
+      } else {
+        Store.state.archivedCount = list.length;
+      }
+    } catch (err) {
+      if (seq !== archivedLoadSeq) return;
+      homeState.archivedError = (err && err.message) || "알 수 없는 오류";
+    } finally {
+      if (seq === archivedLoadSeq) {
+        homeState.archivedLoading = false;
+        if (refreshBtn) refreshBtn.disabled = false;
+        drawProjectsHome();
+      }
+    }
+  }
+
+  function openArchivedTab() {
+    if (!canManageProjectHome()) return;
+    homeState.tab = "archived";
+    homeState.query = "";
+    loadArchivedProjects();
+  }
+
+  function openActiveTab() {
+    homeState.tab = "active";
+    homeState.query = "";
+    drawProjectsHome();
+  }
+
+  // #C31-9 · #C31-10 · #C31-11: 프로젝트 표시 이름 변경 모달 (폴더·키·Export 불변 · 빈 값 = 폴더 이름으로 복원)
+  function openRenameProjectModal(proj) {
+    if (!canManageProjectHome() || !proj || !proj.id) return;
+    if (proj.openable === false || homeState.metaBusyKey || homeState.openingKey) return;
+
+    let curProj = proj;
+    let saving = false;
+    let modalClosed = false;
+
+    const folderNameEl = Data.el("strong", { text: curProj.name || curProj.id });
+    const resetBtn = Data.el("button", {
+      type: "button",
+      id: "btn-rename-reset",
+      className: "mini-btn",
+      text: "폴더 이름으로 되돌리기",
+      title: "표시 이름을 지우고 원래 폴더 이름으로 되돌립니다",
+      onClick: () => submitRename(""),
+    });
+
+    const charCountEl = Data.el("span", { className: "rename-char-count", id: "rename-char-count" });
+    const titleInput = Data.el("input", {
+      id: "rename-title-input",
+      type: "text",
+      className: "np-text-input",
+      autocomplete: "off",
+      placeholder: "표시 이름 입력 (비워 두면 폴더 이름으로 돌아갑니다)",
+      value: curProj.title || curProj.name || "",
+    });
+    const errEl = Data.el("small", { id: "rename-error", className: "np-error-text", role: "alert" });
+
+    function updateCharCount() {
+      const len = titleInput.value.trim().length;
+      charCountEl.textContent = `${len} / 64`;
+      charCountEl.classList.toggle("over", len > 64);
+    }
+
+    function syncResetBtn() {
+      const hasCustom = Boolean(curProj && curProj.title);
+      resetBtn.classList.toggle("hidden", !hasCustom);
+      resetBtn.disabled = saving || !hasCustom;
+    }
+
+    function setSaving(flag) {
+      saving = !!flag;
+      titleInput.disabled = saving;
+      syncResetBtn();
+      const mClose = $("modal-close");
+      if (mClose) mClose.disabled = saving;
+      const btnCancel = $("btn-rename-cancel");
+      if (btnCancel) btnCancel.disabled = saving;
+      const btnSave = $("btn-rename-save");
+      if (btnSave) {
+        btnSave.disabled = saving;
+        btnSave.textContent = saving ? "저장 중…" : "저장";
+      }
+    }
+
+    async function submitRename(overrideTitle) {
+      if (saving || modalClosed || homeState.metaBusyKey) return;
+      const nextTitle = overrideTitle !== undefined ? String(overrideTitle) : String(titleInput.value || "");
+      const seen = Number.isInteger(curProj.meta_rev) ? curProj.meta_rev : 0;
+      errEl.textContent = "";
+      homeState.metaBusyKey = curProj.id;
+      setSaving(true);
+      try {
+        const res = await Api.updateProjectMeta({
+          key: curProj.id,
+          seen,
+          op: "rename",
+          title: nextTitle,
+        });
+        if (res && res.unsupported) {
+          setSaving(false);
+          errEl.textContent = res.error || "프로젝트 홈 관리 기능이 아직 켜져 있지 않습니다.";
+          return;
+        }
+        const updated = (res && res.project) || curProj;
+        applyProjectMetaUpdate(updated, res && res.archived_count);
+        setSaving(false);
+        if (!modalClosed) closeModal(true);
+        if (res && res.changed === false) {
+          Store.toast("변경된 내용이 없습니다.");
+        } else if (updated && updated.title) {
+          Store.toast(`표시 이름을 "${updated.title}"(으)로 변경했습니다.`, "ok");
+        } else {
+          Store.toast(`표시 이름을 지우고 폴더 이름("${(updated && updated.name) || curProj.name}")으로 되돌렸습니다.`, "ok");
+        }
+      } catch (err) {
+        setSaving(false);
+        const data = err && err.data && typeof err.data === "object" ? err.data : null;
+        const reason = data && data.reason ? String(data.reason) : "";
+        const msg = (data && data.error) || (err && err.message) || "이름 변경에 실패했습니다.";
+        if (reason === "stale" && data && data.project) {
+          applyProjectMetaUpdate(data.project, data.archived_count);
+          if (data.project.archived_at) {
+            if (!modalClosed) closeModal(true);
+            Store.toast(msg, "err");
+            return;
+          }
+          curProj = data.project;
+          folderNameEl.textContent = curProj.name || curProj.id;
+          titleInput.value = curProj.title || curProj.name || "";
+          updateCharCount();
+          syncResetBtn();
+          errEl.textContent = `${msg} — 최신 이름으로 갱신했습니다. 확인 후 다시 저장해 주세요.`;
+          if (!modalClosed && canFocusSafely()) {
+            try { titleInput.focus(); titleInput.select(); } catch (_) {}
+          }
+          return;
+        }
+        if (reason === "not_found" || reason === "archived") {
+          if (!modalClosed) closeModal(true);
+          Store.toast(msg, "err");
+          renderProjectsHome();
+          return;
+        }
+        errEl.textContent = msg;
+        if (reason === "meta_broken") Store.toast(msg, "err");
+        if (!modalClosed && canFocusSafely()) {
+          try { titleInput.focus(); } catch (_) {}
+        }
+      } finally {
+        if (homeState.metaBusyKey === curProj.id) homeState.metaBusyKey = "";
+        drawProjectsHome();
+      }
+    }
+
+    titleInput.addEventListener("input", () => {
+      updateCharCount();
+      if (errEl.textContent) errEl.textContent = "";
+    });
+    titleInput.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      submitRename();
+    });
+
+    updateCharCount();
+    syncResetBtn();
+
+    const bodyWrap = Data.el("div", { className: "rename-modal-body" },
+      Data.el("div", { className: "rename-folder-row" },
+        Data.el("span", {}, "폴더 이름(고정): ", folderNameEl),
+        resetBtn,
+      ),
+      Data.el("div", { className: "np-field" },
+        Data.el("div", { className: "rename-field-head" },
+          Data.el("label", { for: "rename-title-input", text: "표시 이름" }),
+          charCountEl,
+        ),
+        titleInput,
+        errEl,
+      ),
+      Data.el("div", {
+        className: "rename-meta-note",
+        text: "화면의 표시 이름만 바뀌며 폴더 이름·프로젝트 키·Export 파일 이름은 그대로 유지됩니다. 문자·숫자·한글·_ - .·공백(최대 64자)을 쓸 수 있으며 비워 두고 저장하면 폴더 이름으로 돌아갑니다.",
+      }),
+    );
+
+    openModal({
+      title: "프로젝트 이름 변경",
+      bodyNodes: [bodyWrap],
+      canClose: () => !saving,
+      onClose: () => { modalClosed = true; },
+      actions: [
+        { id: "btn-rename-cancel", label: "취소", cls: "btn-secondary", onClick: () => { if (!saving) closeModal(); } },
+        { id: "btn-rename-save", label: "저장", cls: "btn-primary", onClick: () => submitRename() },
+      ],
+    });
+
+    if (canFocusSafely()) {
+      try { titleInput.focus(); titleInput.select(); } catch (_) {}
+    }
+  }
+
+  // #C31-12 (D670): 보관 확인 상자 → POST projects/meta {op: "archive"} → [되돌리기] 토스트
+  async function archiveProject(proj) {
+    if (!canManageProjectHome() || !proj || !proj.id) return;
+    if (proj.openable === false || homeState.metaBusyKey || homeState.openingKey) return;
+    const dispName = Data.projectDisplayName(proj);
+    const ok = await Data.askDialogConfirm(
+      `"${dispName}" 프로젝트를 보관할까요?\n목록에서 숨깁니다. 파일은 지워지지 않고 [보관함]에서 되돌릴 수 있습니다. 서버 용량은 그대로 차지합니다.`,
+      { title: "프로젝트 보관", ok: "보관", cancel: "취소" }
+    );
+    if (!ok) return;
+    if (homeState.metaBusyKey || homeState.openingKey) return;
+
+    const seen = Number.isInteger(proj.meta_rev) ? proj.meta_rev : 0;
+    homeState.metaBusyKey = proj.id;
+    drawProjectsHome();
+    try {
+      const res = await Api.updateProjectMeta({ key: proj.id, seen, op: "archive" });
+      if (res && res.unsupported) {
+        Store.toast(res.error || "프로젝트 홈 관리 기능이 아직 켜져 있지 않습니다.", "err");
+        return;
+      }
+      const updated = (res && res.project) || Object.assign({}, proj, { archived_at: "방금" });
+      applyProjectMetaUpdate(updated, res && res.archived_count);
+      dismissArchiveToast(proj.id);
+      const nextName = Data.projectDisplayName(updated);
+      const toastEl = Store.toast(`"${nextName}" 프로젝트를 보관했습니다.`, "ok", {
+        label: "되돌리기",
+        onClick: () => {
+          if (homeState.metaBusyKey || homeState.openingKey) return false;
+          restoreProject(updated);
+        },
+      });
+      if (toastEl) archiveToastByKey.set(proj.id, toastEl);
+    } catch (err) {
+      handleProjectMetaError(err, "프로젝트를 보관할 수 없습니다.");
+    } finally {
+      if (homeState.metaBusyKey === proj.id) homeState.metaBusyKey = "";
+      drawProjectsHome();
+    }
+  }
+
+  // #C31-8 · #C31-12: 보관함 카드 또는 보관 직후 토스트에서 즉시 되돌리기
+  async function restoreProject(proj) {
+    if (!canManageProjectHome() || !proj || !proj.id) return;
+    if (homeState.metaBusyKey || homeState.openingKey) return;
+
+    const seen = Number.isInteger(proj.meta_rev) ? proj.meta_rev : 0;
+    homeState.metaBusyKey = proj.id;
+    drawProjectsHome();
+    try {
+      const res = await Api.updateProjectMeta({ key: proj.id, seen, op: "restore" });
+      if (res && res.unsupported) {
+        Store.toast(res.error || "프로젝트 홈 관리 기능이 아직 켜져 있지 않습니다.", "err");
+        return;
+      }
+      const updated = (res && res.project) || Object.assign({}, proj);
+      if (updated && "archived_at" in updated && !(res && res.project && res.project.archived_at)) {
+        delete updated.archived_at;
+      }
+      applyProjectMetaUpdate(updated, res && res.archived_count);
+      dismissArchiveToast(proj.id);
+      const nextName = Data.projectDisplayName(updated);
+      Store.toast(`"${nextName}" 프로젝트를 목록으로 되돌렸습니다.`, "ok");
+    } catch (err) {
+      handleProjectMetaError(err, "프로젝트를 되돌릴 수 없습니다.");
+    } finally {
+      if (homeState.metaBusyKey === proj.id) homeState.metaBusyKey = "";
+      drawProjectsHome();
+    }
+  }
+
+  function syncHomeArchiveChrome() {
+    const canHome = canManageProjectHome();
+    const actionsEl = document.querySelector("#projects-view .projects-actions");
+    const existingBtn = $("btn-home-archive");
+    const archivedCount = Math.max(0, Number(Store.state.archivedCount) || 0);
+    const inArchive = canHome && homeState.tab === "archived";
+    const showBtn = canHome && (archivedCount > 0 || inArchive);
+
+    if (!showBtn) {
+      if (existingBtn) existingBtn.remove();
+    } else if (actionsEl) {
+      const btn = existingBtn || Data.el("button", {
+        type: "button",
+        id: "btn-home-archive",
+        className: "btn-secondary-sm btn-home-archive",
+        onClick: () => {
+          if (homeState.tab === "archived") openActiveTab();
+          else openArchivedTab();
+        },
+      });
+      btn.classList.toggle("on", inArchive);
+      btn.setAttribute("aria-pressed", inArchive ? "true" : "false");
+      btn.title = inArchive ? "활성 프로젝트 목록으로 돌아가기" : `보관된 프로젝트 ${archivedCount}개 보기`;
+      btn.innerHTML = "";
+      btn.append(
+        Data.icon("archive", 14),
+        Data.el("span", { text: "보관함" }),
+        Data.el("span", { className: "home-archive-badge", text: String(archivedCount) }),
+      );
+      if (!existingBtn) {
+        const refNode = $("btn-home-settings") || actionsEl.firstChild;
+        actionsEl.insertBefore(btn, refNode);
+      }
+    }
+
+    const inner = document.querySelector("#projects-view .projects-inner");
+    const existingBanner = $("home-archive-banner");
+    if (!inArchive) {
+      if (existingBanner) existingBanner.remove();
+    } else if (inner) {
+      const banner = existingBanner || Data.el("section", {
+        id: "home-archive-banner",
+        className: "home-archive-banner",
+        role: "region",
+        "aria-label": "보관함 안내",
+      });
+      banner.innerHTML = "";
+      banner.append(
+        Data.el("div", { className: "home-archive-banner-copy" },
+          Data.el("strong", {},
+            Data.icon("archive", 15),
+            Data.el("span", { text: `보관함 (${archivedCount})` }),
+          ),
+          Data.el("span", { text: "보관된 프로젝트는 목록에서 숨겨져 있으며 파일과 서버 용량은 그대로 유지됩니다. 작업을 이어가려면 먼저 되돌려 주세요." }),
+        ),
+        Data.el("button", {
+          type: "button",
+          id: "btn-home-archive-back",
+          className: "btn-secondary-sm",
+          onClick: () => openActiveTab(),
+        }, Data.icon("arrowLeft", 13), Data.el("span", { text: "프로젝트 목록으로" })),
+      );
+      if (!existingBanner) {
+        const hero = $("home-hero");
+        if (hero && hero.parentNode === inner) inner.insertBefore(banner, hero);
+        else inner.append(banner);
+      }
+    }
+  }
 
   function classifyProjectStatus(proj) {
     if (!proj || proj.openable === false) return { id: "err", label: "열 수 없음", tone: "err" };
@@ -1792,7 +2223,7 @@ window.DPV2Overlays = (() => {
       Store.toast(proj.error || "이 프로젝트는 열 수 없습니다.", "err");
       return;
     }
-    if (homeState.openingKey) return;
+    if (homeState.openingKey || homeState.metaBusyKey) return;
     homeState.openingKey = proj.id;
     drawProjectsHome();
     try {
@@ -1815,7 +2246,12 @@ window.DPV2Overlays = (() => {
     } catch (err) {
       homeState.openingKey = "";
       drawProjectsHome();
+      const data = err && err.data && typeof err.data === "object" ? err.data : null;
+      const reason = data && data.reason ? String(data.reason) : "";
       Store.toast(`프로젝트를 열 수 없습니다: ${(err && err.message) || "알 수 없는 오류"}`, "err");
+      if (reason === "archived" || reason === "not_found" || (err && err.status === 404)) {
+        renderProjectsHome();
+      }
     }
   }
 
@@ -1825,6 +2261,13 @@ window.DPV2Overlays = (() => {
     const forgeBtn = $("btn-home-drop-forge");
     if (forgeBtn) forgeBtn.classList.toggle("hidden", !Api.can("forge_import"));
     if (!hero || !resume) return;
+
+    const canHome = canManageProjectHome();
+    if (canHome && homeState.tab === "archived") {
+      hero.classList.add("hidden");
+      return;
+    }
+    hero.classList.remove("hidden");
 
     // GET /projects 는 서버가 modified 내림차순으로 내려준다 — 가장 최근 수정된 열 수 있는 프로젝트를 스포트라이트
     const recent = list.find((p) => p.openable !== false) || null;
@@ -1844,6 +2287,7 @@ window.DPV2Overlays = (() => {
     const st = classifyProjectStatus(recent);
     const isPinned = pinnedSet.has(recent.id);
     const isOpening = homeState.openingKey === recent.id;
+    const isMetaBusy = homeState.metaBusyKey === recent.id;
 
     const thumbWrap = buildThumbNode(recent, dispName);
     thumbWrap.classList.add("home-resume-thumb");
@@ -1861,11 +2305,35 @@ window.DPV2Overlays = (() => {
       },
     }, Data.icon("pin", 14));
 
+    const renameBtn = canHome ? Data.el("button", {
+      type: "button",
+      className: "btn-secondary-sm proj-rename-btn",
+      dataset: { projAction: "rename", projId: recent.id },
+      title: "표시 이름 변경 (폴더·키는 그대로 유지)",
+      disabled: !!homeState.openingKey || !!homeState.metaBusyKey,
+      onClick: (e) => {
+        e.stopPropagation();
+        openRenameProjectModal(recent);
+      },
+    }, Data.icon("edit", 13), Data.el("span", { text: "이름 변경" })) : null;
+
+    const archiveBtn = canHome ? Data.el("button", {
+      type: "button",
+      className: "btn-secondary-sm proj-archive-btn",
+      dataset: { projAction: "archive", projId: recent.id },
+      title: "목록에서 숨기기 (파일·용량은 유지되며 보관함에서 되돌릴 수 있습니다)",
+      disabled: !!homeState.openingKey || !!homeState.metaBusyKey,
+      onClick: (e) => {
+        e.stopPropagation();
+        archiveProject(recent);
+      },
+    }, Data.icon("archive", 13), Data.el("span", { text: isMetaBusy ? "보관 중…" : "보관" })) : null;
+
     const openBtn = Data.el("button", {
       type: "button",
       id: "btn-home-resume",
       className: "btn-primary-sm home-resume-cta",
-      disabled: !!homeState.openingKey,
+      disabled: !!homeState.openingKey || !!homeState.metaBusyKey,
       onClick: (e) => {
         e.stopPropagation();
         openProjectByKey(recent);
@@ -1880,6 +2348,7 @@ window.DPV2Overlays = (() => {
         Data.el("span", { className: "home-resume-kicker", text: "최근 작업 이어하기" }),
         Data.el("span", { className: `proj-status-badge tone-${st.tone}`, text: st.label }),
         isPinned ? Data.el("span", { className: "proj-status-badge tone-pin", text: "고정됨" }) : null,
+        canHome && recent.meta_error ? Data.el("span", { className: "proj-status-badge tone-err", text: "설정 파일 오류", title: "프로젝트 설정 파일(project_meta.json)을 읽지 못했습니다 — 관리자에게 문의해 주세요" }) : null,
       ),
       Data.el("div", { className: "home-resume-title-row" },
         Data.el("h2", { text: dispName, title: dispName }),
@@ -1895,7 +2364,7 @@ window.DPV2Overlays = (() => {
           Data.el("span", { text: formatExportMeta(recent) }),
           recent.modified ? Data.el("span", { className: "proj-card-time", text: Data.formatRelativeTime(recent.modified), title: `마지막 수정: ${recent.modified}` }) : null,
         ),
-        Data.el("div", { className: "home-resume-actions" }, pinBtn, openBtn),
+        Data.el("div", { className: "home-resume-actions" }, pinBtn, renameBtn, archiveBtn, openBtn),
       ),
     );
 
@@ -1903,21 +2372,186 @@ window.DPV2Overlays = (() => {
     resume.append(thumbWrap, body);
   }
 
-  function drawProjectsHome() {
-    const grid = $("projects-grid");
-    if (!grid) return;
-    const list = Array.isArray(Store.state.projects) ? Store.state.projects : [];
-    const hp = Store.getHomePrefs();
-    const pinnedSet = new Set(hp.pinnedIds || []);
-
-    // 히어로(최근 작업 이어하기 + 빠른 드롭존) 갱신
-    renderHomeHero(list, pinnedSet);
-
-    // 툴바 상태 동기화
+  function drawArchivedProjectsView(grid, hp) {
+    const list = Array.isArray(Store.state.archivedProjects) ? Store.state.archivedProjects : [];
+    const toolbarEl = $("home-toolbar");
+    const filterBar = $("home-filter-bar");
+    const metaEl = $("home-section-meta");
+    const countEl = $("home-result-count");
+    const prefsHintEl = $("home-prefs-hint");
     const searchInp = $("home-search-input");
     const clearBtn = $("btn-home-search-clear");
     if (searchInp && searchInp.value !== homeState.query) searchInp.value = homeState.query;
     if (clearBtn) clearBtn.classList.toggle("hidden", !homeState.query);
+    if (filterBar) filterBar.classList.add("hidden");
+
+    const isEmptyArch = !list.length && !homeState.archivedLoading && !homeState.archivedError;
+    if (toolbarEl) toolbarEl.classList.toggle("hidden", isEmptyArch);
+    if (metaEl) metaEl.classList.remove("hidden");
+    if (prefsHintEl) prefsHintEl.textContent = "보관된 프로젝트는 되돌린 뒤 열 수 있습니다";
+
+    const q = homeState.query.trim().toLocaleLowerCase();
+    const shown = list.filter((p) => {
+      if (!q) return true;
+      const hayTitle = String(p.title || "").toLocaleLowerCase();
+      const hayName = String(p.name || "").toLocaleLowerCase();
+      return hayTitle.includes(q) || hayName.includes(q);
+    });
+
+    shown.sort((a, b) => {
+      if (hp.sortBy === "name") {
+        const cmp = Data.projectDisplayName(a).localeCompare(Data.projectDisplayName(b), "ko");
+        if (cmp !== 0) return cmp;
+      } else if (hp.sortBy === "stars") {
+        const d = (b.stars || 0) - (a.stars || 0);
+        if (d !== 0) return d;
+      } else if (hp.sortBy === "crops") {
+        const d = (b.crops || 0) - (a.crops || 0);
+        if (d !== 0) return d;
+      }
+      const arcCmp = String(b.archived_at || "").localeCompare(String(a.archived_at || ""));
+      if (arcCmp !== 0) return arcCmp;
+      return String(b.modified || "").localeCompare(String(a.modified || ""));
+    });
+
+    if (countEl) {
+      if (homeState.archivedLoading) countEl.textContent = "보관함을 불러오는 중…";
+      else if (homeState.archivedError) countEl.textContent = "보관함 조회 오류";
+      else if (q) countEl.textContent = `보관함 표시 ${shown.length}개 / 전체 ${list.length}개`;
+      else countEl.textContent = `보관된 프로젝트 ${list.length}개`;
+    }
+
+    const isList = hp.viewMode === "list";
+    grid.classList.toggle("view-list", isList && !isEmptyArch);
+    grid.innerHTML = "";
+
+    if (homeState.archivedError) {
+      grid.append(Data.el("div", { className: "empty-card home-empty-card" },
+        Data.el("p", { text: `보관함을 불러오지 못했습니다: ${homeState.archivedError}` }),
+        Data.el("div", { className: "empty-actions" },
+          Data.el("button", { type: "button", className: "btn-secondary-sm", text: "다시 시도", onClick: () => loadArchivedProjects() }),
+          Data.el("button", { type: "button", className: "btn-secondary-sm", text: "프로젝트 목록으로", onClick: () => openActiveTab() }),
+        ),
+      ));
+      return;
+    }
+
+    if (homeState.archivedLoading && !list.length) return;
+
+    if (!list.length) {
+      grid.append(Data.el("div", { className: "empty-card home-empty-card" },
+        Data.el("p", { text: "보관된 프로젝트가 없습니다" }),
+        Data.el("small", { text: "프로젝트 카드의 [보관]을 누르면 파일은 그대로 둔 채 목록에서만 숨겨집니다." }),
+        Data.el("div", { className: "empty-actions" },
+          Data.el("button", { type: "button", className: "btn-primary-sm", text: "프로젝트 목록으로 돌아가기", onClick: () => openActiveTab() }),
+        ),
+      ));
+      return;
+    }
+
+    if (!shown.length) {
+      grid.append(Data.el("div", { className: "empty-card home-empty-card" },
+        Data.el("p", { text: "검색어에 맞는 보관 프로젝트가 없습니다" }),
+        Data.el("div", { className: "empty-actions" },
+          Data.el("button", {
+            type: "button",
+            className: "btn-secondary-sm",
+            text: "검색 초기화",
+            onClick: () => { homeState.query = ""; drawProjectsHome(); },
+          }),
+        ),
+      ));
+      return;
+    }
+
+    for (const proj of shown) {
+      const dispName = Data.projectDisplayName(proj);
+      const hasCustomTitle = !!(proj.title && proj.name && proj.title !== proj.name);
+      const isBusy = homeState.metaBusyKey === proj.id;
+      const thumbWrap = buildThumbNode(proj, dispName);
+      if (!isList) {
+        thumbWrap.append(Data.el("span", { className: "proj-status-badge proj-thumb-badge tone-warn", text: "보관됨" }));
+      }
+      const titleRow = Data.el("div", { className: "proj-title-row" },
+        Data.el("strong", { text: dispName, title: hasCustomTitle ? `${dispName} (폴더: ${proj.name})` : dispName }),
+        hasCustomTitle ? Data.el("span", { className: "proj-folder-sub", text: proj.name, title: `폴더 이름: ${proj.name}` }) : null,
+        proj.meta_error ? Data.el("span", { className: "proj-status-badge tone-err proj-meta-err-badge", text: "설정 파일 오류", title: "프로젝트 설정 파일(project_meta.json)을 읽지 못했습니다 — 관리자에게 문의해 주세요" }) : null,
+      );
+      const metaNode = proj.openable !== false
+        ? Data.el("div", { className: "proj-card-meta" },
+          Data.el("span", { text: `영역 ${proj.crops || 0}개` }),
+          Data.el("span", { text: `후보 ${proj.candidates || 0}장` }),
+          Data.el("span", { className: "proj-meta-star", text: `확정 ★ ${proj.stars || 0}` }),
+        )
+        : Data.el("span", { className: "proj-card-err", text: proj.error || "열 수 없음" });
+      const archTime = proj.archived_at
+        ? `보관: ${proj.archived_at}`
+        : "보관됨";
+      const footNode = Data.el("div", { className: "proj-card-foot" },
+        Data.el("span", { className: "proj-card-export", text: archTime, title: archTime }),
+        proj.modified ? Data.el("span", { className: "proj-card-time", text: Data.formatRelativeTime(proj.modified), title: `마지막 수정: ${proj.modified}` }) : null,
+      );
+      // #C31-8: 보관함 카드에는 [되돌리기] 만 두고 열기·핀·이름 변경은 두지 않는다
+      const restoreBtn = Data.el("button", {
+        type: "button",
+        className: "btn-secondary-sm accent-outline proj-restore-btn",
+        dataset: { projAction: "restore", projId: proj.id },
+        disabled: !!homeState.metaBusyKey || !!homeState.openingKey,
+        onClick: (e) => {
+          e.stopPropagation();
+          restoreProject(proj);
+        },
+      }, Data.icon("undo", 13), Data.el("span", { text: isBusy ? "되돌리는 중…" : "되돌리기" }));
+
+      const cardClasses = [
+        "proj-card",
+        "archived",
+        isList ? "proj-row" : "",
+        isBusy ? "meta-busy" : "",
+      ].filter(Boolean).join(" ");
+
+      const cardChildren = isList
+        ? [
+          thumbWrap,
+          Data.el("div", { className: "proj-card-body" },
+            Data.el("div", { className: "proj-row-head" },
+              titleRow,
+              Data.el("span", { className: "proj-status-badge tone-warn", text: "보관됨" }),
+            ),
+            metaNode,
+          ),
+          Data.el("div", { className: "proj-row-right" }, footNode, restoreBtn),
+        ]
+        : [
+          thumbWrap,
+          Data.el("div", { className: "proj-card-body" },
+            titleRow,
+            metaNode,
+            footNode,
+            Data.el("div", { className: "proj-card-actions" }, restoreBtn),
+          ),
+        ];
+
+      grid.append(Data.el("div", {
+        className: cardClasses,
+        dataset: { projId: proj.id, archived: "1" },
+      }, ...cardChildren));
+    }
+  }
+
+  function drawProjectsHome() {
+    const grid = $("projects-grid");
+    if (!grid) return;
+    const canHome = canManageProjectHome();
+    if (!canHome && homeState.tab === "archived") homeState.tab = "active";
+    const list = Array.isArray(Store.state.projects) ? Store.state.projects : [];
+    const hp = Store.getHomePrefs();
+    const pinnedSet = new Set(hp.pinnedIds || []);
+
+    syncHomeArchiveChrome();
+
+    // 히어로(최근 작업 이어하기 + 빠른 드롭존) 갱신
+    renderHomeHero(list, pinnedSet);
 
     const sortSel = $("home-sort-select");
     if (sortSel && sortSel.value !== hp.sortBy) sortSel.value = hp.sortBy;
@@ -1926,12 +2560,26 @@ window.DPV2Overlays = (() => {
     if (btnGrid) btnGrid.classList.toggle("on", hp.viewMode !== "list");
     if (btnList) btnList.classList.toggle("on", hp.viewMode === "list");
 
+    if (canHome && homeState.tab === "archived") {
+      drawArchivedProjectsView(grid, hp);
+      return;
+    }
+
+    // 툴바 상태 동기화
+    const searchInp = $("home-search-input");
+    const clearBtn = $("btn-home-search-clear");
+    if (searchInp && searchInp.value !== homeState.query) searchInp.value = homeState.query;
+    if (clearBtn) clearBtn.classList.toggle("hidden", !homeState.query);
+    const prefsHintEl = $("home-prefs-hint");
+    if (prefsHintEl) prefsHintEl.textContent = "고정·정렬·보기 설정은 이 환경의 화면 설정에 저장됩니다";
+
     const pinnedCount = list.filter((p) => pinnedSet.has(p.id)).length;
     const workingCount = list.filter((p) => p.openable !== false && p.export_state !== "same").length;
     const exportedCount = list.filter((p) => p.openable !== false && p.export_state === "same").length;
 
     const filterBar = $("home-filter-bar");
     if (filterBar) {
+      filterBar.classList.remove("hidden");
       filterBar.innerHTML = "";
       const filters = [
         { id: "all", label: "전체", count: list.length },
@@ -2027,6 +2675,15 @@ window.DPV2Overlays = (() => {
 
     if (!list.length) {
       if (homeState.loading) return;
+      if (canHome && Store.state.archivedCount > 0) {
+        grid.append(Data.el("div", { className: "empty-card home-empty-card" },
+          Data.el("p", { text: `현재 활성 프로젝트가 없습니다 (보관함에 ${Store.state.archivedCount}개)` }),
+          Data.el("small", { text: "보관된 프로젝트는 파일이 그대로 유지되어 있습니다. 보관함에서 언제든 되돌릴 수 있습니다." }),
+          Data.el("div", { className: "empty-actions" },
+            Data.el("button", { type: "button", className: "btn-primary-sm", text: `보관함 열기 (${Store.state.archivedCount})`, onClick: () => openArchivedTab() }),
+          ),
+        ));
+      }
       const steps = [
         ["1", "원화 이미지로 시작", "위 영역에 PNG·JPG·PSD를 끌어 놓거나 PC·Forge 자료함에서 불러오면 새 프로젝트가 열립니다."],
         ["2", "수정 영역과 지시 작성", "원화 위에 수정할 영역을 그리고 한국어로 방향을 적으면 AI가 모델 맞춤 프롬프트를 작성합니다."],
@@ -2071,6 +2728,7 @@ window.DPV2Overlays = (() => {
       const st = classifyProjectStatus(proj);
       const isPinned = pinnedSet.has(proj.id);
       const isOpening = homeState.openingKey === proj.id;
+      const isMetaBusy = homeState.metaBusyKey === proj.id;
 
       const thumbWrap = buildThumbNode(proj, dispName);
       const pinBtn = Data.el("button", {
@@ -2096,6 +2754,7 @@ window.DPV2Overlays = (() => {
       const titleRow = Data.el("div", { className: "proj-title-row" },
         Data.el("strong", { text: dispName, title: hasCustomTitle ? `${dispName} (폴더: ${proj.name})` : dispName }),
         hasCustomTitle ? Data.el("span", { className: "proj-folder-sub", text: proj.name, title: `폴더 이름: ${proj.name}` }) : null,
+        canHome && proj.meta_error ? Data.el("span", { className: "proj-status-badge tone-err proj-meta-err-badge", text: "설정 파일 오류", title: "프로젝트 설정 파일(project_meta.json)을 읽지 못했습니다 — 관리자에게 문의해 주세요" }) : null,
       );
 
       const metaNode = openable
@@ -2111,12 +2770,43 @@ window.DPV2Overlays = (() => {
         proj.modified ? Data.el("span", { className: "proj-card-time", text: Data.formatRelativeTime(proj.modified), title: `마지막 수정: ${proj.modified}` }) : null,
       );
 
+      // #C31: caps.v2_project_home === true 일 때만 이름 변경·보관 버튼을 동적 생성한다(OFF 시 DOM 0건)
+      const manageActions = (canHome && openable)
+        ? Data.el("div", { className: "proj-card-actions" },
+          Data.el("button", {
+            type: "button",
+            className: "mini-btn proj-rename-btn",
+            dataset: { projAction: "rename", projId: proj.id },
+            title: "표시 이름 변경 (폴더·키는 그대로 유지)",
+            "aria-label": `${dispName} 이름 변경`,
+            disabled: !!homeState.openingKey || !!homeState.metaBusyKey,
+            onClick: (e) => {
+              e.stopPropagation();
+              openRenameProjectModal(proj);
+            },
+          }, Data.icon("edit", 12), Data.el("span", { text: "이름 변경" })),
+          Data.el("button", {
+            type: "button",
+            className: "mini-btn proj-archive-btn",
+            dataset: { projAction: "archive", projId: proj.id },
+            title: "목록에서 숨기기 (파일·용량은 유지되며 보관함에서 되돌릴 수 있습니다)",
+            "aria-label": `${dispName} 보관`,
+            disabled: !!homeState.openingKey || !!homeState.metaBusyKey,
+            onClick: (e) => {
+              e.stopPropagation();
+              archiveProject(proj);
+            },
+          }, Data.icon("archive", 12), Data.el("span", { text: isMetaBusy ? "보관 중…" : "보관" })),
+        )
+        : null;
+
       const cardClasses = [
         "proj-card",
         openable ? "" : "disabled",
         isPinned ? "pinned" : "",
         isList ? "proj-row" : "",
         isOpening ? "opening" : "",
+        isMetaBusy ? "meta-busy" : "",
       ].filter(Boolean).join(" ");
 
       const cardChildren = isList
@@ -2132,10 +2822,11 @@ window.DPV2Overlays = (() => {
           Data.el("div", { className: "proj-row-right" },
             footNode,
             pinBtn,
+            manageActions,
             Data.el("button", {
               type: "button",
               className: "btn-secondary-sm proj-row-open",
-              disabled: !openable || !!homeState.openingKey,
+              disabled: !openable || !!homeState.openingKey || !!homeState.metaBusyKey,
               text: isOpening ? "여는 중…" : "열기",
               onClick: (e) => {
                 e.stopPropagation();
@@ -2146,7 +2837,7 @@ window.DPV2Overlays = (() => {
         ]
         : [
           thumbWrap,
-          Data.el("div", { className: "proj-card-body" }, titleRow, metaNode, footNode),
+          Data.el("div", { className: "proj-card-body" }, titleRow, metaNode, footNode, manageActions),
         ];
 
       grid.append(Data.el("div", {
@@ -2170,6 +2861,11 @@ window.DPV2Overlays = (() => {
       const res = await Api.listProjects();
       const list = Array.isArray(res && res.projects) ? res.projects : [];
       Store.state.projects = list;
+      if (canManageProjectHome() && typeof (res && res.archived_count) === "number" && Number.isFinite(res.archived_count)) {
+        Store.state.archivedCount = Math.max(0, res.archived_count);
+      } else {
+        Store.state.archivedCount = 0;
+      }
     } catch (err) {
       homeState.loadError = (err && err.message) || "알 수 없는 오류";
     } finally {
@@ -3318,7 +4014,10 @@ window.DPV2Overlays = (() => {
 
     // 프로젝트 홈 툴바 · 빠른 드롭존 이벤트 바인딩
     const btnRefresh = $("btn-home-refresh");
-    if (btnRefresh) btnRefresh.addEventListener("click", () => renderProjectsHome());
+    if (btnRefresh) btnRefresh.addEventListener("click", () => {
+      if (canManageProjectHome() && homeState.tab === "archived") loadArchivedProjects();
+      else renderProjectsHome();
+    });
 
     const homeSearch = $("home-search-input");
     if (homeSearch) {
@@ -3455,6 +4154,11 @@ window.DPV2Overlays = (() => {
     openShortcutsModal,
     renderProjectsHome,
     drawProjectsHome,
+    openArchivedTab,
+    openActiveTab,
+    openRenameProjectModal,
+    archiveProject,
+    restoreProject,
     openNewProjectModal,
     openForgeImportForRef,
     bindEvents,

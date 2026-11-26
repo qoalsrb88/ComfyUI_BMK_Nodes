@@ -55,9 +55,34 @@ window.DPV2Api = (() => {
     return !!(window.DPEnv && window.DPEnv.can && window.DPEnv.can(cap));
   }
 
-  // ── 1. 프로젝트 목록 · 생성 · 열기 ──
+  // ── 1. 프로젝트 목록 · 생성 · 열기 · 메타 관리(#C31 · caps.v2_project_home 게이트) ──
   const listProjects = () => getJson("projects");
   const openProject = (key) => postJson("projects/open", { key });
+
+  async function listArchivedProjects() {
+    if (!can("v2_project_home")) {
+      return { projects: [], archived_count: 0 };
+    }
+    // #C31-8 · #C31-15: 보관함 열기 시 1회 조회(경로 글자 그대로)
+    return getJson("projects?archived=1");
+  }
+
+  async function updateProjectMeta({ key, seen, op, title } = {}) {
+    if (!can("v2_project_home")) {
+      return { ok: false, unsupported: true, error: "프로젝트 홈 관리 기능이 아직 켜져 있지 않습니다." };
+    }
+    const seenInt = Number(seen);
+    const body = {
+      key: String(key || ""),
+      seen: Number.isInteger(seenInt) && seenInt >= 0 ? seenInt : 0,
+      op,
+    };
+    // #C31-9: rename 에서만 title 문자열을 전송(archive·restore 는 title 미포함)
+    if (op === "rename") {
+      body.title = String(title ?? "");
+    }
+    return postJson("projects/meta", body);
+  }
 
   async function createProjectFile(name, file) {
     const url = apiUrl("projects/new?" + qs({ name, filename: file.name }));
@@ -336,7 +361,7 @@ window.DPV2Api = (() => {
 
   return {
     apiUrl, can,
-    listProjects, openProject, createProjectFile,
+    listProjects, listArchivedProjects, openProject, createProjectFile, updateProjectMeta,
     getState, getLayout, startLayout, mutateCrop, reorderZ,
     getRefs, listSheets, sheetUrl, uploadSheet, cutRef, saveRef, linkRef,
     getPipeline, savePipelineSettings, getPlan, getProgress,

@@ -236,6 +236,8 @@ window.DPV2Data = (() => {
     listView: [["line", { x1: 8, y1: 6, x2: 21, y2: 6 }], ["line", { x1: 8, y1: 12, x2: 21, y2: 12 }], ["line", { x1: 8, y1: 18, x2: 21, y2: 18 }], ["circle", { cx: 4, cy: 6, r: 1, fill: "currentColor", stroke: "none" }], ["circle", { cx: 4, cy: 12, r: 1, fill: "currentColor", stroke: "none" }], ["circle", { cx: 4, cy: 18, r: 1, fill: "currentColor", stroke: "none" }]],
     arrowRight: [["line", { x1: 5, y1: 12, x2: 19, y2: 12 }], ["polyline", { points: "12 5 19 12 12 19" }]],
     image: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], ["circle", { cx: 8.5, cy: 8.5, r: 1.5 }], ["polyline", { points: "21 15 16 10 5 21" }]],
+    archive: [["polyline", { points: "21 8 21 21 3 21 3 8" }], ["rect", { x: 1, y: 3, width: 22, height: 5, rx: 1 }], ["line", { x1: 10, y1: 12, x2: 14, y2: 12 }]],
+    edit: [["path", { d: "M12 20h9" }], ["path", { d: "M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" }]],
   };
 
   function icon(name, size = 14) {
