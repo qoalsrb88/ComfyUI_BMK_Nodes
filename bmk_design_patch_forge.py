@@ -765,7 +765,11 @@ def display(value, token="", size=128, *, config=None, hidden=(), is_folder=Fals
         for origin in (config.api, *config.media_origins):
             value = re.sub(re.escape(URL(origin).host), "", value, flags=re.I)
     if is_folder:
-        if re.search(r"[A-Za-z]:[\\/]|\\\\|(?:^|[\\/])\.\.(?:$|[\\/])", value):
+        if (re.search(r"[A-Za-z]:[\\/]|\\|//|(?:^|/)\.\.(?:$|/)", value)
+                or re.match(
+                    r"(?i)^\s*/(?:tmp|var|etc|usr|bin|sbin|dev|proc|sys|opt|mnt|srv|root|home|users|private|volumes|library|system)(?:/|$)",
+                    value,
+                )):
             return ""
     elif re.search(r"[A-Za-z]:[\\/]|\\\\|(?<![\w/])/{1,2}[^/\s]+/[^\s]+", value):
         return ""
@@ -1052,8 +1056,19 @@ def routes(accounts: ForgeAccounts) -> tuple:
             result["items"] = [row for row in result["items"] if row.get("generation_type") not in ("upscale", "bg_removal")
                                and (studio or not str(row.get("prompt") or "").startswith(prompt.PROMPT_HEAD))]
         else:
-            matched = [row for row in cached["items"] if (not folder or clean(row.get("folder"), token, 512, row, is_folder=True) == folder)
-                       and search.casefold() in " ".join(str(row.get(k) or "") for k in ("name", "folder", "tags")).casefold()]
+            def asset_search_text(row):
+                tags = row.get("tags")
+                cleaned_tags = [clean(tag, token, row=row) for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
+                return " ".join((
+                    clean(row.get("name"), token, 128, row),
+                    clean(row.get("folder"), token, 512, row, is_folder=True),
+                    *cleaned_tags,
+                )).casefold()
+
+            needle = search.casefold()
+            matched = [row for row in cached["items"]
+                       if (not folder or clean(row.get("folder"), token, 512, row, is_folder=True) == folder)
+                       and (not needle or needle in asset_search_text(row))]
             result = {"items": matched[value:value + 60], "next": value + 60 if value + 60 < len(matched) else None}
         rows = []
         for row in result["items"]:

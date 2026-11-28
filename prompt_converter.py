@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation, localcontext
 import math
 import re
 from typing import Callable, List, Optional
 
 
 ARTIST_SENTINEL = "__artist__"
-_WEIGHT_SUFFIX_RE = re.compile(r":([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*$")
+_WEIGHT_SUFFIX_RE = re.compile(r":([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*$")
+_ARTIST_PREFIX_RE = re.compile(
+    r"(^|[,(]\s*|::\s*)artist:(?![+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*\))"
+)
 
 
 def _protect_artist(text: str) -> str:
@@ -18,15 +22,15 @@ def _restore_artist(text: str) -> str:
 
 
 def _protect_artist_with_sentinel(text: str) -> tuple[str, str]:
-    """입력 텍스트에 등장하지 않는 고유 표식으로 'artist:'를 보호한다."""
-    if "artist:" not in text:
+    """태그 시작 위치의 작가 접두사 'artist:'만 입력에 없는 고유 표식으로 보호한다."""
+    if not _ARTIST_PREFIX_RE.search(text):
         return text, ""
     sentinel = "\x00BMK_ARTIST\x00"
     idx = 0
     while sentinel in text:
         idx += 1
         sentinel = f"\x00BMK_ARTIST_{idx}\x00"
-    return text.replace("artist:", sentinel), sentinel
+    return _ARTIST_PREFIX_RE.sub(lambda m: m.group(1) + sentinel, text), sentinel
 
 
 def _restore_artist_with_sentinel(text: str, sentinel: str) -> str:
@@ -37,6 +41,17 @@ def _restore_artist_with_sentinel(text: str, sentinel: str) -> str:
 
 def _unescape_literal_parens(text: str) -> str:
     return text.replace(r"\(", "(").replace(r"\)", ")")
+
+
+def _format_decimal(value: Decimal, *, anima: bool) -> str:
+    if value == 0:
+        return "0.0" if anima else "0"
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    if anima and "." not in text:
+        return f"{text}.0"
+    return text
 
 
 def _format_weight(weight: float) -> str:
@@ -54,6 +69,29 @@ def _format_weight_anima(weight: float) -> str:
     if weight.is_integer():
         return f"{weight:.1f}"
     return f"{weight:.6f}".rstrip("0").rstrip(".")
+
+
+def _scale_decimal_weight(weight_raw: str, multiplier: float, *, inverse: bool) -> str:
+    dec_w = _parse_finite_decimal(weight_raw)
+    if dec_w is None:
+        return weight_raw
+    mult_str = str(multiplier)
+    with localcontext() as ctx:
+        ctx.prec = max(64, len(weight_raw) + len(mult_str) + 32)
+        mult_dec = Decimal(mult_str)
+        if inverse:
+            scaled = dec_w / mult_dec if mult_dec > 0 else dec_w
+        else:
+            scaled = dec_w * mult_dec
+    return _format_decimal(scaled, anima=True)
+
+
+def _parse_finite_decimal(raw: str) -> Optional[Decimal]:
+    try:
+        dec = Decimal(raw)
+    except InvalidOperation:
+        return None
+    return dec if dec.is_finite() else None
 
 
 # ─── ComfyUI ↔ NovelAI (기존 로직 그대로 보존) ───────────────────
@@ -103,17 +141,29 @@ def _convert_comfyui_to_nai_body(comfyui_prompt: str) -> str:
 
             if content:
                 weight = 1.1
+                weight_dec: Optional[Decimal] = None
                 tags_str = content
                 weight_match = _WEIGHT_SUFFIX_RE.search(content)
                 if weight_match:
-                    parsed_weight = float(weight_match.group(1))
+                    raw_weight = weight_match.group(1)
+                    parsed_weight = float(raw_weight)
                     if math.isfinite(parsed_weight):
                         weight = parsed_weight
                         tags_str = content[: weight_match.start()].strip()
+                    else:
+                        dec_weight = _parse_finite_decimal(raw_weight)
+                        if dec_weight is not None:
+                            weight_dec = dec_weight
+                            tags_str = content[: weight_match.start()].strip()
 
                 tags_str = _unescape_literal_parens(tags_str)
                 if tags_str:
-                    parts.append(f"{_format_weight(weight)}::{tags_str}::")
+                    w_str = (
+                        _format_decimal(weight_dec, anima=False)
+                        if weight_dec is not None
+                        else _format_weight(weight)
+                    )
+                    parts.append(f"{w_str}::{tags_str}::")
             continue
 
         if char == ",":
@@ -386,12 +436,18 @@ def _convert_comfyui_anima_core(
 
             if content:
                 weight: Optional[float] = None
+                weight_raw: Optional[str] = None
                 tags_str = content
                 weight_match = _WEIGHT_SUFFIX_RE.search(content)
                 if weight_match:
-                    parsed_weight = float(weight_match.group(1))
+                    raw_weight = weight_match.group(1)
+                    parsed_weight = float(raw_weight)
                     if math.isfinite(parsed_weight):
                         weight = parsed_weight
+                        weight_raw = raw_weight
+                        tags_str = content[: weight_match.start()].strip()
+                    elif _parse_finite_decimal(raw_weight) is not None:
+                        weight_raw = raw_weight
                         tags_str = content[: weight_match.start()].strip()
 
                 if tags_str:
@@ -407,21 +463,35 @@ def _convert_comfyui_anima_core(
                         else prefix_converter(tags_str)
                     )
 
-                    if weight is not None:
+                    if weight_raw is not None:
                         is_artist_only = _is_single_artist_group(
                             source_tags, artist_prefix_in_source
                         )
-                        if is_artist_only and not apply_artist_weight_multiplier:
-                            final_weight = weight
+                        if weight is not None:
+                            if is_artist_only and not apply_artist_weight_multiplier:
+                                final_weight = weight
+                            else:
+                                final_weight = _scale_weight(
+                                    weight,
+                                    weight_multiplier,
+                                    inverse=inverse_weight,
+                                )
+                            if math.isfinite(final_weight):
+                                w_str = _format_weight_anima(final_weight)
+                            else:
+                                w_str = _scale_decimal_weight(
+                                    weight_raw, weight_multiplier, inverse=inverse_weight
+                                )
                         else:
-                            final_weight = _scale_weight(
-                                weight,
-                                weight_multiplier,
-                                inverse=inverse_weight,
-                            )
-                        parts.append(
-                            f"({converted_tags}:{_format_weight_anima(final_weight)})"
-                        )
+                            dec_w = _parse_finite_decimal(weight_raw)
+                            assert dec_w is not None
+                            if is_artist_only and not apply_artist_weight_multiplier:
+                                w_str = _format_decimal(dec_w, anima=True)
+                            else:
+                                w_str = _scale_decimal_weight(
+                                    weight_raw, weight_multiplier, inverse=inverse_weight
+                                )
+                        parts.append(f"({converted_tags}:{w_str})")
                     else:
                         parts.append(f"({converted_tags})")
             continue

@@ -985,33 +985,68 @@ def _check_copy_target(src_root: str, dst_root: str) -> None:
     rel = _paths_overlap(src_root, dst_root)
     if rel is not None:
         raise ValueError(f"출력 경로({dst_root})가 원본 프로젝트({src_root})와 {rel} — 원본 보호를 위해 중단합니다")
+    # 원본 매니페스트·inputs 가 정션·심볼릭 링크로 출력 폴더 안쪽을 가리키는 경우도 삭제 전에 차단한다.
+    for sub in (store.MANIFEST_NAME, "inputs"):
+        src_part = os.path.join(src_root, sub)
+        if os.path.lexists(src_part):
+            part_rel = _paths_overlap(src_part, dst_root)
+            if part_rel is not None:
+                raise ValueError(
+                    f"출력 경로({dst_root})가 원본 {sub}({src_part})의 실제 경로와 {part_rel} — 원본 보호를 위해 중단합니다"
+                )
 
 
 def _copy_project(src_root: str, dst_root: str, name: str, keep: set[str], replace: bool) -> None:
+    import tempfile
+
     _check_copy_target(src_root, dst_root)
     manifest_src = os.path.join(src_root, store.MANIFEST_NAME)
     if not os.path.isfile(manifest_src):
         raise FileNotFoundError(f"원본 매니페스트가 없습니다: {manifest_src}")
-    if os.path.exists(dst_root):
-        if not replace:
-            raise ValueError(f"{dst_root} 가 이미 있습니다 — 다시 만들려면 --replace")
-        shutil.rmtree(dst_root)
-    os.makedirs(dst_root)
-    shutil.copy2(manifest_src, os.path.join(dst_root, store.MANIFEST_NAME))
-    if os.path.isdir(os.path.join(src_root, "inputs")):
-        shutil.copytree(os.path.join(src_root, "inputs"), os.path.join(dst_root, "inputs"))
+    # 기존 출력을 지우기 전에 원본 매니페스트 유효성을 먼저 확인한다.
+    store.load_manifest(src_root)
+    if os.path.exists(dst_root) and not replace:
+        raise ValueError(f"{dst_root} 가 이미 있습니다 — 다시 만들려면 --replace")
+    dst_abs = os.path.abspath(dst_root)
+    parent = os.path.dirname(dst_abs)
+    os.makedirs(parent, exist_ok=True)
+    stage = tempfile.mkdtemp(prefix=".ab_stage_", dir=parent)
+    backup: str | None = None
+    try:
+        shutil.copy2(manifest_src, os.path.join(stage, store.MANIFEST_NAME))
+        inputs_src = os.path.join(src_root, "inputs")
+        if os.path.isdir(inputs_src):
+            shutil.copytree(inputs_src, os.path.join(stage, "inputs"))
 
-    def mutate(m):
-        m["project"] = name
-        m["crops"] = [c for c in m["crops"] if c["id"] in keep]
-        for k in ("jobs", "candidates", "calls", "exports"):
-            m[k] = []
-        for k in ("analysis", "picks", "rerolls", "rejects", "approvals"):
-            m[k] = {}
-        if isinstance(m.get("source"), dict):
-            m["source"]["glossary"] = ""
+        def mutate(m):
+            m["project"] = name
+            m["crops"] = [c for c in m["crops"] if c["id"] in keep]
+            for k in ("jobs", "candidates", "calls", "exports"):
+                m[k] = []
+            for k in ("analysis", "picks", "rerolls", "rejects", "approvals"):
+                m[k] = {}
+            if isinstance(m.get("source"), dict):
+                m["source"]["glossary"] = ""
 
-    store.update_manifest(dst_root, mutate)
+        store.update_manifest(stage, mutate)
+        if os.path.exists(dst_abs):
+            backup = tempfile.mkdtemp(prefix=".ab_old_", dir=parent)
+            os.rmdir(backup)
+            os.rename(dst_abs, backup)
+        try:
+            os.rename(stage, dst_abs)
+        except BaseException:
+            if backup is not None and os.path.exists(backup) and not os.path.exists(dst_abs):
+                os.rename(backup, dst_abs)
+                backup = None
+            raise
+        stage = ""
+        if backup is not None:
+            shutil.rmtree(backup)
+            backup = None
+    finally:
+        if stage and os.path.exists(stage):
+            shutil.rmtree(stage, ignore_errors=True)
 
 
 def ab_setup(src_root: str, doc: dict, tag: str, *, scores_dir: str | os.PathLike | None = None,
@@ -1026,9 +1061,19 @@ def ab_setup(src_root: str, doc: dict, tag: str, *, scores_dir: str | os.PathLik
     for c in ab_cases:
         glossary.update(c.get("minimal_names") or {})
     projects_dir = os.path.dirname(os.path.abspath(src_root))
-    names = doc.get("ab_projects") or {g: f"ab_{g}" for g in AB_GROUPS}
-    roots = {group: os.path.join(projects_dir, names[group]) for group in AB_GROUPS}
-    # 기존 폴더를 지우기 전에 모든 출력 경로와 원본/그룹 간 중복·중첩을 먼저 차단한다.
+    raw_names = doc.get("ab_projects") or {g: f"ab_{g}" for g in AB_GROUPS}
+    names: dict[str, str] = {}
+    roots: dict[str, str] = {}
+    projects_dir_norm = _real_norm(projects_dir)
+    for group in AB_GROUPS:
+        safe_name = store._check_project_name(raw_names[group])
+        root = os.path.join(projects_dir, safe_name)
+        if _real_norm(os.path.dirname(os.path.abspath(root))) != projects_dir_norm:
+            raise ValueError(f"A/B 출력 경로가 프로젝트 폴더 밖을 가리킵니다: {raw_names[group]!r}")
+        names[group] = safe_name
+        roots[group] = root
+    # 기존 폴더를 지우기 전에 원본 매니페스트 유효성 및 모든 출력 경로·정션·그룹 간 중복을 먼저 검사한다.
+    store.load_manifest(src_root)
     for group, root in roots.items():
         _check_copy_target(src_root, root)
     seen_roots: list[tuple[str, str]] = []

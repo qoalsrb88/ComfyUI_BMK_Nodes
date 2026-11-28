@@ -172,6 +172,12 @@ def _guide_color(t: dict) -> str:
     return str(t.get("guide_color") or "").strip() or "green"
 
 
+def _uses_guide(t: dict) -> bool:
+    return t.get("mode") == "sketch_guide" or (
+        t.get("mode") != "self_restore" and bool(str(t.get("guide_color") or "").strip())
+    )
+
+
 def _plan_images(spec):
     """Upload order: canvas, guide, before-paste, then refs in target order (deduplicated)."""
     order, roles = [], {}
@@ -183,7 +189,7 @@ def _plan_images(spec):
         roles[path].append(role)
 
     add(spec["canvas"], ("canvas", None))
-    if spec.get("guide") and any(t["mode"] == "sketch_guide" or str(t.get("guide_color") or "").strip() for t in spec["targets"]):
+    if spec.get("guide") and any(_uses_guide(t) for t in spec["targets"]):
         add(spec["guide"], ("guide", None))
     if spec.get("before_paste") and any(t["mode"] == "paste_harmonize" for t in spec["targets"]):
         add(spec["before_paste"], ("before", None))
@@ -245,7 +251,7 @@ def render(spec: dict) -> dict:
 
     # Guide
     guided = [t for t in targets
-              if t["mode"] == "sketch_guide" or (t["mode"] == "paste_harmonize" and str(t.get("guide_color") or "").strip() and g)]
+              if t["mode"] == "sketch_guide" or (t["mode"] == "paste_harmonize" and bool(str(t.get("guide_color") or "").strip()))]
     if guided and g:
         marks = _join(f"{_guide_color(t)} {GUIDE_NOUN[t.get('guide_type') or 'outline']}" + (f" = Target {t['id']}" if multi else "")
                       for t in guided)
@@ -359,7 +365,7 @@ def variant_specs(spec: dict) -> dict:
         for t in spec["targets"]:
             s = copy.deepcopy(spec)
             s["targets"] = [copy.deepcopy(t)]
-            if t["mode"] not in ("sketch_guide", "paste_harmonize") and not t.get("guide_color"):
+            if t["mode"] not in ("sketch_guide", "paste_harmonize") and (t.get("mode") == "self_restore" or not str(t.get("guide_color") or "").strip()):
                 s["guide"] = None
             out[f"V2_isolate_{t['id']}"] = s
     s = copy.deepcopy(spec)

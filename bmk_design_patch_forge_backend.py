@@ -513,6 +513,7 @@ class ForgeBackend:
                 t0 = time.monotonic()
                 job_id = await self._submit(body, ck, rep, side)
                 phase = "poll"
+                last.pop("response_lost", None)
                 last.update(state="submitted", job_id=job_id, time=runner._now())
                 side["job_id"] = job_id
                 side_error = None
@@ -602,7 +603,8 @@ class ForgeBackend:
             _PROGRESS.pop((runner._rid(self._root), call_id), None)
 
     async def _submit(self, body, ck, rep, side):
-        response_lost = False
+        last = side["requests"][-1]
+        response_lost = bool(last.get("response_lost"))
         overloaded = False
         for attempt in range(3):
             self._stop()
@@ -632,7 +634,7 @@ class ForgeBackend:
                     raise runner.CallError("디자인 패치 스튜디오 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
                                            status=403, retryable=False, maybe_billed=False) from None
                 if exc.status == 422:
-                    side["requests"][-1]["state"] = "rejected"
+                    last["state"] = "rejected"
                     self._save(ck, rep, side)
                     raise runner.CallError(_safe_message(exc.detail, "생성 요청이 거절되었습니다."), status=422,
                                            retryable=False, maybe_billed=False) from None
@@ -643,7 +645,10 @@ class ForgeBackend:
                 raise
             except Exception:
                 pass  # 연결·해석 실패: 예외 본문은 버리고 같은 멱등 키로 다시 제출한다.
-            response_lost = True
+            if not response_lost:
+                response_lost = True
+                last["response_lost"] = True
+                self._save(ck, rep, side)
             if attempt < 2:
                 await asyncio.sleep(SUBMIT_RETRY_DELAY)
         raise _pressure_error("Forge 생성 요청의 응답을 받지 못했습니다.", overloaded=overloaded, phase="request",

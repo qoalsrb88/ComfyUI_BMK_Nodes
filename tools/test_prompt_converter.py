@@ -54,6 +54,15 @@ def test_f006_no_arbitrary_weight_caps():
     assert _conv("(tag:1.2.3)", "ComfyUI → NovelAI") == "1.1::tag:1.2.3::"
     assert _conv("(tag:--)", "ComfyUI → NovelAI") == "1.1::tag:--::"
     assert _conv("(tag:1.2.3)", "ComfyUI → Anima", 1.5, False) == "(tag:1.2.3)"
+    # 끝 소수점 가중치 (tag:2.) 보존
+    assert _conv("(tag:2.)", "ComfyUI → NovelAI") == "2::tag::"
+    assert _conv("(tag:2.)", "ComfyUI → Anima", 1.5, False) == "(tag:3.0)"
+    # 초대형 유한 가중치 배율 계산 시 inf 출력 방지 및 왕복 보존
+    huge = "9" * 308
+    huge_anima = _conv(f"(tag:{huge})", "ComfyUI → Anima", 2.0, False)
+    assert "inf" not in huge_anima.lower()
+    assert huge_anima == f"(tag:{int(huge) * 2}.0)"
+    assert _conv(huge_anima, "Anima → ComfyUI", 2.0, False) == f"(tag:{huge}.0)"
 
 
 def test_f007_backslash_sentinel_and_escaped_parens():
@@ -77,6 +86,14 @@ def test_f007_backslash_sentinel_and_escaped_parens():
     )
     sentinel_clash = "\x00BMK_ARTIST\x00, (artist:foo:1.2)"
     assert _conv(sentinel_clash, "ComfyUI → NovelAI") == "\x00BMK_ARTIST\x00, 1.2::artist:foo::"
+    # 태그 이름 끝이 artist 인 일반 태그와 단독 태그 (artist:1.2)는 작가 접두사로 오인하지 않는다
+    assert _conv("(concept artist:1.2)", "ComfyUI → NovelAI") == "1.2::concept artist::"
+    assert _conv("(concept artist:1.2)", "ComfyUI → Anima", 1.5, False) == "(concept artist:1.8)"
+    assert _conv("(artist:1.2)", "ComfyUI → NovelAI") == "1.2::artist::"
+    assert _conv("(artist:1.2)", "ComfyUI → Anima", 1.5, False) == "(artist:1.8)"
+    assert _conv("(artist:foo:1.2), (concept artist:1.2)", "ComfyUI → Anima", 1.5, False) == (
+        "(@foo:1.2), (concept artist:1.8)"
+    )
 
     # 3) 리터럴 이스케이프 괄호(\( \)) — 중첩·단독·짝 없음 모두 균형 파괴 없이 처리
     assert _conv(r"hatsune miku \(vocaloid\), 1girl", "ComfyUI → NovelAI") == (

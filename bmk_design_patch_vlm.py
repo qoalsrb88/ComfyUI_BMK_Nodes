@@ -4266,12 +4266,12 @@ class QwenVLM:
         묻는다(무료). 다시 물어도 max_new_tokens 에서 잘리면 failed(result). 과금이 없으므로 실패는 failed(maybe_billed False),
         생성 중 인터럽트는 rejected(같은 시도 재실행) — inflight(orphan '과금됐을 수 있음')로 남기지 않는다."""
         t0 = time.monotonic()
-        self._ensure()
         try:
             images = [render_sent(im) for im in _images_of(req)]
-        except (OSError, ValueError) as e:  # 전송 전 로컬 실패(파일 변경·손상) — 실행 안 함
+        except (OSError, ValueError) as e:  # 전송 전 로컬 실패(파일 변경·손상) — GPU 상태 변경·실행 없음
             raise _record_rejected(ledger, unit, f"이미지 준비 실패(실행 안 함): {_short(e, 200)}", status=None,
                                    phase="encode") from e
+        self._ensure()
         transport = {"schema_level": 0, "background": False}
         body = {"model": _key_model("local_qwen", req.model, self.model_dir),
                 "system_sha": hashlib.sha256((req.system or "").encode("utf-8")).hexdigest()[:12],
