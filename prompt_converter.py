@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import math
 import re
 from typing import Callable, List, Optional
 
 
 ARTIST_SENTINEL = "__artist__"
+_WEIGHT_SUFFIX_RE = re.compile(r":([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*$")
 
 
 def _protect_artist(text: str) -> str:
@@ -15,7 +17,31 @@ def _restore_artist(text: str) -> str:
     return text.replace(ARTIST_SENTINEL, "artist:")
 
 
+def _protect_artist_with_sentinel(text: str) -> tuple[str, str]:
+    """입력 텍스트에 등장하지 않는 고유 표식으로 'artist:'를 보호한다."""
+    if "artist:" not in text:
+        return text, ""
+    sentinel = "\x00BMK_ARTIST\x00"
+    idx = 0
+    while sentinel in text:
+        idx += 1
+        sentinel = f"\x00BMK_ARTIST_{idx}\x00"
+    return text.replace("artist:", sentinel), sentinel
+
+
+def _restore_artist_with_sentinel(text: str, sentinel: str) -> str:
+    if not sentinel:
+        return text
+    return text.replace(sentinel, "artist:")
+
+
+def _unescape_literal_parens(text: str) -> str:
+    return text.replace(r"\(", "(").replace(r"\)", ")")
+
+
 def _format_weight(weight: float) -> str:
+    if weight == 0:
+        weight = 0.0
     if weight.is_integer():
         return str(int(weight))
     return f"{weight:.6f}".rstrip("0").rstrip(".")
@@ -23,6 +49,8 @@ def _format_weight(weight: float) -> str:
 
 def _format_weight_anima(weight: float) -> str:
     """Anima 표기용 가중치 포맷터. 정수도 '1.0' 처럼 소수점 한 자리를 유지한다."""
+    if weight == 0:
+        weight = 0.0
     if weight.is_integer():
         return f"{weight:.1f}"
     return f"{weight:.6f}".rstrip("0").rstrip(".")
@@ -31,7 +59,7 @@ def _format_weight_anima(weight: float) -> str:
 # ─── ComfyUI ↔ NovelAI (기존 로직 그대로 보존) ───────────────────
 
 def _convert_comfyui_to_nai_body(comfyui_prompt: str) -> str:
-    text = _protect_artist(comfyui_prompt)
+    text, sentinel = _protect_artist_with_sentinel(comfyui_prompt)
     parts: List[str] = []
     current: List[str] = []
     i = 0
@@ -39,15 +67,24 @@ def _convert_comfyui_to_nai_body(comfyui_prompt: str) -> str:
     while i < len(text):
         char = text[i]
 
-        if char == "(":
-            is_escaped_paren = i > 0 and text[i - 1] == "\\"
+        if char == "\\" and i + 1 < len(text) and text[i + 1] in ("(", ")"):
+            # ComfyUI 리터럴 괄호 이스케이프(\( \))만 언이스케이프하고 다른 백슬래시(\||/ 등)는 보존한다.
+            current.append(text[i + 1])
+            i += 2
+            continue
 
+        if char == "(":
             i += 1
             balance = 1
             content_chars: List[str] = []
 
             while i < len(text) and balance > 0:
                 inner = text[i]
+                if inner == "\\" and i + 1 < len(text) and text[i + 1] in ("(", ")"):
+                    content_chars.append(inner)
+                    content_chars.append(text[i + 1])
+                    i += 2
+                    continue
                 if inner == "(":
                     balance += 1
                 elif inner == ")":
@@ -59,12 +96,6 @@ def _convert_comfyui_to_nai_body(comfyui_prompt: str) -> str:
 
             content = "".join(content_chars)
 
-            if is_escaped_paren:
-                if current and current[-1] == "\\":
-                    current.pop()
-                current.append(f"({content})")
-                continue
-
             current_str = "".join(current).strip()
             if current_str:
                 parts.append(current_str)
@@ -73,13 +104,14 @@ def _convert_comfyui_to_nai_body(comfyui_prompt: str) -> str:
             if content:
                 weight = 1.1
                 tags_str = content
-                weight_match = re.search(r":([0-9.-]+)\s*$", content)
+                weight_match = _WEIGHT_SUFFIX_RE.search(content)
                 if weight_match:
                     parsed_weight = float(weight_match.group(1))
-                    if -5 <= parsed_weight <= 5:
+                    if math.isfinite(parsed_weight):
                         weight = parsed_weight
-                    tags_str = content[: weight_match.start()].strip()
+                        tags_str = content[: weight_match.start()].strip()
 
+                tags_str = _unescape_literal_parens(tags_str)
                 if tags_str:
                     parts.append(f"{_format_weight(weight)}::{tags_str}::")
             continue
@@ -99,12 +131,12 @@ def _convert_comfyui_to_nai_body(comfyui_prompt: str) -> str:
     if current_str:
         parts.append(current_str)
 
-    result = ", ".join(parts).replace("\\", "")
-    return _restore_artist(result)
+    result = ", ".join(parts)
+    return _restore_artist_with_sentinel(result, sentinel)
 
 
 def _tokenize_nai_prompt(nai_prompt: str) -> List[str]:
-    text = _protect_artist(nai_prompt)
+    text, sentinel = _protect_artist_with_sentinel(nai_prompt)
     tokens: List[str] = []
     current: List[str] = []
     i = 0
@@ -146,7 +178,7 @@ def _tokenize_nai_prompt(nai_prompt: str) -> List[str]:
     if current_str:
         tokens.append(current_str)
 
-    return [_restore_artist(token) for token in tokens]
+    return [_restore_artist_with_sentinel(token, sentinel) for token in tokens]
 
 
 def _escape_literal_parens(text: str) -> str:
@@ -293,13 +325,13 @@ def _convert_comfyui_anima_core(
     is_sdxl_to_anima = direction == "sdxl_to_anima"
 
     if is_sdxl_to_anima:
-        text = _protect_artist(prompt)
-        artist_prefix_in_source = "artist:"  # _restore_artist 이후 기준
+        text, sentinel = _protect_artist_with_sentinel(prompt)
+        artist_prefix_in_source = "artist:"  # _restore_artist_with_sentinel 이후 기준
         prefix_converter = _convert_sdxl_to_anima_artist_prefix
         inverse_weight = False
     else:
         # Anima 쪽의 '@'는 가중치 콜론과 충돌하지 않아 sentinel 보호가 필요 없다.
-        text = prompt
+        text, sentinel = prompt, ""
         artist_prefix_in_source = "@"
         prefix_converter = _convert_anima_to_sdxl_artist_prefix
         inverse_weight = True
@@ -307,7 +339,7 @@ def _convert_comfyui_anima_core(
     def _convert_loose(raw: str) -> str:
         """가중치 그룹 바깥의 텍스트 조각을 작가 prefix 치환 후 반환."""
         if is_sdxl_to_anima:
-            return prefix_converter(_restore_artist(raw))
+            return prefix_converter(_restore_artist_with_sentinel(raw, sentinel))
         return prefix_converter(raw)
 
     parts: List[str] = []
@@ -317,15 +349,25 @@ def _convert_comfyui_anima_core(
     while i < len(text):
         char = text[i]
 
-        if char == "(":
-            is_escaped_paren = i > 0 and text[i - 1] == "\\"
+        if char == "\\" and i + 1 < len(text) and text[i + 1] in ("(", ")"):
+            # \( \) 리터럴 괄호는 Anima에서도 이스케이프 그대로 보존한다.
+            current.append(char)
+            current.append(text[i + 1])
+            i += 2
+            continue
 
+        if char == "(":
             i += 1
             balance = 1
             content_chars: List[str] = []
 
             while i < len(text) and balance > 0:
                 inner = text[i]
+                if inner == "\\" and i + 1 < len(text) and text[i + 1] in ("(", ")"):
+                    content_chars.append(inner)
+                    content_chars.append(text[i + 1])
+                    i += 2
+                    continue
                 if inner == "(":
                     balance += 1
                 elif inner == ")":
@@ -337,12 +379,6 @@ def _convert_comfyui_anima_core(
 
             content = "".join(content_chars)
 
-            if is_escaped_paren:
-                # \(...\) 리터럴 괄호는 그대로 보존. current의 마지막 '\\'와
-                # content 끝의 '\\'는 그대로 두고 닫는 ')'만 합쳐서 추가한다.
-                current.append(f"({content})")
-                continue
-
             current_str = "".join(current).strip()
             if current_str:
                 parts.append(_convert_loose(current_str))
@@ -351,19 +387,19 @@ def _convert_comfyui_anima_core(
             if content:
                 weight: Optional[float] = None
                 tags_str = content
-                weight_match = re.search(
-                    r":([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*$", content
-                )
+                weight_match = _WEIGHT_SUFFIX_RE.search(content)
                 if weight_match:
                     parsed_weight = float(weight_match.group(1))
-                    if -10 <= parsed_weight <= 10:
+                    if math.isfinite(parsed_weight):
                         weight = parsed_weight
                         tags_str = content[: weight_match.start()].strip()
 
                 if tags_str:
                     # 작가 판정용으로는 prefix 치환 전(원본 표기) 기준이 명확하다.
                     source_tags = (
-                        _restore_artist(tags_str) if is_sdxl_to_anima else tags_str
+                        _restore_artist_with_sentinel(tags_str, sentinel)
+                        if is_sdxl_to_anima
+                        else tags_str
                     )
                     converted_tags = (
                         prefix_converter(source_tags)

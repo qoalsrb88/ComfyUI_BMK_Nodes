@@ -455,6 +455,15 @@ def _change_reason(job: dict, prior: dict | None) -> str:
     return "새 생성 조건 — 이전 생성 조건 대비 변경: " + (", ".join(diffs) if diffs else "변형/기타")
 
 
+def _next_attempt(files: dict, kind: str | None) -> int:
+    if kind not in ("retry_failed", "retry_orphan"):
+        return 1
+    prev = files.get("req") if isinstance(files.get("req"), dict) else {}
+    hist = prev.get("history")
+    cur = max(_nonneg_int(prev.get("attempt"), 1), len(hist) + 1 if isinstance(hist, list) else 1)
+    return cur + 1
+
+
 def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_orphans: bool = False,
                only: str = "") -> dict:
     """매니페스트 jobs/rerolls + 원장 → {"pending","done","inflight","orphaned","failed", "filtered", "warnings"}.
@@ -493,8 +502,7 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
     recover: list[dict] = []
 
     def entry(ck, rep, state, view, files, *, kind=None, billable=False, pre=False, reason="", stale=False):
-        prev = files.get("req") if isinstance(files.get("req"), dict) else {}
-        attempt = _nonneg_int(prev.get("attempt"), 1) + 1 if kind in ("retry_failed", "retry_orphan") else 1
+        attempt = _next_attempt(files, kind)
         e = {"call_id": call_id_for(ck, rep), "cell_key": ck, "rep": rep, "crop_id": view.get("crop_id"),
              "tid": view.get("tid"), "variant": view.get("variant"), "state": state, "kind": kind,
              "billable": billable, "preapproved": pre, "reason": reason, "n": view.get("n"), "attempt": attempt,
@@ -1317,7 +1325,7 @@ def _begin_call(root: str, e: dict, backend_name: str) -> dict:
             **{k: job.get(k) for k in _JOB_FIELDS
                if k != "cell_key" and (k != "complexity" or job.get(k) is not None) and (k != "opts" or job.get(k))},
            "backend": backend_name, "approved_by": e.get("approved_by"), "kind": e["kind"],
-           "attempt": len(history) + 1, "history": history, "time": _now()}
+           "attempt": max(len(history) + 1, _next_attempt(old, e["kind"])), "history": history, "time": _now()}
     _write_json(_lpath(root, ck, rep, "req"), req)
     inflight = {"call_id": e["call_id"], "started": _now(), "started_ts": time.time(), "pid": os.getpid(),
                 "session": _SESSION, "backend": backend_name}
@@ -1791,6 +1799,12 @@ async def _one_call(root: str, rid: str, e: dict, backend, state: _RunState) -> 
         if st not in _expected_state(kind):
             skip(f"원장 상태가 계획과 다름({st}) — 다시 계획하세요")
             return
+        if kind in ("retry_failed", "retry_orphan"):
+            expected_attempt = _next_attempt(files, kind)
+            planned_attempt = e.get("attempt")
+            if type(planned_attempt) is not int or planned_attempt != expected_attempt:
+                skip(f"원장 시도 번호가 계획과 다름(계획 a{planned_attempt}, 현재 필요 a{expected_attempt}) — 다시 계획하세요")
+                return
         if kind == "recover":
             made_by = next((f["backend"] for f in (files.get("resp"), files.get("req"))
                             if isinstance(f, dict) and f.get("backend")), None)

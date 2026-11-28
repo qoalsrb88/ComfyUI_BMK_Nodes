@@ -625,7 +625,7 @@ class ForgeBackend:
                     if response_lost:
                         break
                     raise runner.CallError("Forge 로그인 정보를 다시 받아야 합니다.", status=401, maybe_billed=False) from None
-                if response_lost and exc.status != 422 and (exc.reason == "forbidden" or
+                if response_lost and (exc.reason == "forbidden" or
                         exc.status is not None and 400 <= exc.status < 500):
                     break
                 if exc.reason == "forbidden" or exc.status == 403:

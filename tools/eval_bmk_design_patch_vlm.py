@@ -961,13 +961,43 @@ def budget(roots: list[str], stage_est: float | None = None) -> dict:
 # ══════════════════════════════════════════════════════════════════════
 # A/B
 # ══════════════════════════════════════════════════════════════════════
+def _real_norm(path: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _paths_overlap(path_a: str, path_b: str) -> str | None:
+    """두 경로가 같거나 상위·하위 관계면 사유 문자열, 아니면 None."""
+    a, b = _real_norm(path_a), _real_norm(path_b)
+    if a == b:
+        return "같습니다"
+    try:
+        common = os.path.commonpath([a, b])
+    except ValueError:
+        return None
+    if common == b:
+        return "상위 폴더입니다"
+    if common == a:
+        return "안쪽 하위 폴더입니다"
+    return None
+
+
+def _check_copy_target(src_root: str, dst_root: str) -> None:
+    rel = _paths_overlap(src_root, dst_root)
+    if rel is not None:
+        raise ValueError(f"출력 경로({dst_root})가 원본 프로젝트({src_root})와 {rel} — 원본 보호를 위해 중단합니다")
+
+
 def _copy_project(src_root: str, dst_root: str, name: str, keep: set[str], replace: bool) -> None:
+    _check_copy_target(src_root, dst_root)
+    manifest_src = os.path.join(src_root, store.MANIFEST_NAME)
+    if not os.path.isfile(manifest_src):
+        raise FileNotFoundError(f"원본 매니페스트가 없습니다: {manifest_src}")
     if os.path.exists(dst_root):
         if not replace:
             raise ValueError(f"{dst_root} 가 이미 있습니다 — 다시 만들려면 --replace")
         shutil.rmtree(dst_root)
     os.makedirs(dst_root)
-    shutil.copy2(os.path.join(src_root, store.MANIFEST_NAME), os.path.join(dst_root, store.MANIFEST_NAME))
+    shutil.copy2(manifest_src, os.path.join(dst_root, store.MANIFEST_NAME))
     if os.path.isdir(os.path.join(src_root, "inputs")):
         shutil.copytree(os.path.join(src_root, "inputs"), os.path.join(dst_root, "inputs"))
 
@@ -997,11 +1027,22 @@ def ab_setup(src_root: str, doc: dict, tag: str, *, scores_dir: str | os.PathLik
         glossary.update(c.get("minimal_names") or {})
     projects_dir = os.path.dirname(os.path.abspath(src_root))
     names = doc.get("ab_projects") or {g: f"ab_{g}" for g in AB_GROUPS}
+    roots = {group: os.path.join(projects_dir, names[group]) for group in AB_GROUPS}
+    # 기존 폴더를 지우기 전에 모든 출력 경로와 원본/그룹 간 중복·중첩을 먼저 차단한다.
+    for group, root in roots.items():
+        _check_copy_target(src_root, root)
+    seen_roots: list[tuple[str, str]] = []
+    for group, root in roots.items():
+        for prev_group, prev_root in seen_roots:
+            rel = _paths_overlap(prev_root, root)
+            if rel is not None:
+                raise ValueError(f"A/B 출력 경로가 서로 겹칩니다({prev_group}={prev_root}, {group}={root}: {rel})")
+        seen_roots.append((group, root))
     out: dict = {"rows": []}
     led = dvlm.Ledger(src_root)
     for group in AB_GROUPS:
         keep = {c["crop_id"] for c in (gold_cases if group == "gold" else ab_cases)}
-        root = os.path.join(projects_dir, names[group])
+        root = roots[group]
         _copy_project(src_root, root, names[group], keep, replace)
         store.write_json_atomic(os.path.join(root, "glossary.json"), glossary)
         out[group] = root

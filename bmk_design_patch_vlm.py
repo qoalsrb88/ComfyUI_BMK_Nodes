@@ -815,7 +815,7 @@ def sent_size(wh: tuple[int, int], role: str, backend: str) -> tuple[int, int]:
 
 def render_sent(img: SentImage) -> "Image.Image":
     """전송 직전에만 평탄화·리사이즈(키는 src_sha + sent_wh 로 이미 정해짐). canvas·crop = flatten_canvas,
-    ref = flatten_ref(#808080), base = RGB 그대로. 크기가 다르면 LANCZOS."""
+    ref = flatten_ref(#808080), base = RGB 그대로. 승인·계획 뒤 입력 이미지가 바뀌었으면 ValueError. 크기가 다르면 LANCZOS."""
     with Image.open(img.src_path) as im:
         if img.role == "ref":
             rgb = dprompt.flatten_ref(im)
@@ -823,6 +823,12 @@ def render_sent(img: SentImage) -> "Image.Image":
             rgb, _ = dprompt.flatten_canvas(im.convert("RGBA"))
         else:
             rgb = np.asarray(im.convert("RGB"))
+    if img.src_sha:
+        actual_sha = store.pixel_sha(rgb)
+        if actual_sha != img.src_sha:
+            raise ValueError(
+                f"{_error_tag()} 입력 이미지가 승인 뒤 바뀌었습니다({img.role}:{img.name} — 다시 계획·승인하세요)"
+            )
     pil = Image.fromarray(rgb)
     if pil.size != tuple(img.sent_wh):
         pil = pil.resize(tuple(int(v) for v in img.sent_wh), Image.LANCZOS)
@@ -4261,7 +4267,11 @@ class QwenVLM:
         생성 중 인터럽트는 rejected(같은 시도 재실행) — inflight(orphan '과금됐을 수 있음')로 남기지 않는다."""
         t0 = time.monotonic()
         self._ensure()
-        images = [render_sent(im) for im in _images_of(req)]
+        try:
+            images = [render_sent(im) for im in _images_of(req)]
+        except (OSError, ValueError) as e:  # 전송 전 로컬 실패(파일 변경·손상) — 실행 안 함
+            raise _record_rejected(ledger, unit, f"이미지 준비 실패(실행 안 함): {_short(e, 200)}", status=None,
+                                   phase="encode") from e
         transport = {"schema_level": 0, "background": False}
         body = {"model": _key_model("local_qwen", req.model, self.model_dir),
                 "system_sha": hashlib.sha256((req.system or "").encode("utf-8")).hexdigest()[:12],
