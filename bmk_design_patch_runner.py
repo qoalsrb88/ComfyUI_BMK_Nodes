@@ -467,12 +467,13 @@ def _next_attempt(files: dict, kind: str | None) -> int:
 
 
 def _corrupt_retry_sig(files: dict, kind: str | None) -> str | None:
-    """재시도 원장의 req 가 손상되었거나 유효한 attempt 가 없으면 기존 승인 해시 재사용을 막는 지문을 만든다."""
+    """재시도 원장의 req 가 손상·무효하거나 과거 손상 복구 계보(retry_epoch)가 있으면 기존 승인 해시 재사용을 막는 지문을 반환한다."""
     if kind not in ("retry_failed", "retry_orphan"):
         return None
     prev = files.get("req")
     if isinstance(prev, dict) and "_corrupt" not in prev and type(prev.get("attempt")) is int and prev["attempt"] >= 1:
-        return None
+        epoch = prev.get("retry_epoch")
+        return epoch if isinstance(epoch, str) and epoch else None
     material = {k: files.get(k) for k in ("req", "failed", "inflight") if k in files}
     raw = json.dumps(material, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:8]
@@ -1338,11 +1339,14 @@ def _begin_call(root: str, e: dict, backend_name: str) -> dict:
             prev["req"] = {k: old["req"].get(k) for k in ("time", "approved_by", "backend", "attempt", "n")}
         history.append(prev)
     job = e["job"]
+    retry_epoch = _corrupt_retry_sig(old, e["kind"])
     req = {"schema": LEDGER_SCHEMA, "call_id": e["call_id"], "cell_key": ck, "rep": rep,
             **{k: job.get(k) for k in _JOB_FIELDS
                if k != "cell_key" and (k != "complexity" or job.get(k) is not None) and (k != "opts" or job.get(k))},
            "backend": backend_name, "approved_by": e.get("approved_by"), "kind": e["kind"],
            "attempt": max(len(history) + 1, _next_attempt(old, e["kind"])), "history": history, "time": _now()}
+    if retry_epoch:
+        req["retry_epoch"] = retry_epoch
     _write_json(_lpath(root, ck, rep, "req"), req)
     inflight = {"call_id": e["call_id"], "started": _now(), "started_ts": time.time(), "pid": os.getpid(),
                 "session": _SESSION, "backend": backend_name}

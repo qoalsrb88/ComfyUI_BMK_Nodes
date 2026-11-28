@@ -985,7 +985,7 @@ def _check_copy_target(src_root: str, dst_root: str) -> None:
     rel = _paths_overlap(src_root, dst_root)
     if rel is not None:
         raise ValueError(f"출력 경로({dst_root})가 원본 프로젝트({src_root})와 {rel} — 원본 보호를 위해 중단합니다")
-    # 원본 매니페스트·inputs 가 정션·심볼릭 링크로 출력 폴더 안쪽을 가리키는 경우도 삭제 전에 차단한다.
+    # 원본 매니페스트·inputs 및 그 하위 파일·링크·정션이 출력 폴더와 겹치면 삭제·교체 전에 차단한다.
     for sub in (store.MANIFEST_NAME, "inputs"):
         src_part = os.path.join(src_root, sub)
         if os.path.lexists(src_part):
@@ -994,6 +994,22 @@ def _check_copy_target(src_root: str, dst_root: str) -> None:
                 raise ValueError(
                     f"출력 경로({dst_root})가 원본 {sub}({src_part})의 실제 경로와 {part_rel} — 원본 보호를 위해 중단합니다"
                 )
+    inputs_src = os.path.join(src_root, "inputs")
+    if os.path.isdir(inputs_src):
+        seen_dirs: set[str] = set()
+        for cur, dirs, files in os.walk(inputs_src, followlinks=True):
+            cur_real = _real_norm(cur)
+            if cur_real in seen_dirs:
+                dirs[:] = []
+                continue
+            seen_dirs.add(cur_real)
+            for entry in (*dirs, *files):
+                entry_path = os.path.join(cur, entry)
+                entry_rel = _paths_overlap(entry_path, dst_root)
+                if entry_rel is not None:
+                    raise ValueError(
+                        f"출력 경로({dst_root})가 원본 입력({entry_path})의 실제 경로와 {entry_rel} — 원본 보호를 위해 중단합니다"
+                    )
 
 
 def _copy_project(src_root: str, dst_root: str, name: str, keep: set[str], replace: bool) -> None:
@@ -1030,11 +1046,20 @@ def _copy_project(src_root: str, dst_root: str, name: str, keep: set[str], repla
 
         store.update_manifest(stage, mutate)
         if os.path.exists(dst_abs):
+            if not replace:
+                raise ValueError(f"{dst_root} 가 이미 있습니다 — 다시 만들려면 --replace")
             backup = tempfile.mkdtemp(prefix=".ab_old_", dir=parent)
             os.rmdir(backup)
             os.rename(dst_abs, backup)
         try:
             os.rename(stage, dst_abs)
+        except OSError as exc:
+            if not replace and os.path.exists(dst_abs):
+                raise ValueError(f"{dst_root} 가 이미 있습니다 — 다시 만들려면 --replace") from exc
+            if backup is not None and os.path.exists(backup) and not os.path.exists(dst_abs):
+                os.rename(backup, dst_abs)
+                backup = None
+            raise
         except BaseException:
             if backup is not None and os.path.exists(backup) and not os.path.exists(dst_abs):
                 os.rename(backup, dst_abs)
@@ -1150,10 +1175,13 @@ def _provenance(rec: dict, **extra) -> dict:
 
 def _group_of(m: dict, doc: dict) -> str:
     names = doc.get("ab_projects") or {}
+    proj = m.get("project")
+    proj_norm = proj.strip() if isinstance(proj, str) else proj
     for g, n in names.items():
-        if m.get("project") == n:
+        n_norm = n.strip() if isinstance(n, str) else n
+        if proj == n or proj_norm == n_norm:
             return g
-    return str(m.get("project"))
+    return str(proj)
 
 
 def _thumb(path: str, side: int) -> Image.Image:

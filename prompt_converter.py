@@ -9,7 +9,7 @@ from typing import Callable, List, Optional
 ARTIST_SENTINEL = "__artist__"
 _WEIGHT_SUFFIX_RE = re.compile(r":([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*$")
 _ARTIST_PREFIX_RE = re.compile(
-    r"(^|[,(]\s*|::\s*)artist:(?![+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*\))"
+    r"(^|[,(]\s*|::\s*)artist:(?!:|[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*\))"
 )
 
 

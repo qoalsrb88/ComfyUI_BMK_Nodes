@@ -497,36 +497,54 @@ class ForgeBackend:
                 phase = "blocked"
                 side = read_sidecar(self._root, ck, rep)
                 last = side["requests"][-1] if side["requests"] else None
-                if not last or last.get("state") not in ("open", "submitted"):
+                resumed_job_id = None
+                if (last and last.get("state") == "submitted"
+                        and isinstance(last.get("job_id"), str) and _JOB_ID.fullmatch(last["job_id"])):
+                    resumed_job_id = last["job_id"]
+                elif not last or last.get("state") not in ("open", "submitted"):
                     last = {"id": f"dp-{_nonce(self._root)}-{call_id}-a{attempt}", "attempt": attempt,
-                            "state": "open", "time": runner._now()}
+                            "state": "open", "sent": False, "time": runner._now()}
                     side["requests"].append(last)
                     for key in ("job_id", "result_ids", "prompt_changed", "prompt_used"):
                         side.pop(key, None)
-                self._save(ck, rep, side)
-                phase = "encode"
-                images = (await asyncio.to_thread(_encode_ideogram_inputs, input_paths, job["size"])
-                          if model.kind == "ideogram" else await asyncio.to_thread(encode_inputs, input_paths))
-                body = build_request(job, images, organization_id=self._ctx["organization_id"], request_id=last["id"],
-                                     prompt_autopilot=self._ctx["options"]["prompt_autopilot"])
-                phase, sent = "request", True
-                t0 = time.monotonic()
-                job_id = await self._submit(body, ck, rep, side)
-                phase = "poll"
-                last.pop("response_lost", None)
-                last.update(state="submitted", job_id=job_id, time=runner._now())
-                side["job_id"] = job_id
-                side_error = None
-                try:
                     self._save(ck, rep, side)
-                except BaseException as exc:
-                    side_error = exc
-                runner._write_json(runner._lpath(self._root, ck, rep, "resp"), {
-                    "call_id": call_id, "received": runner._now(), "backend": self.name,
-                    "elapsed_s": round(time.monotonic() - t0, 2), "credits": None, "usage": None,
-                    "data": [{"slot": i, "kind": "url", "url": f"{URL_SCHEME}{job_id}/{i}"} for i in range(job["n"])]})
-                if side_error is not None:
-                    raise side_error
+                else:
+                    self._save(ck, rep, side)
+                t0 = time.monotonic()
+                if resumed_job_id is not None:
+                    # 이전 실행에서 job_id 를 이미 받아 사이드카에 기록했으나 resp.json 쓰기가 실패·중단된 경우:
+                    # 재제출(POST)하지 않고 resp.json 만 복원한 뒤 기존 잡을 폴링한다.
+                    job_id = resumed_job_id
+                    phase, sent = "poll", True
+                    side["job_id"] = job_id
+                    runner._write_json(runner._lpath(self._root, ck, rep, "resp"), {
+                        "call_id": call_id, "received": runner._now(), "backend": self.name,
+                        "elapsed_s": 0.0, "credits": None, "usage": None,
+                        "data": [{"slot": i, "kind": "url", "url": f"{URL_SCHEME}{job_id}/{i}"} for i in range(job["n"])]})
+                else:
+                    phase = "encode"
+                    images = (await asyncio.to_thread(_encode_ideogram_inputs, input_paths, job["size"])
+                              if model.kind == "ideogram" else await asyncio.to_thread(encode_inputs, input_paths))
+                    body = build_request(job, images, organization_id=self._ctx["organization_id"], request_id=last["id"],
+                                         prompt_autopilot=self._ctx["options"]["prompt_autopilot"])
+                    phase, sent = "request", True
+                    job_id = await self._submit(body, ck, rep, side)
+                    phase = "poll"
+                    last.pop("response_lost", None)
+                    last["sent"] = True
+                    last.update(state="submitted", job_id=job_id, time=runner._now())
+                    side["job_id"] = job_id
+                    side_error = None
+                    try:
+                        self._save(ck, rep, side)
+                    except BaseException as exc:
+                        side_error = exc
+                    runner._write_json(runner._lpath(self._root, ck, rep, "resp"), {
+                        "call_id": call_id, "received": runner._now(), "backend": self.name,
+                        "elapsed_s": round(time.monotonic() - t0, 2), "credits": None, "usage": None,
+                        "data": [{"slot": i, "kind": "url", "url": f"{URL_SCHEME}{job_id}/{i}"} for i in range(job["n"])]})
+                    if side_error is not None:
+                        raise side_error
                 result = await self._poll(job_id, call_id, _timestamp(last["time"]))
                 phase = "response"
                 self._result(ck, rep, side, result, job["prompt"], recovery=False, model=job["model"])
@@ -604,7 +622,9 @@ class ForgeBackend:
 
     async def _submit(self, body, ck, rep, side):
         last = side["requests"][-1]
-        response_lost = bool(last.get("response_lost"))
+        # 직전 실행에서 POST 중 취소·크래시(sent=True) 또는 응답 유실(response_lost=True) 또는 구버전 open(sent 키 없음)이면
+        # 이미 서버에 접수됐을 수 있으므로 최초 전송이 아닌 유실 보호 상태로 시작한다.
+        response_lost = bool(last.get("response_lost")) or last.get("sent", True) is True
         overloaded = False
         for attempt in range(3):
             self._stop()
@@ -613,6 +633,9 @@ class ForgeBackend:
                 if response_lost:
                     break
                 raise runner.CallError("Forge 로그인 정보를 다시 받아야 합니다.", status=401, maybe_billed=False)
+            if not last.get("sent"):
+                last["sent"] = True
+                self._save(ck, rep, side)
             try:
                 result = await self._ctx["client"].submit(token, body)
                 job_id = result.get("job_id") if isinstance(result, dict) else None
@@ -626,26 +649,33 @@ class ForgeBackend:
                     self._ctx["reject_token"](token)
                     if response_lost:
                         break
+                    last["sent"] = False
+                    self._save(ck, rep, side)
                     raise runner.CallError("Forge 로그인 정보를 다시 받아야 합니다.", status=401, maybe_billed=False) from None
                 if response_lost and (exc.reason == "forbidden" or
                         exc.status is not None and 400 <= exc.status < 500):
                     break
                 if exc.reason == "forbidden" or exc.status == 403:
+                    last["sent"] = False
+                    self._save(ck, rep, side)
                     raise runner.CallError("디자인 패치 스튜디오 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
                                            status=403, retryable=False, maybe_billed=False) from None
                 if exc.status == 422:
+                    last["sent"] = False
                     last["state"] = "rejected"
                     self._save(ck, rep, side)
                     raise runner.CallError(_safe_message(exc.detail, "생성 요청이 거절되었습니다."), status=422,
                                            retryable=False, maybe_billed=False) from None
                 if exc.status is not None and 400 <= exc.status < 500:
+                    last["sent"] = False
+                    self._save(ck, rep, side)
                     raise runner.CallError(_safe_message(exc.detail, "Forge 생성 요청을 받지 못했습니다."), status=exc.status,
                                            maybe_billed=False) from None
             except runner.CallError:
                 raise
             except Exception:
                 pass  # 연결·해석 실패: 예외 본문은 버리고 같은 멱등 키로 다시 제출한다.
-            if not response_lost:
+            if not response_lost or not last.get("response_lost"):
                 response_lost = True
                 last["response_lost"] = True
                 self._save(ck, rep, side)

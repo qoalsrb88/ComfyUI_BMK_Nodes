@@ -4780,6 +4780,20 @@ def m2_runner_unit(with_comfy: bool):
         check(len(repc.skipped) == 1 and repc.done == 1 and [r["call_id"] for r in bec_dup.requests] == [f"{ckc1}_r0"]
               and corrupt_entry.get("corrupt_sig") and ":c" in runner.approval_id(corrupt_entry),
               f"F-013 손상 req 옛 a2 차단·새 해시 분리·skip 시 한도 미소모 {repc.skipped} {runner.approval_id(corrupt_entry)}")
+        # 손상 복구 승인으로 재실행 뒤 다시 실패해도 retry_epoch 가 계승돼 손상 전 옛 a3 승인을 재사용할 수 없다
+        ap_corrupt, _ = approved(root_c13, retry_failed=True)
+        e_corrupt = next(e for e in ap_corrupt["to_run"] if e["cell_key"] == ckc0)
+        run(root_c13, [e_corrupt], runner.MockBackend(fail_plan={f"{ckc0}_r0": {"error": 500}}))
+        p_after_corrupt = plan(root_c13, retry_failed=True)
+        e_after = next(e for e in p_after_corrupt["pending"] if e["cell_key"] == ckc0)
+        stale_a3 = dict(e_after, approved_by="hash:old")
+        stale_a3.pop("corrupt_sig", None)
+        be_stale_a3 = runner.MockBackend()
+        rep_stale_a3 = run(root_c13, [stale_a3], be_stale_a3)
+        check(len(be_stale_a3.requests) == 0 and len(rep_stale_a3.skipped) == 1
+              and e_after.get("corrupt_sig") == corrupt_entry.get("corrupt_sig")
+              and ":c" in runner.approval_id(e_after),
+              f"F-013 손상 복구 뒤 retry_epoch 계승으로 옛 a3 승인 재사용 차단 {runner.approval_id(e_after)}")
         # 실행 중 보드 쓰기(다른 스레드 update_manifest) — 잃은 갱신 0
         root = make_project("r13_race", 6, n=2)
         ap, _ = approved(root)
@@ -9789,16 +9803,34 @@ def vlm_unit():
         for bad_dst, label in ((src_p, "동일 경로"), (ab_guard, "상위 폴더"), (src_p / "nested", "하위 폴더")):
             expect_raises(lambda d=str(bad_dst): ev._copy_project(str(src_p), d, "x", set(), True),
                           f"F-029 _copy_project {label} 차단", ValueError)
-        # 원본 inputs 가 정션 등으로 dst_root 내부를 가리키는 경우 차단
+        # 원본 inputs 내부 파일이 링크 등으로 dst_root 내부를 가리키는 경우 차단
         orig_realpath = ev.os.path.realpath
         def fake_realpath(p):
-            if os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(str(src_p / "inputs"))):
-                return os.path.abspath(str(ab_guard / "ab_minimal" / "shared"))
+            if os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(str(src_p / "inputs" / "keep.txt"))):
+                return os.path.abspath(str(ab_guard / "ab_minimal" / "shared" / "keep.txt"))
             return orig_realpath(p)
         from unittest import mock as _um
         with _um.patch.object(ev.os.path, "realpath", side_effect=fake_realpath):
             expect_raises(lambda: ev._copy_project(str(src_p), str(ab_guard / "ab_minimal"), "ab_minimal", set(), True),
-                          "F-029 원본 inputs 정션이 출력 폴더 내부를 가리키면 차단", ValueError)
+                          "F-029 원본 inputs 하위 링크가 출력 폴더 내부를 가리키면 차단", ValueError)
+        # replace=False 에서 복사 도중(게시 직전) 대상이 먼저 생성돼도 기존 출력을 덮어쓰지 않고 ValueError
+        race_dst = ab_guard / "ab_race"
+        shutil.rmtree(race_dst, ignore_errors=True)
+        orig_upd = store.update_manifest
+        def create_during_copy(root_dir, mut):
+            res_u = orig_upd(root_dir, mut)
+            if not race_dst.exists():
+                race_dst.mkdir(parents=True)
+                (race_dst / "winner.txt").write_text("first-writer", encoding="utf-8")
+            return res_u
+        with _um.patch.object(store, "update_manifest", side_effect=create_during_copy):
+            expect_raises(lambda: ev._copy_project(str(src_p), str(race_dst), "ab_race", set(), False),
+                          "F-029 replace=False 동시 게시 시 기존 출력 덮어쓰기 차단", ValueError)
+        check((race_dst / "winner.txt").read_text(encoding="utf-8") == "first-writer",
+              "F-029 replace=False 동시 충돌 시 선행 게시 출력 보존")
+        # 앞뒤 공백이 있는 ab_projects 설정도 _group_of 가 정규화해 그룹 판정
+        check(ev._group_of({"project": "ab_draft"}, {"ab_projects": {"draft": " ab_draft "}}) == "draft",
+              "F-029 앞뒤 공백 ab_projects 그룹 판정 일치")
         doc_clash = {"cases": [], "ab_projects": {"minimal": "ab_minimal", "draft": "named_src", "gold": "ab_gold"},
                      "_dir": str(ab_guard)}
         expect_raises(lambda: ev.ab_setup(str(src_p), doc_clash, "t", scores_dir=scores_p, replace=True),
@@ -58173,9 +58205,9 @@ def forge_f2_backend_unit():
         h = rn.split_approval(p, backend="forge")["pending_hash"]
         return rn.split_approval(p, h, backend="forge")["to_run"]
 
-    def run(root, client, *, retry=False, tokens=None, stop=lambda: False, limit=2, **kw):
+    def run(root, client, *, retry=False, retry_orphans=False, tokens=None, stop=lambda: False, limit=2, **kw):
         be = fb.ForgeBackend(context(root, client, tokens=tokens, stop=stop, limit=limit))
-        return asyncio.run(rn.run_calls(root, calls(root, retry_failed=retry), be, **kw))
+        return asyncio.run(rn.run_calls(root, calls(root, retry_failed=retry, retry_orphans=retry_orphans), be, **kw))
 
     def ledger(root, job):
         return rn.read_ledger(root, job["cell_key"]).get(0, {})
@@ -58343,6 +58375,36 @@ def forge_f2_backend_unit():
               "F-019 다음 실행 retry_failed 첫 422에서도 멱등키·maybe_billed 보존")
         check(run(r, c, retry=True).done == 1 and c.submissions[-1]["request_id"] == prev_id,
               "F-019 이후 재시도도 동일 멱등키로 완료")
+        # F-019 재리뷰 보강 1: 제출 도중 취소(interrupt)된 뒤 retry_orphans 의 첫 422 도 멱등키를 폐기하지 않는다
+        r, j = project("lost_interrupt_then_422")
+        c = Client()
+        c.submit_errors = [rn._make_interrupt()]
+        try:
+            run(r, c)
+        except BaseException:
+            pass
+        prev_id = c.submissions[0]["request_id"]
+        check(sidecar(r, j)["requests"][-1].get("sent") is True, "F-019 제출 중 취소 전 sent 영속화")
+        c.submit_errors = [Failure("invalid", 422, "duplicate after cancel")]
+        check(run(r, c, retry_orphans=True).failed == 1 and sidecar(r, j)["requests"][-1]["state"] == "open"
+              and sidecar(r, j)["requests"][-1]["id"] == prev_id and ledger(r, j)["failed"]["maybe_billed"] is True,
+              "F-019 제출 중 취소 뒤 retry_orphans 422 도 멱등키·maybe_billed 보존")
+        # F-019 재리뷰 보강 2: submitted + job_id 저장 직후 resp.json 쓰기가 실패해도 재시도는 POST 없이 기존 job_id 폴링
+        r, j = project("submitted_resp_write_fail")
+        c = Client()
+        orig_write_json = rn._write_json
+        def fail_resp_once(path, data):
+            if str(path).endswith(".resp.json") and not getattr(fail_resp_once, "done", False):
+                fail_resp_once.done = True
+                raise OSError("disk full on resp.json")
+            return orig_write_json(path, data)
+        with patch.object(rn, "_write_json", side_effect=fail_resp_once):
+            rep_sub = run(r, c)
+        check(rep_sub.failed == 1 and len(c.submissions) == 1 and sidecar(r, j)["requests"][-1]["state"] == "submitted",
+              "F-019 resp.json 실패 시 submitted+job_id 보존")
+        c.submit_errors = [Failure("invalid", 422, "must not repost")]
+        check(run(r, c, retry=True).done == 1 and len(c.submissions) == 1,
+              "F-019 submitted+job_id 복구 시 POST 없이 기존 job_id 폴링으로 완료")
         r, j = project("submit422")
         c = Client()
         c.submit_errors = [Failure("invalid", 422, "요청 형식을 확인해 주세요.")]

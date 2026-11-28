@@ -90,6 +90,8 @@ def test_f007_backslash_sentinel_and_escaped_parens():
     assert _conv("(concept artist:1.2)", "ComfyUI → NovelAI") == "1.2::concept artist::"
     assert _conv("(concept artist:1.2)", "ComfyUI → Anima", 1.5, False) == "(concept artist:1.8)"
     assert _conv("(artist:1.2)", "ComfyUI → NovelAI") == "1.2::artist::"
+    assert _conv("1.2::artist::", "NovelAI → ComfyUI") == "(artist:1.2)"
+    assert _conv("1.2::1girl, artist::", "NovelAI → ComfyUI") == "(1girl, artist:1.2)"
     assert _conv("(artist:1.2)", "ComfyUI → Anima", 1.5, False) == "(artist:1.8)"
     assert _conv("(artist:foo:1.2), (concept artist:1.2)", "ComfyUI → Anima", 1.5, False) == (
         "(@foo:1.2), (concept artist:1.8)"
