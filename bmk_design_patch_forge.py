@@ -752,7 +752,7 @@ class ForgeAccounts:
         self.tokens.mark_access(org, acct, self.clock())
 
 
-def display(value, token="", size=128, *, config=None, hidden=()):
+def display(value, token="", size=128, *, config=None, hidden=(), is_folder=False):
     """목록·출처의 표시 글만 남긴다. 원격 식별자는 별도 비공개 필드에서만 쓴다."""
     if not isinstance(value, str):
         return ""
@@ -764,7 +764,14 @@ def display(value, token="", size=128, *, config=None, hidden=()):
     if config is not None:
         for origin in (config.api, *config.media_origins):
             value = re.sub(re.escape(URL(origin).host), "", value, flags=re.I)
-    if re.search(r"[A-Za-z]:[\\/]|\\\\|(?:^|\s)/[^\s]+", value):
+    if is_folder:
+        if (re.search(r"[A-Za-z]:[\\/]|\\|//|(?:^|/)\.\.(?:$|/)", value)
+                or re.match(
+                    r"(?i)^\s*/(?:tmp|var|etc|usr|bin|sbin|dev|proc|sys|opt|mnt|srv|root|home|users|private|volumes|library|system)(?:/|$)",
+                    value,
+                )):
+            return ""
+    elif re.search(r"[A-Za-z]:[\\/]|\\\\|(?<![\w/])/{1,2}[^/\s]+/[^\s]+", value):
         return ""
     return value[:size]
 
@@ -896,10 +903,11 @@ def routes(accounts: ForgeAccounts) -> tuple:
             reject("forge_stale")
         return row
 
-    def clean(value, token, size=128, row=None):
+    def clean(value, token, size=128, row=None, *, is_folder=False):
         scope = board.current_scope() or {}
         return display(value, token, size, config=accounts.config,
-                       hidden=(scope.get("account"), scope.get("org"), (row or {}).get("created_by"), (row or {}).get("id")))
+                       hidden=(scope.get("account"), scope.get("org"), (row or {}).get("created_by"), (row or {}).get("id")),
+                       is_folder=is_folder)
 
     async def root_of(data, optional=False):
         if optional and not data.get("root"):
@@ -1048,8 +1056,19 @@ def routes(accounts: ForgeAccounts) -> tuple:
             result["items"] = [row for row in result["items"] if row.get("generation_type") not in ("upscale", "bg_removal")
                                and (studio or not str(row.get("prompt") or "").startswith(prompt.PROMPT_HEAD))]
         else:
-            matched = [row for row in cached["items"] if (not folder or clean(row.get("folder"), token, 512, row) == folder)
-                       and search.casefold() in " ".join(str(row.get(k) or "") for k in ("name", "folder", "tags")).casefold()]
+            def asset_search_text(row):
+                tags = row.get("tags")
+                cleaned_tags = [clean(tag, token, row=row) for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
+                return " ".join((
+                    clean(row.get("name"), token, 128, row),
+                    clean(row.get("folder"), token, 512, row, is_folder=True),
+                    *cleaned_tags,
+                )).casefold()
+
+            needle = search.casefold()
+            matched = [row for row in cached["items"]
+                       if (not folder or clean(row.get("folder"), token, 512, row, is_folder=True) == folder)
+                       and (not needle or needle in asset_search_text(row))]
             result = {"items": matched[value:value + 60], "next": value + 60 if value + 60 < len(matched) else None}
         rows = []
         for row in result["items"]:
@@ -1058,7 +1077,8 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 root=query.get("root", ""), source=source, id=ident))
             keys = ("prompt", "model", "created") if source == "history" else ("name", "folder")
             item = dict(id=ident, thumb=thumb, **{
-                key: clean(row.get(key), token, 300 if key == "prompt" else 512 if key == "folder" else 128, row) for key in keys})
+                key: clean(row.get(key), token, 300 if key == "prompt" else 512 if key == "folder" else 128, row,
+                           is_folder=(key == "folder")) for key in keys})
             if source == "history":
                 item.update(mine=row.get("created_by") == scope["account"], fav=row.get("fav") is True)
                 n, pos = row.get("num_outputs"), row.get("batch_position")
@@ -1074,7 +1094,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
             if result["next"] is not None else None
         response = {"items": rows, "next": next_page}
         if source == "asset":
-            response.update(folders=sorted({clean(row.get("folder"), token, 512, row) for row in cached["items"]} - {""}),
+            response.update(folders=sorted({clean(row.get("folder"), token, 512, row, is_folder=True) for row in cached["items"]} - {""}),
                             more=cached["more"])
         return board._json(response)
 
@@ -1119,7 +1139,8 @@ def routes(accounts: ForgeAccounts) -> tuple:
                   "imported_at": datetime.now(timezone.utc).isoformat()}
         keys = ("prompt", "model", "created") if row["source"] == "history" else ("name", "folder", "created")
         for key in keys:
-            value = clean(row.get(key), token, 300 if key == "prompt" else 512 if key == "folder" else 128, row)
+            value = clean(row.get(key), token, 300 if key == "prompt" else 512 if key == "folder" else 128, row,
+                          is_folder=(key == "folder"))
             if value:
                 result[key] = value
         ident = row.get("id")

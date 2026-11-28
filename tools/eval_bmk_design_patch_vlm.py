@@ -961,27 +961,117 @@ def budget(roots: list[str], stage_est: float | None = None) -> dict:
 # ══════════════════════════════════════════════════════════════════════
 # A/B
 # ══════════════════════════════════════════════════════════════════════
+def _real_norm(path: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _paths_overlap(path_a: str, path_b: str) -> str | None:
+    """두 경로가 같거나 상위·하위 관계면 사유 문자열, 아니면 None."""
+    a, b = _real_norm(path_a), _real_norm(path_b)
+    if a == b:
+        return "같습니다"
+    try:
+        common = os.path.commonpath([a, b])
+    except ValueError:
+        return None
+    if common == b:
+        return "상위 폴더입니다"
+    if common == a:
+        return "안쪽 하위 폴더입니다"
+    return None
+
+
+def _check_copy_target(src_root: str, dst_root: str) -> None:
+    rel = _paths_overlap(src_root, dst_root)
+    if rel is not None:
+        raise ValueError(f"출력 경로({dst_root})가 원본 프로젝트({src_root})와 {rel} — 원본 보호를 위해 중단합니다")
+    # 원본 매니페스트·inputs 및 그 하위 파일·링크·정션이 출력 폴더와 겹치면 삭제·교체 전에 차단한다.
+    for sub in (store.MANIFEST_NAME, "inputs"):
+        src_part = os.path.join(src_root, sub)
+        if os.path.lexists(src_part):
+            part_rel = _paths_overlap(src_part, dst_root)
+            if part_rel is not None:
+                raise ValueError(
+                    f"출력 경로({dst_root})가 원본 {sub}({src_part})의 실제 경로와 {part_rel} — 원본 보호를 위해 중단합니다"
+                )
+    inputs_src = os.path.join(src_root, "inputs")
+    if os.path.isdir(inputs_src):
+        seen_dirs: set[str] = set()
+        for cur, dirs, files in os.walk(inputs_src, followlinks=True):
+            cur_real = _real_norm(cur)
+            if cur_real in seen_dirs:
+                dirs[:] = []
+                continue
+            seen_dirs.add(cur_real)
+            for entry in (*dirs, *files):
+                entry_path = os.path.join(cur, entry)
+                entry_rel = _paths_overlap(entry_path, dst_root)
+                if entry_rel is not None:
+                    raise ValueError(
+                        f"출력 경로({dst_root})가 원본 입력({entry_path})의 실제 경로와 {entry_rel} — 원본 보호를 위해 중단합니다"
+                    )
+
+
 def _copy_project(src_root: str, dst_root: str, name: str, keep: set[str], replace: bool) -> None:
-    if os.path.exists(dst_root):
-        if not replace:
-            raise ValueError(f"{dst_root} 가 이미 있습니다 — 다시 만들려면 --replace")
-        shutil.rmtree(dst_root)
-    os.makedirs(dst_root)
-    shutil.copy2(os.path.join(src_root, store.MANIFEST_NAME), os.path.join(dst_root, store.MANIFEST_NAME))
-    if os.path.isdir(os.path.join(src_root, "inputs")):
-        shutil.copytree(os.path.join(src_root, "inputs"), os.path.join(dst_root, "inputs"))
+    import tempfile
 
-    def mutate(m):
-        m["project"] = name
-        m["crops"] = [c for c in m["crops"] if c["id"] in keep]
-        for k in ("jobs", "candidates", "calls", "exports"):
-            m[k] = []
-        for k in ("analysis", "picks", "rerolls", "rejects", "approvals"):
-            m[k] = {}
-        if isinstance(m.get("source"), dict):
-            m["source"]["glossary"] = ""
+    _check_copy_target(src_root, dst_root)
+    manifest_src = os.path.join(src_root, store.MANIFEST_NAME)
+    if not os.path.isfile(manifest_src):
+        raise FileNotFoundError(f"원본 매니페스트가 없습니다: {manifest_src}")
+    # 기존 출력을 지우기 전에 원본 매니페스트 유효성을 먼저 확인한다.
+    store.load_manifest(src_root)
+    if os.path.exists(dst_root) and not replace:
+        raise ValueError(f"{dst_root} 가 이미 있습니다 — 다시 만들려면 --replace")
+    dst_abs = os.path.abspath(dst_root)
+    parent = os.path.dirname(dst_abs)
+    os.makedirs(parent, exist_ok=True)
+    stage = tempfile.mkdtemp(prefix=".ab_stage_", dir=parent)
+    backup: str | None = None
+    try:
+        shutil.copy2(manifest_src, os.path.join(stage, store.MANIFEST_NAME))
+        inputs_src = os.path.join(src_root, "inputs")
+        if os.path.isdir(inputs_src):
+            shutil.copytree(inputs_src, os.path.join(stage, "inputs"))
 
-    store.update_manifest(dst_root, mutate)
+        def mutate(m):
+            m["project"] = name
+            m["crops"] = [c for c in m["crops"] if c["id"] in keep]
+            for k in ("jobs", "candidates", "calls", "exports"):
+                m[k] = []
+            for k in ("analysis", "picks", "rerolls", "rejects", "approvals"):
+                m[k] = {}
+            if isinstance(m.get("source"), dict):
+                m["source"]["glossary"] = ""
+
+        store.update_manifest(stage, mutate)
+        if os.path.exists(dst_abs):
+            if not replace:
+                raise ValueError(f"{dst_root} 가 이미 있습니다 — 다시 만들려면 --replace")
+            backup = tempfile.mkdtemp(prefix=".ab_old_", dir=parent)
+            os.rmdir(backup)
+            os.rename(dst_abs, backup)
+        try:
+            os.rename(stage, dst_abs)
+        except OSError as exc:
+            if not replace and os.path.exists(dst_abs):
+                raise ValueError(f"{dst_root} 가 이미 있습니다 — 다시 만들려면 --replace") from exc
+            if backup is not None and os.path.exists(backup) and not os.path.exists(dst_abs):
+                os.rename(backup, dst_abs)
+                backup = None
+            raise
+        except BaseException:
+            if backup is not None and os.path.exists(backup) and not os.path.exists(dst_abs):
+                os.rename(backup, dst_abs)
+                backup = None
+            raise
+        stage = ""
+        if backup is not None:
+            shutil.rmtree(backup)
+            backup = None
+    finally:
+        if stage and os.path.exists(stage):
+            shutil.rmtree(stage, ignore_errors=True)
 
 
 def ab_setup(src_root: str, doc: dict, tag: str, *, scores_dir: str | os.PathLike | None = None,
@@ -996,12 +1086,33 @@ def ab_setup(src_root: str, doc: dict, tag: str, *, scores_dir: str | os.PathLik
     for c in ab_cases:
         glossary.update(c.get("minimal_names") or {})
     projects_dir = os.path.dirname(os.path.abspath(src_root))
-    names = doc.get("ab_projects") or {g: f"ab_{g}" for g in AB_GROUPS}
+    raw_names = doc.get("ab_projects") or {g: f"ab_{g}" for g in AB_GROUPS}
+    names: dict[str, str] = {}
+    roots: dict[str, str] = {}
+    projects_dir_norm = _real_norm(projects_dir)
+    for group in AB_GROUPS:
+        safe_name = store._check_project_name(raw_names[group])
+        root = os.path.join(projects_dir, safe_name)
+        if _real_norm(os.path.dirname(os.path.abspath(root))) != projects_dir_norm:
+            raise ValueError(f"A/B 출력 경로가 프로젝트 폴더 밖을 가리킵니다: {raw_names[group]!r}")
+        names[group] = safe_name
+        roots[group] = root
+    # 기존 폴더를 지우기 전에 원본 매니페스트 유효성 및 모든 출력 경로·정션·그룹 간 중복을 먼저 검사한다.
+    store.load_manifest(src_root)
+    for group, root in roots.items():
+        _check_copy_target(src_root, root)
+    seen_roots: list[tuple[str, str]] = []
+    for group, root in roots.items():
+        for prev_group, prev_root in seen_roots:
+            rel = _paths_overlap(prev_root, root)
+            if rel is not None:
+                raise ValueError(f"A/B 출력 경로가 서로 겹칩니다({prev_group}={prev_root}, {group}={root}: {rel})")
+        seen_roots.append((group, root))
     out: dict = {"rows": []}
     led = dvlm.Ledger(src_root)
     for group in AB_GROUPS:
         keep = {c["crop_id"] for c in (gold_cases if group == "gold" else ab_cases)}
-        root = os.path.join(projects_dir, names[group])
+        root = roots[group]
         _copy_project(src_root, root, names[group], keep, replace)
         store.write_json_atomic(os.path.join(root, "glossary.json"), glossary)
         out[group] = root
@@ -1064,10 +1175,13 @@ def _provenance(rec: dict, **extra) -> dict:
 
 def _group_of(m: dict, doc: dict) -> str:
     names = doc.get("ab_projects") or {}
+    proj = m.get("project")
+    proj_norm = proj.strip() if isinstance(proj, str) else proj
     for g, n in names.items():
-        if m.get("project") == n:
+        n_norm = n.strip() if isinstance(n, str) else n
+        if proj == n or proj_norm == n_norm:
             return g
-    return str(m.get("project"))
+    return str(proj)
 
 
 def _thumb(path: str, side: int) -> Image.Image:

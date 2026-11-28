@@ -164,6 +164,20 @@ def _join(items):
     return ", ".join(items[:-1]) + f", and {items[-1]}"
 
 
+def _target_refs(t: dict) -> list:
+    return [] if t.get("mode") == "self_restore" else list(t.get("refs") or [])
+
+
+def _guide_color(t: dict) -> str:
+    return str(t.get("guide_color") or "").strip() or "green"
+
+
+def _uses_guide(t: dict) -> bool:
+    return t.get("mode") == "sketch_guide" or (
+        t.get("mode") != "self_restore" and bool(str(t.get("guide_color") or "").strip())
+    )
+
+
 def _plan_images(spec):
     """Upload order: canvas, guide, before-paste, then refs in target order (deduplicated)."""
     order, roles = [], {}
@@ -175,12 +189,12 @@ def _plan_images(spec):
         roles[path].append(role)
 
     add(spec["canvas"], ("canvas", None))
-    if spec.get("guide") and any(t["mode"] == "sketch_guide" or t.get("guide_color") for t in spec["targets"]):
+    if spec.get("guide") and any(_uses_guide(t) for t in spec["targets"]):
         add(spec["guide"], ("guide", None))
     if spec.get("before_paste") and any(t["mode"] == "paste_harmonize" for t in spec["targets"]):
         add(spec["before_paste"], ("before", None))
     for t in spec["targets"]:
-        for r in t.get("refs", []):
+        for r in _target_refs(t):
             add(r, ("ref", t["id"]))
     return order, roles
 
@@ -236,9 +250,10 @@ def render(spec: dict) -> dict:
     lines.append(canvas)
 
     # Guide
-    guided = [t for t in targets if t["mode"] == "sketch_guide" or (t["mode"] == "paste_harmonize" and t.get("guide_color") and g)]
+    guided = [t for t in targets
+              if t["mode"] == "sketch_guide" or (t["mode"] == "paste_harmonize" and bool(str(t.get("guide_color") or "").strip()))]
     if guided and g:
-        marks = _join(f"{t['guide_color']} {GUIDE_NOUN[t.get('guide_type', 'outline')]}" + (f" = Target {t['id']}" if multi else "")
+        marks = _join(f"{_guide_color(t)} {GUIDE_NOUN[t.get('guide_type') or 'outline']}" + (f" = Target {t['id']}" if multi else "")
                       for t in guided)
         lines.append(f"Guide: {g} is {c} with annotation marks ({marks}). The marks only show where things go and how"
                      f" much area they cover; they are not artwork. The output must contain no trace of them.")
@@ -273,7 +288,7 @@ def render(spec: dict) -> dict:
 
 def _target_line(t, c, g, b, tok, multi):
     name = t["name"]
-    refs = [tok(r) for r in t.get("refs", [])]
+    refs = [tok(r) for r in _target_refs(t)]
     r = _join(refs) if refs else ""
     obj = t.get("ref_object") or f"the {name}"
     head = f"- Target {t['id']} — {name}" if multi else f"- {name[0].upper() + name[1:]}"
@@ -299,7 +314,7 @@ def _target_line(t, c, g, b, tok, multi):
 
     if mode == "sketch_guide":
         action = action or "add"
-        col, gt = t.get("guide_color", "green"), t.get("guide_type", "outline")
+        col, gt = _guide_color(t), t.get("guide_type") or "outline"
         noun = f"{col} {GUIDE_NOUN[gt]}"
         verb = {"add": f"Add the {name} where {g} marks it with the {noun}.",
                 "relocate": f"Move the {name}: remove it from its current place, restoring what lies behind it, and draw it"
@@ -315,7 +330,8 @@ def _target_line(t, c, g, b, tok, multi):
         return f"{head} (reference: {r}; guide: {noun} in {g}): {body}{text}"
 
     if mode == "paste_harmonize":
-        where = f" (outlined in {t['guide_color']} in {g})" if g and t.get("guide_color") else ""
+        gcol = str(t.get("guide_color") or "").strip()
+        where = f" (outlined in {gcol} in {g})" if g and gcol else ""
         body = (f"A cutout of the {name} has been roughly pasted into {c}{where}. Its design, position, scale, and"
                 f" orientation are already correct—keep them. Re-render it so it belongs in the painting: clean up cutout"
                 f" edges, halos, and leftover outlines; match {c}'s line weight, shading, texture, and sharpness;")
@@ -349,7 +365,7 @@ def variant_specs(spec: dict) -> dict:
         for t in spec["targets"]:
             s = copy.deepcopy(spec)
             s["targets"] = [copy.deepcopy(t)]
-            if t["mode"] not in ("sketch_guide", "paste_harmonize") and not t.get("guide_color"):
+            if t["mode"] not in ("sketch_guide", "paste_harmonize") and (t.get("mode") == "self_restore" or not str(t.get("guide_color") or "").strip()):
                 s["guide"] = None
             out[f"V2_isolate_{t['id']}"] = s
     s = copy.deepcopy(spec)
@@ -555,14 +571,16 @@ def spec_from_manifest(crop: dict, target, refs_dir: str, glossary, overrides) -
         if mode not in MODES:
             raise ValueError(f"{tid}: mode {mode!r} 은 {MODES} 중 하나여야 합니다")
 
-        if "refs" in o:
+        if mode == "self_restore":
+            refs = []
+        elif "refs" in o:
             refs = [str(r) for r in o["refs"] or []]
         elif t.get("refs"):
             refs = [str(r) for r in t["refs"]]
-        elif refs_auto and mode != "self_restore" and crop.get("refs_main") in refs_auto:
+        elif refs_auto and crop.get("refs_main") in refs_auto:
             refs = [crop["refs_main"]]
             warnings.append(f"{tid}: 대표 레퍼런스: {os.path.basename(refs[0])} (Studio 연결, 후보 {len(refs_auto)}개)")
-        elif refs_auto and mode != "self_restore":
+        elif refs_auto:
             refs = [auto_pick_ref(crop_name, refs_auto)]
             warnings.append(f"{tid}: 레퍼런스를 자동 선택했습니다: {os.path.basename(refs[0])} (후보 {len(refs_auto)}개)")
         else:
@@ -798,7 +816,7 @@ def v2_layout(spec: dict) -> list:
     order, roles = _plan_images(spec)
     slots = {path: [[kind, owner] for kind, owner in roles[path] if kind != "ref"] for path in order}
     for t in spec["targets"]:
-        for i, r in enumerate(t.get("refs", [])):
+        for i, r in enumerate(_target_refs(t)):
             slots[r].append(["ref", t["id"], i])
     return [slots[path] for path in order]
 

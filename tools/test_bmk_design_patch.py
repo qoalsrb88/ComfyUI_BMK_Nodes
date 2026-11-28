@@ -1007,6 +1007,25 @@ def prompt_unit():
     check(P.validate_spec({"canvas": "c", "targets": []}) == ["targets 가 비어 있습니다"], "validate 빈 targets")
     check(P.validate_spec("x") == ["스펙이 dict 가 아닙니다"], "validate 비 dict")
 
+    # F-009: self_restore 타깃에 refs·guide_color 가 남아 있어도 전송 이미지·범례·v2_layout 에 포함하지 않는다
+    sr_with_ref = {"crop_id": "sr_ref", "canvas": "c.png", "guide": "unused_guide.png", "targets": [
+        {"id": "A", "name": "sleeve", "mode": "self_restore", "refs": ["unused_ref.png"], "guide_color": "red"}]}
+    sr_out = P.render(sr_with_ref)
+    check("(no reference)" in sr_out["prompt"] and sr_out["images"] == ["c.png"]
+          and "design reference" not in sr_out["prompt"] and "Guide:" not in sr_out["prompt"]
+          and P.v2_layout(sr_with_ref) == [[["canvas", None]]]
+          and P.v2_images(sr_with_ref) == [("c.png", "canvas")],
+          f"F-009 self_restore 는 refs·미사용 guide 를 렌더·전송 목록에서 제외 {sr_out['images']}")
+
+    # F-010: sketch_guide 타깃에서 guide_color 를 생략하거나 비워도 validate_spec·render 가 green 기본색으로 일치
+    for gc_val in ({}, {"guide_color": ""}, {"guide_color": None}):
+        sg_spec = {"crop_id": "sg_def", "canvas": "c.png", "guide": "g.png", "targets": [
+            {"id": "A", "name": "clip", "mode": "sketch_guide", "refs": ["r.png"], "detail": "gold clip", **gc_val}]}
+        check(P.validate_spec(sg_spec) == [], f"F-010 sketch_guide guide_color 생략 validate 통과 {gc_val}")
+        sg_out = P.render(sg_spec)
+        check("annotation marks (green outline)" in sg_out["prompt"] and "guide: green outline in @image2" in sg_out["prompt"],
+              f"F-010 sketch_guide 기본색 green 렌더 일치 {gc_val}")
+
     if "toast" in SPECS:
         s = copy.deepcopy(SPECS["toast"])
         s["ref_style"] = "both"
@@ -1302,6 +1321,13 @@ def prompt_unit():
     sp = P.spec_from_manifest(c, None, "", GLOSS, None)
     check(sp["targets"][0]["mode"] == "self_restore" and any("self_restore" in w for w in sp["warnings"]), "S1 refs 없음 → self_restore")
     check("(no reference)" in P.render(sp)["prompt"] and P.validate_spec(sp) == [], "S1 self_restore 렌더")
+    # F-009: 매니페스트·오버라이드에 refs 가 남아 있어도 self_restore 면 refs=[]·전송 0장·없는 파일 경고 없음
+    c_sr = copy.deepcopy(crop002)
+    c_sr["targets"][0]["refs"] = ["missing_ref.png"]
+    sp_sr = P.spec_from_manifest(c_sr, None, refs_dir, GLOSS, {"targets": [{"id": "A", "mode": "self_restore", "refs": ["also_missing.png"]}]})
+    check(sp_sr["targets"][0]["refs"] == [] and P.render(sp_sr)["images"] == [sp_sr["canvas"]]
+          and not any("레퍼런스 파일이 없습니다" in w for w in sp_sr["warnings"]),
+          f"F-009 spec_from_manifest self_restore refs 비움 {sp_sr['targets'][0]['refs']} {sp_sr['warnings']}")
     # sketch_guide 인데 guide 없음 → ref_correct
     c = copy.deepcopy(crop002)
     c["targets"][0]["mode"] = "sketch_guide"
@@ -4699,6 +4725,75 @@ def m2_runner_unit(with_comfy: bool):
         rep = run(root, ap["to_run"], be)
         check(len(be.requests) == 0 and len(rep.skipped) == 2 and "원장 상태" in rep.skipped[0]["why"],
               "옛 계획으로 다시 실행 → 원장 상태가 달라 건너뜀")
+        # F-013: 실패·orphan 재시도에서 같은 2차 승인을 재사용해도 3차 호출이 나가지 않는다
+        root_f13 = make_project("r13_retry_attempt", 1, n=1)
+        ap1, _ = approved(root_f13)
+        ck13 = ap1["to_run"][0]["cell_key"]
+        run(root_f13, ap1["to_run"], runner.MockBackend(fail_plan={f"{ck13}_r0": {"error": 500}}))
+        ap2, _ = approved(root_f13, retry_failed=True)
+        check(len(ap2["to_run"]) == 1 and ap2["to_run"][0]["attempt"] == 2, "F-013 2차 재시도 계획 attempt=2")
+        be2_fail = runner.MockBackend(fail_plan={f"{ck13}_r0": {"error": 500}})
+        rep2_a = run(root_f13, ap2["to_run"], be2_fail)
+        check(rep2_a.failed == 1 and runner.read_ledger(root_f13, ck13)[0]["req"]["attempt"] == 2, "F-013 2차 재시도 실패")
+        be2_dup = runner.MockBackend()
+        rep2_b = run(root_f13, ap2["to_run"], be2_dup)
+        check(len(be2_dup.requests) == 0 and len(rep2_b.skipped) == 1 and "시도 번호" in rep2_b.skipped[0]["why"]
+              and runner.read_ledger(root_f13, ck13)[0]["req"]["attempt"] == 2,
+              f"F-013 같은 2차 승인으로 3차 재시도 차단 {rep2_b.skipped}")
+        ap3, _ = approved(root_f13, retry_failed=True)
+        be3 = runner.MockBackend()
+        rep3 = run(root_f13, ap3["to_run"], be3)
+        check(len(ap3["to_run"]) == 1 and ap3["to_run"][0]["attempt"] == 3 and rep3.done == 1 and len(be3.requests) == 1
+              and runner.read_ledger(root_f13, ck13)[0]["req"]["attempt"] == 3,
+              "F-013 새 3차 승인으로만 3차 시도 진행")
+        # retry_orphan 도 동일한 시도 번호 대조
+        root_o13 = make_project("r13_orphan_attempt", 1, n=1)
+        apo1, _ = approved(root_o13)
+        cko13 = apo1["to_run"][0]["cell_key"]
+        interrupted_run(root_o13, apo1["to_run"], {"delay_s": 0.4}, trigger_at=0.05, concurrency=1)
+        apo2, _ = approved(root_o13, retry_orphans=True)
+        check(len(apo2["to_run"]) == 1 and apo2["to_run"][0]["attempt"] == 2, "F-013 retry_orphan 2차 계획 attempt=2")
+        interrupted_run(root_o13, apo2["to_run"], {"delay_s": 0.4}, trigger_at=0.05, concurrency=1)
+        beo_dup = runner.MockBackend()
+        repo_b = run(root_o13, apo2["to_run"], beo_dup)
+        check(len(beo_dup.requests) == 0 and len(repo_b.skipped) == 1 and "시도 번호" in repo_b.skipped[0]["why"]
+              and runner.read_ledger(root_o13, cko13)[0]["req"]["attempt"] == 2,
+              f"F-013 retry_orphan 같은 2차 승인으로 3차 재시도 차단 {repo_b.skipped}")
+        # F-013 리뷰 보강: req.json 손상 시 옛 a2 승인으로 3차 과금 차단, 정상 401 복원 후에는 a2 허용, skip 시 max_calls 미소모
+        root_c13 = make_project("r13_corrupt_retry", 2, n=1)
+        apc1, _ = approved(root_c13)
+        ckc0, ckc1 = apc1["to_run"][0]["cell_key"], apc1["to_run"][1]["cell_key"]
+        run(root_c13, [apc1["to_run"][0]], runner.MockBackend(fail_plan={f"{ckc0}_r0": {"error": 500}}))
+        apc2, _ = approved(root_c13, retry_failed=True)
+        e_retry_a2 = next(e for e in apc2["to_run"] if e["cell_key"] == ckc0)
+        # 401 과금 전 거부로 원장이 1차 실패로 복원되면 같은 a2 계획은 계속 유효
+        run(root_c13, [e_retry_a2], runner.MockBackend(fail_plan={f"{ckc0}_r0": {"error": 401}}))
+        # 2차 재시도가 실제 실패한 뒤 req.json 이 손상되면 옛 a2 계획은 차단되어야 한다
+        run(root_c13, [e_retry_a2], runner.MockBackend(fail_plan={f"{ckc0}_r0": {"error": 500}}))
+        Path(root_c13, "cands", ckc0, "r0.req.json").write_text("{corrupt", encoding="utf-8")
+        bec_dup = runner.MockBackend()
+        e_new_c1 = next(e for e in apc1["to_run"] if e["cell_key"] == ckc1)
+        # 첫 호출(옛 a2)이 skip 되어도 max_new_calls=1 을 소모하지 않아 두 번째 정상 호출(ckc1)이 실행된다
+        repc = run(root_c13, [e_retry_a2, e_new_c1], bec_dup, concurrency=1, max_new_calls=1)
+        p_corrupt = plan(root_c13, retry_failed=True)
+        corrupt_entry = next(e for e in p_corrupt["pending"] if e["cell_key"] == ckc0)
+        check(len(repc.skipped) == 1 and repc.done == 1 and [r["call_id"] for r in bec_dup.requests] == [f"{ckc1}_r0"]
+              and corrupt_entry.get("corrupt_sig") and ":c" in runner.approval_id(corrupt_entry),
+              f"F-013 손상 req 옛 a2 차단·새 해시 분리·skip 시 한도 미소모 {repc.skipped} {runner.approval_id(corrupt_entry)}")
+        # 손상 복구 승인으로 재실행 뒤 다시 실패해도 retry_epoch 가 계승돼 손상 전 옛 a3 승인을 재사용할 수 없다
+        ap_corrupt, _ = approved(root_c13, retry_failed=True)
+        e_corrupt = next(e for e in ap_corrupt["to_run"] if e["cell_key"] == ckc0)
+        run(root_c13, [e_corrupt], runner.MockBackend(fail_plan={f"{ckc0}_r0": {"error": 500}}))
+        p_after_corrupt = plan(root_c13, retry_failed=True)
+        e_after = next(e for e in p_after_corrupt["pending"] if e["cell_key"] == ckc0)
+        stale_a3 = dict(e_after, approved_by="hash:old")
+        stale_a3.pop("corrupt_sig", None)
+        be_stale_a3 = runner.MockBackend()
+        rep_stale_a3 = run(root_c13, [stale_a3], be_stale_a3)
+        check(len(be_stale_a3.requests) == 0 and len(rep_stale_a3.skipped) == 1
+              and e_after.get("corrupt_sig") == corrupt_entry.get("corrupt_sig")
+              and ":c" in runner.approval_id(e_after),
+              f"F-013 손상 복구 뒤 retry_epoch 계승으로 옛 a3 승인 재사용 차단 {runner.approval_id(e_after)}")
         # 실행 중 보드 쓰기(다른 스레드 update_manifest) — 잃은 갱신 0
         root = make_project("r13_race", 6, n=2)
         ap, _ = approved(root)
@@ -8027,6 +8122,17 @@ def vlm_unit():
             res = asyncio.run(be.repoll(unit_of(cid, k, 1), created, dvlm.Ledger(root), effort="high", progress=None))
             check(not [c for c in api.calls if c["method"] == "POST"] and dvlm.Ledger(root).state(cid, k)["status"] == "done",
                   "repoll: GET 만(POST 0), done")
+            # F-026: 승인 뒤 레퍼런스 파일이 바뀌면 POST 전에 rejected 로 차단하고 과금·원장 오염 없음
+            ref_sent = next(im for im in dvlm._images_of(req) if im.role == "ref")
+            ref_orig = Path(ref_sent.src_path).read_bytes()
+            try:
+                Image.fromarray(np.full((64, 64, 3), (12, 34, 56), np.uint8)).save(ref_sent.src_path)
+                api_m, res_m, err_m, st_m, _km = run([("POST", {"id": "never", "status": "queued"})], key=key24(16070))
+                check(isinstance(err_m, runner.CallError) and err_m.phase == "encode" and not err_m.maybe_billed
+                      and api_m.calls == [] and st_m["status"] == "rejected",
+                      f"F-026 OpenAI 승인 뒤 레퍼런스 변경 → POST 0회·rejected ({err_m}, calls={len(api_m.calls)})")
+            finally:
+                Path(ref_sent.src_path).write_bytes(ref_orig)
         finally:
             dvlm.POLL_INTERVAL_S = orig[0]
             dvlm.POLL_DEADLINE_S.clear()
@@ -8154,6 +8260,27 @@ def vlm_unit():
                   f"'{{' 프리필·greedy, 파싱 실패 → 같은 시도 안에서 1회 재질문(generate {state['gen']})")
             check(led.state(ctx.crop_id, req.key)["status"] == "done" and res.credits is None and dvlm._QWEN.get("model") is not None,
                   "Qwen 결과 원장 done, 크레딧 없음, 실행 사이에는 캐시 유지")
+            # F-026: Qwen 에서도 승인 뒤 레퍼런스 파일 변경 시 VRAM 해제·모델 로드 전에 rejected 차단
+            be.unload()
+            qref = next(im for im in dvlm._images_of(req) if im.role == "ref")
+            qref_orig = Path(qref.src_path).read_bytes()
+            k_qmod = key24(18070)
+            req_qmod = dataclasses.replace(req, key=k_qmod)
+            state.update(free=[4.0], freed=[], loads=0, gen=0, texts=[good[1:] if good.startswith("{") else good])
+            state["loaded"][:] = [FakeLoaded(10.0)]
+            qerr = None
+            try:
+                Image.fromarray(np.full((64, 64, 3), (99, 11, 22), np.uint8)).save(qref.src_path)
+                try:
+                    asyncio.run(be.call(unit_of(ctx.crop_id, k_qmod), req_qmod, led, progress=None))
+                except BaseException as exc:  # noqa: BLE001
+                    qerr = exc
+                check(isinstance(qerr, runner.CallError) and qerr.phase == "encode"
+                      and state["gen"] == 0 and state["loads"] == 0 and not state["freed"]
+                      and led.state(ctx.crop_id, k_qmod)["status"] == "rejected",
+                      f"F-026 Qwen 승인 뒤 레퍼런스 변경 → 로드·VRAM 해제 전 rejected ({qerr})")
+            finally:
+                Path(qref.src_path).write_bytes(qref_orig)
             be.unload()
             check(dvlm._QWEN.get("model") is None, "unload → 모듈 캐시 비움(0 호출이어도 불러도 됨)")
             be.unload()
@@ -9656,6 +9783,75 @@ def vlm_unit():
               and b6["credit_cap"] == int(ev.CAP_LIMIT - tot),
               f"R13 budget: 누적·남음·단계 게이트·credit_cap 에 추정 포함 {b.get('total')} {b.get('est')} {b6.get('gate_ok')} "
               f"{b6.get('credit_cap')}")
+        # F-029: ab-setup --replace 에서 출력 경로가 원본과 같거나 상위·하위·그룹 중복이면 삭제 전에 차단하고 원본 무손상
+        ab_guard = VLM_OUT / "e0_ab_guard"
+        shutil.rmtree(ab_guard, ignore_errors=True)
+        src_p = ab_guard / "named_src"
+        (src_p / "inputs").mkdir(parents=True)
+        manifest_ok = json.dumps(store.new_manifest("named_src"), ensure_ascii=False)
+        (src_p / store.MANIFEST_NAME).write_text(manifest_ok, encoding="utf-8")
+        (src_p / "inputs" / "keep.txt").write_text("original", encoding="utf-8")
+        (ab_guard / "ab_minimal").mkdir(parents=True)
+        (ab_guard / "ab_minimal" / "preexisting.txt").write_text("keep-me", encoding="utf-8")
+        outside_p = VLM_OUT / "e0_ab_outside"
+        shutil.rmtree(outside_p, ignore_errors=True)
+        outside_p.mkdir(parents=True)
+        (outside_p / "precious.txt").write_text("outside", encoding="utf-8")
+        scores_p = ab_guard / "scores"
+        scores_p.mkdir(parents=True)
+        (scores_p / "t.json").write_text(json.dumps({"used": []}), encoding="utf-8")
+        for bad_dst, label in ((src_p, "동일 경로"), (ab_guard, "상위 폴더"), (src_p / "nested", "하위 폴더")):
+            expect_raises(lambda d=str(bad_dst): ev._copy_project(str(src_p), d, "x", set(), True),
+                          f"F-029 _copy_project {label} 차단", ValueError)
+        # 원본 inputs 내부 파일이 링크 등으로 dst_root 내부를 가리키는 경우 차단
+        orig_realpath = ev.os.path.realpath
+        def fake_realpath(p):
+            if os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(str(src_p / "inputs" / "keep.txt"))):
+                return os.path.abspath(str(ab_guard / "ab_minimal" / "shared" / "keep.txt"))
+            return orig_realpath(p)
+        from unittest import mock as _um
+        with _um.patch.object(ev.os.path, "realpath", side_effect=fake_realpath):
+            expect_raises(lambda: ev._copy_project(str(src_p), str(ab_guard / "ab_minimal"), "ab_minimal", set(), True),
+                          "F-029 원본 inputs 하위 링크가 출력 폴더 내부를 가리키면 차단", ValueError)
+        # replace=False 에서 복사 도중(게시 직전) 대상이 먼저 생성돼도 기존 출력을 덮어쓰지 않고 ValueError
+        race_dst = ab_guard / "ab_race"
+        shutil.rmtree(race_dst, ignore_errors=True)
+        orig_upd = store.update_manifest
+        def create_during_copy(root_dir, mut):
+            res_u = orig_upd(root_dir, mut)
+            if not race_dst.exists():
+                race_dst.mkdir(parents=True)
+                (race_dst / "winner.txt").write_text("first-writer", encoding="utf-8")
+            return res_u
+        with _um.patch.object(store, "update_manifest", side_effect=create_during_copy):
+            expect_raises(lambda: ev._copy_project(str(src_p), str(race_dst), "ab_race", set(), False),
+                          "F-029 replace=False 동시 게시 시 기존 출력 덮어쓰기 차단", ValueError)
+        check((race_dst / "winner.txt").read_text(encoding="utf-8") == "first-writer",
+              "F-029 replace=False 동시 충돌 시 선행 게시 출력 보존")
+        # 앞뒤 공백이 있는 ab_projects 설정도 _group_of 가 정규화해 그룹 판정
+        check(ev._group_of({"project": "ab_draft"}, {"ab_projects": {"draft": " ab_draft "}}) == "draft",
+              "F-029 앞뒤 공백 ab_projects 그룹 판정 일치")
+        doc_clash = {"cases": [], "ab_projects": {"minimal": "ab_minimal", "draft": "named_src", "gold": "ab_gold"},
+                     "_dir": str(ab_guard)}
+        expect_raises(lambda: ev.ab_setup(str(src_p), doc_clash, "t", scores_dir=scores_p, replace=True),
+                      "F-029 ab_setup 원본과 겹치는 그룹 차단", ValueError)
+        doc_dup = {"cases": [], "ab_projects": {"minimal": "ab_same", "draft": "ab_same", "gold": "ab_gold"},
+                   "_dir": str(ab_guard)}
+        expect_raises(lambda: ev.ab_setup(str(src_p), doc_dup, "t", scores_dir=scores_p, replace=True),
+                      "F-029 ab_setup 출력 그룹 간 중복 차단", ValueError)
+        doc_escape = {"cases": [], "ab_projects": {"minimal": "..\\e0_ab_outside", "draft": "ab_draft", "gold": "ab_gold"},
+                      "_dir": str(ab_guard)}
+        expect_raises(lambda: ev.ab_setup(str(src_p), doc_escape, "t", scores_dir=scores_p, replace=True),
+                      "F-029 ab_setup 프로젝트 폴더 밖 탈출 경로 차단", ValueError)
+        # 원본 매니페스트가 손상되어 있으면 기존 출력 폴더를 지우기 전에 차단
+        (src_p / store.MANIFEST_NAME).write_text("{corrupt", encoding="utf-8")
+        expect_raises(lambda: ev._copy_project(str(src_p), str(ab_guard / "ab_minimal"), "ab_minimal", set(), True),
+                      "F-029 손상된 원본 매니페스트 시 기존 출력 삭제 전 차단", ValueError)
+        (src_p / store.MANIFEST_NAME).write_text(manifest_ok, encoding="utf-8")
+        check((src_p / "inputs" / "keep.txt").read_text(encoding="utf-8") == "original"
+              and (ab_guard / "ab_minimal" / "preexisting.txt").read_text(encoding="utf-8") == "keep-me"
+              and (outside_p / "precious.txt").read_text(encoding="utf-8") == "outside",
+              "F-029 충돌·탈출·손상 차단 시 원본·선행 출력·외부 폴더 모두 무손상")
 
     def t_eval_ab():
         section("E4 ab-sheet 라벨 고정·새 후보 덧붙임·거절·불일치 거부(C02) · ab-tally 크롭 승 = Borda(C04)")
@@ -58009,9 +58205,9 @@ def forge_f2_backend_unit():
         h = rn.split_approval(p, backend="forge")["pending_hash"]
         return rn.split_approval(p, h, backend="forge")["to_run"]
 
-    def run(root, client, *, retry=False, tokens=None, stop=lambda: False, limit=2, **kw):
+    def run(root, client, *, retry=False, retry_orphans=False, tokens=None, stop=lambda: False, limit=2, **kw):
         be = fb.ForgeBackend(context(root, client, tokens=tokens, stop=stop, limit=limit))
-        return asyncio.run(rn.run_calls(root, calls(root, retry_failed=retry), be, **kw))
+        return asyncio.run(rn.run_calls(root, calls(root, retry_failed=retry, retry_orphans=retry_orphans), be, **kw))
 
     def ledger(root, job):
         return rn.read_ledger(root, job["cell_key"]).get(0, {})
@@ -58138,12 +58334,12 @@ def forge_f2_backend_unit():
         check(len(c.submissions) == 3 and len({b["request_id"] for b in c.submissions}) == 1, "F2B 재제출 2회 같은 ID")
         check(run(r, c, retry=True).done == 1 and len({b["request_id"] for b in c.submissions}) == 1, "F2B 유실 retry_failed도 동일 ID")
         clean_disk(r)
-        for after in (401, 403, None, 429):
+        for after in (401, 403, None, 429, 422):
             r, j = project("lost_then_" + str(after))
             c, tokens = Client(), {"value": secret}
             c.submit_errors = [Failure("unreachable")]
             if after is not None:
-                c.submit_errors.append(Failure({401: "unauthorized", 403: "forbidden", 429: "invalid"}[after], after))
+                c.submit_errors.append(Failure({401: "unauthorized", 403: "forbidden", 429: "invalid", 422: "invalid"}[after], after))
             original_submit = c.submit
             async def lose_then_reject(token, body):
                 try:
@@ -58165,6 +58361,50 @@ def forge_f2_backend_unit():
             tokens["value"] = "fixture-refreshed"
             check(run(r, c, retry=True, tokens=tokens).done == 1 and c.submissions[-1]["request_id"] == previous,
                   "R1 유실 뒤 retry_failed 동일 ID")
+        # F-019 리뷰 보강: 실행을 넘겨 retry_failed 로 재개했을 때 첫 응답이 422여도 이전 유실 이력을 유지해 멱등키를 폐기하지 않는다
+        r, j = project("lost_cross_run_422")
+        c = Client()
+        c.submit_errors = [Failure("unreachable"), Failure("unreachable"), Failure("unreachable")]
+        check(run(r, c).failed == 1 and sidecar(r, j)["requests"][-1].get("response_lost") is True,
+              "F-019 응답 유실 3회 실패 시 사이드카 response_lost 영속화")
+        prev_id = c.submissions[0]["request_id"]
+        c.submit_errors = [Failure("invalid", 422, "duplicate or transient")]
+        check(run(r, c, retry=True).failed == 1 and sidecar(r, j)["requests"][-1]["state"] == "open"
+              and sidecar(r, j)["requests"][-1]["id"] == prev_id
+              and ledger(r, j)["failed"]["maybe_billed"] is True and ledger(r, j)["failed"]["retryable"] is True,
+              "F-019 다음 실행 retry_failed 첫 422에서도 멱등키·maybe_billed 보존")
+        check(run(r, c, retry=True).done == 1 and c.submissions[-1]["request_id"] == prev_id,
+              "F-019 이후 재시도도 동일 멱등키로 완료")
+        # F-019 재리뷰 보강 1: 제출 도중 취소(interrupt)된 뒤 retry_orphans 의 첫 422 도 멱등키를 폐기하지 않는다
+        r, j = project("lost_interrupt_then_422")
+        c = Client()
+        c.submit_errors = [rn._make_interrupt()]
+        try:
+            run(r, c)
+        except BaseException:
+            pass
+        prev_id = c.submissions[0]["request_id"]
+        check(sidecar(r, j)["requests"][-1].get("sent") is True, "F-019 제출 중 취소 전 sent 영속화")
+        c.submit_errors = [Failure("invalid", 422, "duplicate after cancel")]
+        check(run(r, c, retry_orphans=True).failed == 1 and sidecar(r, j)["requests"][-1]["state"] == "open"
+              and sidecar(r, j)["requests"][-1]["id"] == prev_id and ledger(r, j)["failed"]["maybe_billed"] is True,
+              "F-019 제출 중 취소 뒤 retry_orphans 422 도 멱등키·maybe_billed 보존")
+        # F-019 재리뷰 보강 2: submitted + job_id 저장 직후 resp.json 쓰기가 실패해도 재시도는 POST 없이 기존 job_id 폴링
+        r, j = project("submitted_resp_write_fail")
+        c = Client()
+        orig_write_json = rn._write_json
+        def fail_resp_once(path, data):
+            if str(path).endswith(".resp.json") and not getattr(fail_resp_once, "done", False):
+                fail_resp_once.done = True
+                raise OSError("disk full on resp.json")
+            return orig_write_json(path, data)
+        with patch.object(rn, "_write_json", side_effect=fail_resp_once):
+            rep_sub = run(r, c)
+        check(rep_sub.failed == 1 and len(c.submissions) == 1 and sidecar(r, j)["requests"][-1]["state"] == "submitted",
+              "F-019 resp.json 실패 시 submitted+job_id 보존")
+        c.submit_errors = [Failure("invalid", 422, "must not repost")]
+        check(run(r, c, retry=True).done == 1 and len(c.submissions) == 1,
+              "F-019 submitted+job_id 복구 시 POST 없이 기존 job_id 폴링으로 완료")
         r, j = project("submit422")
         c = Client()
         c.submit_errors = [Failure("invalid", 422, "요청 형식을 확인해 주세요.")]
@@ -75599,6 +75839,50 @@ def forge_import1_server_unit():
               "I1 PROMPT_HEAD 가 render 의 첫 줄과 같음")
         # 가림은 개발용 계정 꼴(u_…)을 통째로 지우지 않는다 — 아는 값만 지운다.
         check(fg.display("u_shape 치마 u_alice", hidden=("u_alice",)) == "u_shape 치마 ", "I1 가림은 아는 값만")
+        # F-025: 공백 뒤 단일 /단어 프롬프트와 선두 슬래시 폴더 경로는 보존하고, 로컬 파일시스템 경로·상위 탐색은 차단한다.
+        check(fg.display("Print /play on the button") == "Print /play on the button", "F-025 공백 뒤 /단어 프롬프트 보존")
+        check(fg.display("Use /tmp/secret.png") == "" and fg.display("open C:\\temp\\a.png") == ""
+              and fg.display("\\\\srv\\share\\a.png") == "", "F-025 로컬 경로 차단 유지")
+        check(fg.display("/레퍼런스/의상", is_folder=True) == "/레퍼런스/의상"
+              and fg.display("/레퍼런스/../비밀", is_folder=True) == ""
+              and fg.display("//srv/share", is_folder=True) == ""
+              and fg.display("/tmp/a.png", is_folder=True) == ""
+              and fg.display("C:\\레퍼런스", is_folder=True) == ""
+              and fg.display("\\\\srv\\레퍼런스", is_folder=True) == "", "F-025 선두 슬래시 폴더 보존·위험 경로 차단")
+        rig = Rig()
+        await rig.request("assets")
+        slash_asset = rig.fake._assets["alice"][0]
+        slash_asset["folder_path"] = "/레퍼런스/의상"
+        slash_asset["name"] = "의상org1시트"
+        slash_hist = rig.fake._seed_history("alice")[-1]
+        slash_hist["prompt"] = "Print /play on the button"
+        assets_res = value(await rig.request("assets", refresh="1"))
+        filtered_res = value(await rig.request("assets", folder="/레퍼런스/의상"))
+        by_visible = value(await rig.request("assets", search="의상시트"))
+        by_hidden = value(await rig.request("assets", search="org1"))
+        check("/레퍼런스/의상" in assets_res["folders"]
+              and any(r["folder"] == "/레퍼런스/의상" for r in assets_res["items"])
+              and len(filtered_res["items"]) >= 1
+              and all(r["folder"] == "/레퍼런스/의상" for r in filtered_res["items"])
+              and any(r["name"] == "의상시트" for r in by_visible["items"])
+              and not by_hidden["items"],
+              f"F-025 선두 슬래시 폴더 드롭다운·카드·필터 및 정화 기준 검색 보존 {assets_res['folders']}")
+        hist_res = value(await rig.request("history"))
+        play_item = next((r for r in hist_res["items"] if r["prompt"] == "Print /play on the button"), None)
+        check(play_item is not None, "F-025 공백 뒤 /play 프롬프트 카드 보존")
+        imp_t = value(await rig.request("import", dict(into="target", source="history", id=play_item["id"], name="슬래시_시험")))
+        imp_root = Path(store.project_root(rig.scopes["alice"]["input"], "슬래시_시험"))
+        target_sidecar = json.loads(next(imp_root.glob("*.psd.forge.json")).read_text(encoding="utf-8"))
+        check(target_sidecar.get("prompt") == "Print /play on the button", "F-025 /play 프롬프트 출처 보존")
+        imp_a = value(await rig.request("import", dict(into="refs", source="asset", id=filtered_res["items"][0]["id"], root=imp_t["key"])))
+        asset_sidecar = json.loads(imp_root.joinpath(imp_a["sheet"] + ".forge.json").read_text(encoding="utf-8"))
+        mark = bd.set_scope(rig.scopes["alice"])
+        try:
+            read_back = bd._read_forge_source(str(imp_root), imp_a["sheet"])
+        finally:
+            bd.reset_scope(mark)
+        check(asset_sidecar.get("folder") == "/레퍼런스/의상" and (read_back or {}).get("folder") == "/레퍼런스/의상",
+              f"F-025 선두 슬래시 폴더 출처 쓰기·읽기 보존 {asset_sidecar} {read_back}")
 
     log = io.StringIO()
     handler = logging.StreamHandler(log)

@@ -8380,7 +8380,7 @@ def _forge_source(value):
             return None
         # Forge 라우트가 토큰·origin·작성자 값을 가린 재료만 넘긴다. 읽을 때도 같은 표시 규칙과 키 제한을 적용한다.
         cleaned = display(text, size=300 if key == "prompt" else 512 if key == "folder" else 128,
-                          hidden=(scope.get("account"), scope.get("org")))
+                          hidden=(scope.get("account"), scope.get("org")), is_folder=(key == "folder"))
         if key == "id" and (not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", cleaned) or cleaned != text):
             continue
         if cleaned:

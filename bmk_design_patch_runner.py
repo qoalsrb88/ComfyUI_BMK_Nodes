@@ -387,10 +387,12 @@ def pending_hash(pending_ids: Iterable[str]) -> str:
 
 
 def approval_id(e: dict) -> str:
-    """승인 해시에 넣는 호출 표시: "<call_id>:n<n>", 재시도면 ":a<시도 번호>" 를 더한다."""
+    """승인 해시에 넣는 호출 표시: "<call_id>:n<n>", 재시도면 ":a<시도 번호>"(원장 req 손상 시 지문 ":c<sig>" 추가)."""
     aid = f"{e['call_id']}:n{e.get('n')}"
     if e.get("kind") in ("retry_failed", "retry_orphan"):
         aid += f":a{e.get('attempt')}"
+        if e.get("corrupt_sig"):
+            aid += f":c{e['corrupt_sig']}"
     return aid
 
 
@@ -455,6 +457,28 @@ def _change_reason(job: dict, prior: dict | None) -> str:
     return "새 생성 조건 — 이전 생성 조건 대비 변경: " + (", ".join(diffs) if diffs else "변형/기타")
 
 
+def _next_attempt(files: dict, kind: str | None) -> int:
+    if kind not in ("retry_failed", "retry_orphan"):
+        return 1
+    prev = files.get("req") if isinstance(files.get("req"), dict) else {}
+    hist = prev.get("history")
+    cur = max(_nonneg_int(prev.get("attempt"), 1), len(hist) + 1 if isinstance(hist, list) else 1)
+    return cur + 1
+
+
+def _corrupt_retry_sig(files: dict, kind: str | None) -> str | None:
+    """재시도 원장의 req 가 손상·무효하거나 과거 손상 복구 계보(retry_epoch)가 있으면 기존 승인 해시 재사용을 막는 지문을 반환한다."""
+    if kind not in ("retry_failed", "retry_orphan"):
+        return None
+    prev = files.get("req")
+    if isinstance(prev, dict) and "_corrupt" not in prev and type(prev.get("attempt")) is int and prev["attempt"] >= 1:
+        epoch = prev.get("retry_epoch")
+        return epoch if isinstance(epoch, str) and epoch else None
+    material = {k: files.get(k) for k in ("req", "failed", "inflight") if k in files}
+    raw = json.dumps(material, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:8]
+
+
 def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_orphans: bool = False,
                only: str = "") -> dict:
     """매니페스트 jobs/rerolls + 원장 → {"pending","done","inflight","orphaned","failed", "filtered", "warnings"}.
@@ -493,13 +517,15 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
     recover: list[dict] = []
 
     def entry(ck, rep, state, view, files, *, kind=None, billable=False, pre=False, reason="", stale=False):
-        prev = files.get("req") if isinstance(files.get("req"), dict) else {}
-        attempt = _nonneg_int(prev.get("attempt"), 1) + 1 if kind in ("retry_failed", "retry_orphan") else 1
+        attempt = _next_attempt(files, kind)
         e = {"call_id": call_id_for(ck, rep), "cell_key": ck, "rep": rep, "crop_id": view.get("crop_id"),
              "tid": view.get("tid"), "variant": view.get("variant"), "state": state, "kind": kind,
              "billable": billable, "preapproved": pre, "reason": reason, "n": view.get("n"), "attempt": attempt,
              "est_usd": _est(view) if billable else [0.0, 0.0], "job": view, "info": _ledger_info(files),
              "stale": stale}
+        corrupt_sig = _corrupt_retry_sig(files, kind)
+        if corrupt_sig is not None:
+            e["corrupt_sig"] = corrupt_sig
         return e
 
     for job in jobs:
@@ -1313,11 +1339,14 @@ def _begin_call(root: str, e: dict, backend_name: str) -> dict:
             prev["req"] = {k: old["req"].get(k) for k in ("time", "approved_by", "backend", "attempt", "n")}
         history.append(prev)
     job = e["job"]
+    retry_epoch = _corrupt_retry_sig(old, e["kind"])
     req = {"schema": LEDGER_SCHEMA, "call_id": e["call_id"], "cell_key": ck, "rep": rep,
             **{k: job.get(k) for k in _JOB_FIELDS
                if k != "cell_key" and (k != "complexity" or job.get(k) is not None) and (k != "opts" or job.get(k))},
            "backend": backend_name, "approved_by": e.get("approved_by"), "kind": e["kind"],
-           "attempt": len(history) + 1, "history": history, "time": _now()}
+           "attempt": max(len(history) + 1, _next_attempt(old, e["kind"])), "history": history, "time": _now()}
+    if retry_epoch:
+        req["retry_epoch"] = retry_epoch
     _write_json(_lpath(root, ck, rep, "req"), req)
     inflight = {"call_id": e["call_id"], "started": _now(), "started_ts": time.time(), "pid": os.getpid(),
                 "session": _SESSION, "backend": backend_name}
@@ -1764,8 +1793,6 @@ async def _one_call(root: str, rid: str, e: dict, backend, state: _RunState) -> 
 
     def skip(why: str) -> None:
         report.skipped.append({"call_id": cid, "why": why})
-        if e["billable"]:
-            report.launched -= 1  # launch_block 이 예약한 발사 취소
 
     if e["billable"] and not str(e.get("approved_by") or ""):
         report.skipped.append({"call_id": cid, "why": "승인 정보(approved_by) 없음 — 과금하지 않음"})
@@ -1779,9 +1806,6 @@ async def _one_call(root: str, rid: str, e: dict, backend, state: _RunState) -> 
             report.remaining.append(cid)
             report.errors.append(f"{cid}: 발사 못 함 — {why}")
             return
-    if state.launch_block(e) is not None:
-        report.remaining.append(cid)
-        return
     if not _claim(rid, cid):
         skip("같은 호출이 이미 실행 중")
         return
@@ -1791,12 +1815,23 @@ async def _one_call(root: str, rid: str, e: dict, backend, state: _RunState) -> 
         if st not in _expected_state(kind):
             skip(f"원장 상태가 계획과 다름({st}) — 다시 계획하세요")
             return
+        if kind in ("retry_failed", "retry_orphan"):
+            expected_attempt = _next_attempt(files, kind)
+            expected_sig = _corrupt_retry_sig(files, kind)
+            planned_attempt = e.get("attempt")
+            planned_sig = e.get("corrupt_sig")
+            if expected_sig != planned_sig or type(planned_attempt) is not int or planned_attempt != expected_attempt:
+                skip(f"원장 시도 번호가 계획과 다름(계획 a{planned_attempt}, 현재 필요 a{expected_attempt}) — 다시 계획하세요")
+                return
         if kind == "recover":
             made_by = next((f["backend"] for f in (files.get("resp"), files.get("req"))
                             if isinstance(f, dict) and f.get("backend")), None)
             if made_by is not None and made_by != backend.name:
                 # 다른 백엔드의 URL 은 받을 수 없다(mock 이 프록시 URL 을 404 → 돈 낸 결과를 partial 로 확정, 반대는 31초 재시도)
                 skip(f"응답을 받은 백엔드({made_by})와 지금 백엔드({backend.name})가 다름 — {made_by} 로 실행할 때 다운로드만 다시")
+                return
+            if state.launch_block(e) is not None:
+                report.remaining.append(cid)
                 return
             await _recover(root, e, files, backend, state)
             return
@@ -1808,6 +1843,10 @@ async def _one_call(root: str, rid: str, e: dict, backend, state: _RunState) -> 
         lost = [os.path.basename(p) for p in input_paths if not os.path.isfile(p)]
         if lost:
             skip(f"입력 파일 없음({', '.join(lost)}) — Prepare 를 다시 실행하세요")
+            return
+        # 호출 선점·원장 대조·입력 파일 확인을 모두 통과한 뒤에만 발사 수와 8189 비용을 예약한다.
+        if state.launch_block(e) is not None:
+            report.remaining.append(cid)
             return
         await _billable(root, e, input_paths, backend, state)
     finally:
